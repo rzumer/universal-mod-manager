@@ -1,0 +1,45 @@
+# Example game definition for a Unity game modded with BepInEx 5.
+# Copy into <data folder>/gamedefs/ and edit the ids and names.
+schema = 1
+id = "example-unity-game"
+name = "Example Unity Game"
+
+[detect]                          # tried in order; the first hit wins
+steam_app_id = 123456             # reads steamapps/appmanifest_<id>.acf in every library
+steam_dir = "Example Game"        # fallback: folder under steamapps/common
+marker = "ExampleGame.exe"        # must exist for a folder to count as the install
+
+[launch]
+exe = "ExampleGame.exe"
+steam_relaunch = "appid_file"
+process_names = ["ExampleGame.exe"]
+
+[loader]
+kind = "bepinex5"
+source = "mod:bepinex-pack"       # import the BepInEx pack with `--id bepinex-pack`
+inject = "doorstop"               # only winhttp.dll + doorstop_config.ini go in the game folder;
+                                  # the BepInEx tree lives in UMM's per-profile runtime folder
+
+# Rules are tried in order. The folders before a pattern's first wildcard are replaced by
+# the target, and `{mod}` becomes the mod's id.
+[[install]]
+match = "BepInEx/plugins/**"
+target = "BepInEx/plugins/{mod}/"
+
+[[install]]
+match = "plugins/**"
+target = "BepInEx/plugins/{mod}/"
+
+[[install]]
+match = "*.dll"                   # a loose top-level DLL is a plugin
+target = "BepInEx/plugins/{mod}/"
+
+[[install]]
+match = "**"                      # anything else keeps its path relative to the game folder
+target = ""
+
+[protect]                         # never replaced, even if a mod ships them
+paths = ["*.exe", "UnityPlayer.dll", "steam_api64.dll"]
+
+[writable]                        # always copied, never hardlinked: the game writes to these
+paths = ["BepInEx/config/**", "**/*.cfg", "**/*.ini"]

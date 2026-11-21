@@ -1,0 +1,15 @@
+[package]
+name = "umm-deploy"
+description = "Journaled deployment of mod files into game folders, with revert and crash recovery"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+umm-gamedef.workspace = true
+umm-store.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+same-file.workspace = true

@@ -1,0 +1,20 @@
+[package]
+name = "umm-core"
+description = "The Session API shared by the UMM CLI and app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+umm-gamedef.workspace = true
+umm-store.workspace = true
+umm-deploy.workspace = true
+thiserror.workspace = true
+umm-launch.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+same-file.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

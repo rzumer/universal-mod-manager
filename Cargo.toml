@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "WTFPL"
+rust-version = "1.85"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+thiserror = "1"
+anyhow = "1"
+blake3 = { version = "1", features = ["pure"] }
+walkdir = "2"
+globset = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+same-file = "1"
+dirs = "5"
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"
+winreg = "0.52"
+
+umm-gamedef = { path = "crates/umm-gamedef" }
+umm-store = { path = "crates/umm-store" }
+umm-deploy = { path = "crates/umm-deploy" }
+umm-core = { path = "crates/umm-core" }
+umm-launch = { path = "crates/umm-launch" }
