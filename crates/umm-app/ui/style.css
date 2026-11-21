@@ -130,7 +130,7 @@ select, input[type="text"], input[type="search"] {
 }
 .game-item:hover:not(:disabled) { background: var(--surface-2); border-color: transparent; }
 .game-item.selected { background: var(--surface); border-color: var(--border); box-shadow: var(--shadow); }
-.game-name { font-weight: 600; }
+.game-name { font-weight: 600; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
 .status i { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
 .status.ok i { background: var(--ok); }
@@ -194,10 +194,16 @@ button.launch { justify-content: center; font-size: 16px; padding: 11px 18px; bo
 .mod-row.missing .mod-meta { color: var(--danger); }
 .mod-row.dragging { opacity: 0.4; }
 .mod-row.drop-target { box-shadow: inset 0 2px 0 var(--accent); }
-.grip { color: var(--muted); cursor: grab; display: inline-flex; }
+.mod-row.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+.grip { color: var(--muted); cursor: grab; display: inline-flex; touch-action: none; padding: 4px; margin: -4px; }
+.grip:hover { color: var(--text); }
+.grip:active { cursor: grabbing; }
+.grip.off { cursor: default; opacity: 0.4; }
 .order { width: 22px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 13px; }
 .mod-main { flex: 1; min-width: 0; }
-.mod-name { font-weight: 600; display: flex; align-items: baseline; gap: 8px; }
+.mod-name { font-weight: 600; display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.mod-main { min-width: 0; }
+.steam-row .mod-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .version { font-weight: 400; font-size: 12px; color: var(--muted); }
 .mod-meta { font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row-actions { display: flex; gap: 4px; align-items: center; }
@@ -285,7 +291,7 @@ details.all-files summary { cursor: pointer; font-weight: 600; margin-bottom: 8p
 .banner-actions { display: flex; gap: 6px; flex: none; }
 
 .scrim { position: fixed; inset: 0; background: rgba(10, 12, 20, 0.45); display: grid; place-items: center; z-index: 40; }
-.modal { width: min(460px, calc(100vw - 32px)); background: var(--surface); border-radius: 12px; padding: 22px 22px 18px; box-shadow: 0 20px 60px rgba(0,0,0,.3); border: 1px solid var(--border); }
+.modal { width: min(clamp(460px, 45vw, 760px), calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow-y: auto; background: var(--surface); border-radius: 12px; padding: 22px 22px 18px; box-shadow: 0 20px 60px rgba(0,0,0,.3); border: 1px solid var(--border); }
 .modal h2 { margin-bottom: 10px; }
 .modal-body { color: var(--text); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
@@ -304,8 +310,8 @@ details.all-files summary { cursor: pointer; font-weight: 600; margin-bottom: 8p
 /* ---------- add from Steam ---------- */
 .add-games { margin-top: 10px; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
 button.inline-link { display: inline; padding: 0; font-size: inherit; }
-.modal:has(.steam-list) { width: min(560px, calc(100vw - 32px)); }
-.steam-list { max-height: 360px; overflow-y: auto; margin-top: 10px; border: 1px solid var(--border); border-radius: 8px; }
+.modal:has(.steam-list) { width: min(clamp(560px, 70vw, 1100px), calc(100vw - 32px)); }
+.steam-list { max-height: max(360px, calc(100vh - 340px)); overflow-y: auto; margin-top: 10px; border: 1px solid var(--border); border-radius: 8px; }
 .steam-row { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-top: 1px solid var(--border); cursor: pointer; }
 .steam-row:first-child { border-top: none; }
 .steam-row:hover { background: var(--surface-2); }

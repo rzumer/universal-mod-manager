@@ -228,6 +228,7 @@ const handlers = {
       { appId: 1005, name: "Lantern Keepers", path: String.raw`D:\SteamLibrary\steamapps\common\LanternKeepers`, engine: "Unity (Mono)", definedAs: null, community: "lantern-keepers", otherLoader: null, setups: setupOptions(["thunderstore", "bepinex", "generic"]) },
       { appId: 1006, name: "Moss Garden", path: String.raw`D:\SteamLibrary\steamapps\common\MossGarden`, engine: "Unity (Mono)", definedAs: null, community: null, otherLoader: null, setups: setupOptions(["generic", "bepinex"]) },
       { appId: 1002, name: "Brickworks Tycoon", path: String.raw`D:\SteamLibrary\steamapps\common\Brickworks`, engine: "Unity (IL2CPP)", definedAs: null, community: null, otherLoader: "melonloader", setups: setupOptions(["generic"]) },
+      { appId: 1007, name: "RV There Yet? — The Extremely Long Road Trip Edition: Director's Cut", path: String.raw`D:\SteamLibrary\steamapps\common\RV There Yet The Extremely Long Road Trip Edition`, engine: "Unreal Engine", definedAs: null, community: null, otherLoader: "shimloader", setups: setupOptions(["generic"]) },
       { appId: 1003, name: "Night Courier", path: String.raw`C:\Program Files (x86)\Steam\steamapps\common\NightCourier`, engine: "Unreal Engine", definedAs: null, community: null, otherLoader: null, setups: setupOptions(["generic"]) },
       { appId: 1004, name: "Pixel Harbor", path: String.raw`C:\Program Files (x86)\Steam\steamapps\common\PixelHarbor`, engine: "Unknown engine", definedAs: null, community: null, otherLoader: null, setups: setupOptions(["generic"]) },
     ],

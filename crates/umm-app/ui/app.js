@@ -1389,7 +1389,7 @@ async function addFromSteam() {
         "label",
         { class: "steam-pick" },
         box,
-        h("div", { class: "mod-main" }, h("div", { class: "mod-name" }, g.name), h("div", { class: "mod-meta", title: g.path }, meta)),
+        h("div", { class: "mod-main" }, h("div", { class: "mod-name" }, g.name), h("div", { class: "mod-meta", title: `${meta}\n${g.path}` }, meta)),
       ),
       g.definedAs ? h("span", { class: "chip" }, "Added") : setup,
     );
@@ -1614,6 +1614,11 @@ function setupDrop() {
 
 async function main() {
   api.listen("session", onSession);
+  // Text cut short with "…" shows in full on hover, wherever it is.
+  document.addEventListener("mouseover", (e) => {
+    const el = e.target instanceof Element ? e.target.closest(".mod-meta, .mod-name, .ts-desc, .path, .game-name") : null;
+    if (el && !el.title && el.scrollWidth > el.clientWidth) el.title = el.textContent;
+  });
   api.listen("install-link", (url) => handleInstallLink(url));
   api.listen("ts-progress", (e) => {
     if (S.ts.busy && e.game === S.gameId) {
