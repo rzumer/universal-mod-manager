@@ -32,7 +32,7 @@ pub enum DeployError {
     Store(#[from] StoreError),
     #[error(transparent)]
     Path(#[from] RelPathError),
-    #[error("mod `{0}` is in the profile but not in the store")]
+    #[error("mod `{0}` is in the profile but not installed")]
     MissingMod(String),
     #[error("mods are already deployed for this game (journal at {0}); revert first")]
     AlreadyDeployed(PathBuf),

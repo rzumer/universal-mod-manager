@@ -2,12 +2,15 @@
 //! where each mod's files go. Adding a game means adding a file, not code.
 
 pub mod detect;
+pub mod edit;
 pub mod relpath;
+pub mod setup;
 pub mod steam;
 pub mod vdf;
 
 pub use detect::{detect_install, Detected};
 pub use relpath::{RelPath, RelPathError};
+pub use setup::LoaderSetup;
 
 use globset::{GlobBuilder, GlobMatcher, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
@@ -15,6 +18,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub const SCHEMA_VERSION: u32 = 1;
+
+/// A game's file in its folder under `games/`: its definition and the settings UMM writes
+/// there (the install path, the mod loader). UMM edits it in place, keeping comments.
+pub const GAME_FILE: &str = "game.toml";
 
 /// Name of the backup folder used inside a game folder when the data directory is on another
 /// drive. Mods may never write into it.
@@ -24,6 +31,9 @@ pub const IN_GAME_BACKUP_DIR: &str = ".umm-backup";
 #[serde(deny_unknown_fields)]
 pub struct GameDef {
     pub schema: u32,
+    /// The game's folder name under `games/`. Files there may leave it out; a file that
+    /// states it must match the folder.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub id: String,
     pub name: String,
     #[serde(default)]
@@ -32,6 +42,9 @@ pub struct GameDef {
     pub launch: Option<Launch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loader: Option<Loader>,
+    /// The game's Thunderstore community, when its mods come from there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thunderstore: Option<Thunderstore>,
     #[serde(default)]
     pub install: Vec<InstallRule>,
     /// Game paths that are never replaced, even if a mod ships them.
@@ -45,6 +58,9 @@ pub struct GameDef {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Detect {
+    /// The install folder, used instead of detection. Set by UMM when you pick a folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathBuf>,
     pub steam_app_id: Option<u32>,
     pub steam_dir: Option<String>,
     /// `HKLM\SOFTWARE\Vendor\Game:ValueName`
@@ -74,11 +90,23 @@ pub enum SteamRelaunch {
     None,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Thunderstore {
+    /// The community's label, as in `thunderstore.io/c/<community>/`.
+    pub community: String,
+}
+
+/// Loader source meaning "the BepInEx pack installed from Thunderstore", which is stored like
+/// any other Thunderstore package.
+pub const THUNDERSTORE_SOURCE: &str = "thunderstore";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Loader {
     pub kind: String,
     /// `mod:<id>`: the loader is stored and imported like any other mod.
+    /// `thunderstore`: it is one of the game's Thunderstore packages.
     pub source: Option<String>,
     #[serde(default)]
     pub inject: Inject,
@@ -97,6 +125,10 @@ pub enum Inject {
 impl Loader {
     pub fn source_mod(&self) -> Option<&str> {
         self.source.as_deref().and_then(|s| s.strip_prefix("mod:"))
+    }
+
+    pub fn from_thunderstore(&self) -> bool {
+        self.source.as_deref() == Some(THUNDERSTORE_SOURCE)
     }
 }
 
@@ -138,10 +170,14 @@ pub enum GameDefError {
     },
     #[error("invalid install target `{0}`: {1}")]
     Target(String, RelPathError),
-    #[error("loader source must look like `mod:<id>`, got `{0}`")]
+    #[error("loader source must look like `mod:<id>`, or be `thunderstore` with a [thunderstore] table; got `{0}`")]
     LoaderSource(String),
-    #[error("game id `{0}` is defined more than once")]
-    Duplicate(String),
+    #[error("{path} says `id = \"{id}\"` but is in the folder `{folder}`; the folder name is the id")]
+    IdMismatch {
+        path: PathBuf,
+        id: String,
+        folder: String,
+    },
     #[error("{0}")]
     Unsupported(String),
 }
@@ -160,6 +196,15 @@ pub struct DoorstopLoader {
 /// Doorstop 4 command-line flags (BepInEx 5.4.22 and later ship Doorstop 4).
 pub const DOORSTOP_ENABLED_FLAG: &str = "--doorstop-enabled";
 pub const DOORSTOP_TARGET_FLAG: &str = "--doorstop-target-assembly";
+/// Doorstop 3 spellings (BepInEx 5 before 5.4.22).
+pub const DOORSTOP3_ENABLED_FLAG: &str = "--doorstop-enable";
+pub const DOORSTOP3_TARGET_FLAG: &str = "--doorstop-target";
+
+/// Files that mark a BepInEx 6 pack, which UMM cannot start yet.
+pub const BEPINEX6_MARKERS: &[&str] = &[
+    "BepInEx/core/BepInEx.Unity.IL2CPP.dll",
+    "BepInEx/core/BepInEx.Unity.Mono.Preloader.dll",
+];
 
 pub fn doorstop_loader(kind: &str) -> Option<DoorstopLoader> {
     match kind {
@@ -234,36 +279,54 @@ impl GameDef {
         Ok(def)
     }
 
-    pub fn load_file(path: &Path) -> Result<Self, GameDefError> {
-        let text = fs::read_to_string(path).map_err(|source| GameDefError::Io {
-            path: path.to_path_buf(),
-            source,
+    /// Parses a game's `game.toml`; `id` is its folder's name.
+    pub fn parse_game(text: &str, origin: &Path, id: &str) -> Result<Self, GameDefError> {
+        let mut def: GameDef = toml::from_str(text).map_err(|source| GameDefError::Parse {
+            path: origin.to_path_buf(),
+            source: Box::new(source),
         })?;
-        Self::parse(&text, path)
+        if !def.id.is_empty() && def.id != id {
+            return Err(GameDefError::IdMismatch {
+                path: origin.to_path_buf(),
+                id: def.id,
+                folder: id.to_string(),
+            });
+        }
+        def.id = id.to_string();
+        def.validate()?;
+        Ok(def)
     }
 
-    /// Loads every `*.toml` in `dir`. Invalid files are returned separately so one bad
-    /// definition does not hide the others.
-    pub fn load_dir(dir: &Path) -> (Vec<GameDef>, Vec<GameDefError>) {
-        let mut defs: Vec<GameDef> = Vec::new();
+    /// Loads `<dir>/game.toml`, where `dir` is the game's folder under `games/`.
+    pub fn load_game(dir: &Path) -> Result<Self, GameDefError> {
+        let path = dir.join(GAME_FILE);
+        let text = fs::read_to_string(&path).map_err(|source| GameDefError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        let id = dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Self::parse_game(&text, &path, &id)
+    }
+
+    /// Loads every `<games_dir>/<id>/game.toml`. Invalid files are returned separately so one
+    /// bad definition does not hide the others; folders without a `game.toml` are skipped.
+    pub fn load_games(games_dir: &Path) -> (Vec<GameDef>, Vec<GameDefError>) {
+        let mut defs = Vec::new();
         let mut errors = Vec::new();
-        let Ok(entries) = fs::read_dir(dir) else {
+        let Ok(entries) = fs::read_dir(games_dir) else {
             return (defs, errors);
         };
-        let mut paths: Vec<PathBuf> = entries
+        let mut dirs: Vec<PathBuf> = entries
             .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| {
-                p.extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("toml"))
-            })
+            .filter(|p| p.join(GAME_FILE).is_file())
             .collect();
-        paths.sort();
-        for p in paths {
-            match Self::load_file(&p) {
-                Ok(d) if defs.iter().any(|x| x.id == d.id) => {
-                    errors.push(GameDefError::Duplicate(d.id))
-                }
-                Ok(d) => defs.push(d),
+        dirs.sort();
+        for d in dirs {
+            match Self::load_game(&d) {
+                Ok(def) => defs.push(def),
                 Err(e) => errors.push(e),
             }
         }
@@ -281,6 +344,7 @@ impl GameDef {
             if let Some(src) = &loader.source {
                 match loader.source_mod() {
                     Some(id) if is_valid_id(id) => {}
+                    None if loader.from_thunderstore() && self.thunderstore.is_some() => {}
                     _ => return Err(GameDefError::LoaderSource(src.clone())),
                 }
             }

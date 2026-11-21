@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "WTFPL"
 rust-version = "1.85"
@@ -29,3 +29,4 @@ umm-store = { path = "crates/umm-store" }
 umm-deploy = { path = "crates/umm-deploy" }
 umm-core = { path = "crates/umm-core" }
 umm-launch = { path = "crates/umm-launch" }
+umm-thunderstore = { path = "crates/umm-thunderstore" }

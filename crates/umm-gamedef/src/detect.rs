@@ -1,5 +1,5 @@
-//! Finding a game's install folder: Steam libraries, then the registry.
-//! A manual path stored in the game's settings takes precedence; that lives in `umm-core`.
+//! Finding a game's install folder: `[detect] path` if set, then Steam libraries, then the
+//! registry.
 
 use crate::vdf::{self, Value};
 use crate::{GameDef, RelPath};
@@ -22,6 +22,16 @@ pub fn detect_install(def: &GameDef) -> Option<Detected> {
                     .unwrap_or(false)
             })
     };
+
+    // A folder picked in UMM (or written by hand) wins, as long as it is still there.
+    if let Some(p) = &d.path {
+        if p.is_dir() {
+            return Some(Detected {
+                path: p.clone(),
+                via: "manual",
+            });
+        }
+    }
 
     if d.steam_app_id.is_some() || d.steam_dir.is_some() {
         for lib in steam_libraries() {

@@ -7,6 +7,13 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 use umm_core::{CoreError, Faults, ImportOptions, LaunchEvent, Session, DEFAULT_PROFILE};
 
+/// The game's `games/<id>/game.toml`, its folder created.
+fn def_file(s: &Session, id: &str) -> std::path::PathBuf {
+    let p = s.data().game(id).def_path();
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    p
+}
+
 const GAME: &str = "launch-game";
 
 struct Fx {
@@ -66,7 +73,7 @@ fn setup(test: &str, extra: &str, args: &[&str]) -> Fx {
         args_toml.join(", ")
     );
     let session = Session::open(Some(base.join("data"))).unwrap();
-    fs::write(session.data().gamedefs_dir().join("g.toml"), &def).unwrap();
+    fs::write(def_file(&session, GAME), &def).unwrap();
     session.set_install_path(GAME, &root).unwrap();
 
     let m = base.join("src/ui");
@@ -204,11 +211,13 @@ fn doorstop_keeps_the_loader_tree_out_of_the_game_folder() {
 fn appid_file_is_present_only_while_playing() {
     let fx = setup("appid", "", &[]);
     // Add the Steam settings to the definition.
-    let p = fx.session.data().gamedefs_dir().join("g.toml");
+    let p = fx.session.data().game(GAME).def_path();
     let def = read(&p).replace(
         "[launch]\n",
-        "[detect]\nsteam_app_id = 480\n\n[launch]\nsteam_relaunch = \"appid_file\"\n",
-    );
+        "[launch]\nsteam_relaunch = \"appid_file\"\n",
+    )
+    // set_install_path added a [detect] table; the app id goes in it.
+    .replace("[detect]\n", "[detect]\nsteam_app_id = 480\n");
     fs::write(&p, def).unwrap();
 
     launch(&fx);

@@ -98,7 +98,7 @@ button.icon-btn:hover:not(:disabled) { background: var(--surface-2); border-colo
 .icon { display: inline-flex; width: 16px; height: 16px; }
 .icon svg { width: 16px; height: 16px; fill: currentColor; }
 
-select, input[type="text"] {
+select, input[type="text"], input[type="search"] {
   font: inherit;
   color: var(--text);
   background: var(--surface);
@@ -116,8 +116,6 @@ select, input[type="text"] {
   padding: 16px 12px;
   overflow-y: auto;
 }
-.brand { display: flex; align-items: center; gap: 10px; font-weight: 650; font-size: 15px; padding: 4px 6px 16px; }
-.brand img { width: 28px; height: 28px; border-radius: 7px; }
 .section-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); padding: 0 8px 6px; font-weight: 600; }
 .game-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .game-item {
@@ -293,6 +291,7 @@ details.all-files summary { cursor: pointer; font-weight: 600; margin-bottom: 8p
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .field { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
 .field span { font-size: 13px; color: var(--muted); }
+.modal .field input, .modal .field select { width: 100%; }
 
 #drop-overlay { position: fixed; inset: 0; background: color-mix(in srgb, var(--accent) 18%, transparent); border: 3px dashed var(--accent); display: grid; place-items: center; z-index: 50; font-size: 18px; font-weight: 600; color: var(--accent); }
 #drop-overlay[hidden] { display: none; }
@@ -303,7 +302,8 @@ details.all-files summary { cursor: pointer; font-weight: 600; margin-bottom: 8p
 }
 
 /* ---------- add from Steam ---------- */
-.add-steam { margin-top: 10px; align-self: flex-start; }
+.add-games { margin-top: 10px; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+button.inline-link { display: inline; padding: 0; font-size: inherit; }
 .modal:has(.steam-list) { width: min(560px, calc(100vw - 32px)); }
 .steam-list { max-height: 360px; overflow-y: auto; margin-top: 10px; border: 1px solid var(--border); border-radius: 8px; }
 .steam-row { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-top: 1px solid var(--border); cursor: pointer; }
@@ -312,6 +312,41 @@ details.all-files summary { cursor: pointer; font-weight: 600; margin-bottom: 8p
 .steam-row.added { cursor: default; opacity: 0.6; }
 .steam-row[hidden] { display: none; }
 .steam-row input { width: 16px; height: 16px; accent-color: var(--accent); }
+.steam-row { cursor: default; }
+.steam-pick { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; cursor: pointer; }
+.steam-row.added .steam-pick { cursor: default; }
+.steam-row select.setup { flex: none; max-width: 190px; font-size: 12px; padding: 3px 6px; }
+.modal p.banner { display: block; box-shadow: none; margin: 10px 0 0; font-size: 13px; }
+.chip-button { cursor: pointer; font: inherit; font-size: 12px; }
+.chip-button:hover { border-color: var(--accent); }
+.loader-action .row { display: flex; gap: 8px; align-items: center; flex: none; }
+.loader-action select { min-width: 200px; }
+p.small { font-size: 12px; margin-top: 4px; }
+.path-text { font-family: "Cascadia Code", Consolas, ui-monospace, monospace; overflow-wrap: anywhere; }
+.modal p { overflow-wrap: anywhere; }
+.sidebar-foot .link { text-align: left; }
+
+/* ---------- Thunderstore tab ---------- */
+.ts-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.ts-toolbar input[type=search] { flex: 1 1 220px; min-width: 160px; }
+.ts-toolbar label.check.inline { margin: 0; color: var(--text); }
+.ts-banner { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 14px; margin-bottom: 8px; border-radius: 8px; background: var(--surface); border: 1px solid var(--border); font-size: 13px; }
+.ts-banner.warn { background: var(--warn-soft); border-color: transparent; }
+.ts-banner.live { justify-content: flex-start; border-color: color-mix(in srgb, var(--live) 50%, var(--border)); }
+.ts-list { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.ts-row { display: flex; gap: 12px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--border); }
+.ts-row:first-child { border-top: none; }
+.ts-row.deprecated { opacity: 0.65; }
+.ts-icon { width: 44px; height: 44px; border-radius: 8px; flex: none; background: var(--surface-2); object-fit: cover; }
+.ts-main { flex: 1; min-width: 0; }
+.ts-title { display: flex; align-items: baseline; gap: 2px; flex-wrap: wrap; }
+.ts-title .chip { margin-left: 6px; }
+.ts-desc { font-size: 13px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ts-meta { font-size: 12px; margin-top: 2px; }
+.ts-row > button, .ts-row > .chip { flex: none; }
+.ts-more { display: flex; justify-content: center; margin-top: 10px; }
+.ts-share { display: flex; gap: 14px; align-items: baseline; margin-bottom: 10px; font-size: 13px; }
+.chip.ok { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
 .modal input[type="text"] { width: 100%; margin-top: 8px; }
 label.check { display: flex; align-items: center; gap: 8px; margin-top: 16px; font-size: 13px; color: var(--muted); cursor: pointer; }
 label.check input { width: 16px; height: 16px; accent-color: var(--accent); }

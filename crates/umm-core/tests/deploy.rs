@@ -6,6 +6,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use umm_core::{CoreError, DeployError, Faults, ImportOptions, Session, DEFAULT_PROFILE};
 
+/// The game's `games/<id>/game.toml`, its folder created.
+fn def_file(s: &Session, id: &str) -> std::path::PathBuf {
+    let p = s.data().game(id).def_path();
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    p
+}
+
 const GAME: &str = "test-game";
 
 const DEF: &str = r#"
@@ -93,7 +100,7 @@ fn setup() -> Fixture {
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path();
     let session = Session::open(Some(base.join("data"))).unwrap();
-    fs::write(session.data().gamedefs_dir().join("test-game.toml"), DEF).unwrap();
+    fs::write(def_file(&session, "test-game"), DEF).unwrap();
 
     let game_root = base.join("game");
     write(&game_root.join("Game.exe"), "exe");

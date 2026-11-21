@@ -34,6 +34,24 @@ macro_rules! umm_handlers {
             commands::quit_anyway,
             commands::steam_games,
             commands::add_steam_games,
+            commands::loader_choice,
+            commands::set_loader,
+            commands::pick_game_folder,
+            commands::add_manual_game,
+            commands::ts_search,
+            commands::ts_refresh,
+            commands::ts_install,
+            commands::ts_update,
+            commands::ts_dependents,
+            commands::profile_export_preview,
+            commands::profile_export_code,
+            commands::profile_export_file,
+            commands::profile_import_code,
+            commands::profile_import_file,
+            commands::link_handler,
+            commands::set_link_handler,
+            commands::take_pending_link,
+            commands::resolve_link,
         ]
     };
 }
@@ -49,6 +67,13 @@ pub struct AppState {
     pub active: Arc<Mutex<Option<String>>>,
     /// Set by "stop waiting"; read by the launch thread.
     pub stop: Arc<AtomicBool>,
+    /// A `ror2mm://` link UMM was started with, until the window asks for it.
+    pub pending_link: Arc<Mutex<Option<String>>>,
+}
+
+fn link_in(args: impl IntoIterator<Item = String>) -> Option<String> {
+    args.into_iter()
+        .find(|a| a.starts_with(&format!("{}://", umm_core::LINK_SCHEME)))
 }
 
 fn main() {
@@ -63,9 +88,21 @@ fn main() {
         session: Arc::new(session),
         active: Arc::new(Mutex::new(None)),
         stop: Arc::new(AtomicBool::new(false)),
+        pending_link: Arc::new(Mutex::new(link_in(std::env::args()))),
     };
 
     tauri::Builder::default()
+        // A second start (say, from a link on thunderstore.io) hands its link to the window
+        // already open instead of opening another.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+            if let Some(link) = link_in(argv) {
+                let _ = app.emit("install-link", link);
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .manage(state)
         .on_window_event(|window, event| {

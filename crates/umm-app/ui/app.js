@@ -71,6 +71,9 @@ const S = {
   busy: false,
   session: { game: null, phase: "idle", log: [] }, // phase: idle|deploying|running|waiting|reverting
   lastReport: {},
+  // Thunderstore tab: the query, the page shown (null while loading), and an install/update
+  // in progress ({ message }).
+  ts: { game: null, query: { text: "", category: "", sort: "rating", installedOnly: false, offset: 0, limit: 40 }, page: null, busy: null },
 };
 
 function toast(message, kind = "info") {
@@ -116,7 +119,8 @@ function modal({ title, body, actions }) {
         actions.map((a) =>
           h(
             "button",
-            { class: a.class || "", onclick: () => close(a.value ?? a.label), autofocus: a.focus || false },
+            // An explicit `value: null` (Cancel, Close) must resolve to null, not the label.
+            { class: a.class || "", onclick: () => close("value" in a ? a.value : a.label), autofocus: a.focus || false },
             a.label,
           ),
         ),
@@ -177,9 +181,18 @@ async function loadGame() {
   S.profile = await attempt(() => api.getProfile(S.gameId, S.profileName));
   S.plan = null;
   S.health = null;
+  if (S.loader && S.loader.game !== S.gameId) S.loader = null;
   renderMain();
   if (S.tab === "files") loadPlan();
   if (S.tab === "health") loadHealth();
+  if (S.tab === "actions") loadLoaderChoice();
+  if (S.tab === "thunderstore") {
+    if (d.game.thunderstore) loadTs(S.ts.game !== S.gameId);
+    else {
+      S.tab = "mods";
+      renderMain();
+    }
+  }
 }
 
 async function loadPlan() {
@@ -251,21 +264,26 @@ function renderSidebar() {
         h("strong", {}, "No games yet"),
         h("p", {}, "Pick the games you want to mod from your Steam libraries."),
         h("button", { class: "primary small", onclick: addFromSteam }, "Add from Steam…"),
-        S.startup &&
-          h(
-            "p",
-            { class: "fine" },
-            "For other games, put a definition file (.toml) in ",
-            h("code", { title: S.startup.gamedefsDir }, S.startup.gamedefsDir),
-            " and reload.",
-          ),
+        h(
+          "p",
+          { class: "fine" },
+          "For a game not on Steam, ",
+          h("button", { class: "link inline-link", onclick: addManually }, "add it manually"),
+          " by picking its folder.",
+        ),
       );
 
   $("#sidebar").replaceChildren(
-    h("div", { class: "brand" }, h("img", { src: "icon.png", alt: "" }), h("span", {}, "Mod Manager")),
     h("div", { class: "section-label" }, "Games"),
     list,
-    S.games.length > 0 ? h("button", { class: "ghost small add-steam", onclick: addFromSteam }, "+ Add from Steam…") : "",
+    S.games.length > 0
+      ? h(
+          "div",
+          { class: "add-games" },
+          h("button", { class: "ghost small", onclick: addFromSteam }, "+ Add from Steam…"),
+          h("button", { class: "ghost small", onclick: addManually }, "+ Add manually…"),
+        )
+      : "",
     h(
       "div",
       { class: "sidebar-foot" },
@@ -278,6 +296,7 @@ function renderSidebar() {
           "Open data folder",
         ),
       h("button", { class: "link", onclick: () => location.reload() }, "Reload game definitions"),
+      h("button", { class: "link", onclick: linkSettings }, "Thunderstore website button…"),
       hiddenNotes().size > 0 &&
         h(
           "button",
@@ -347,7 +366,11 @@ function header(d) {
         h(
           "div",
           { class: "chips" },
-          g.loader && h("span", { class: "chip" }, `${g.loader} · ${g.inject}`),
+          h(
+            "button",
+            { class: "chip chip-button", title: "Change the mod loader", onclick: () => { S.tab = "actions"; renderMain(); loadLoaderChoice(); } },
+            g.setup,
+          ),
           g.deployed && !playing && h("span", { class: "chip warn" }, "Mods are deployed"),
           g.running && h("span", { class: "chip live" }, "Game running"),
         ),
@@ -391,6 +414,7 @@ function phaseLabel(p) {
 function tabs() {
   const items = [
     ["mods", "Mods"],
+    ...(S.details?.game.thunderstore ? [["thunderstore", "Thunderstore"]] : []),
     ["files", "Files"],
     ["health", "Health"],
     ["actions", "Actions"],
@@ -410,6 +434,8 @@ function tabs() {
             renderMain();
             if (id === "files" && !S.plan) loadPlan();
             if (id === "health" && !S.health) loadHealth();
+            if (id === "actions") loadLoaderChoice();
+            if (id === "thunderstore" && (!S.ts.page || S.ts.game !== S.gameId)) loadTs(true);
           },
         },
         label,
@@ -490,7 +516,7 @@ function modsTab(d) {
         h(
           "div",
           { class: "mod-meta" },
-          m ? `${e.id} · ${m.files} file${m.files === 1 ? "" : "s"} · ${fmtBytes(m.size)}` : "Not in the store — remove it or import it again",
+          m ? `${m.thunderstore ? "Thunderstore · " : ""}${e.id} · ${m.files} file${m.files === 1 ? "" : "s"} · ${fmtBytes(m.size)}` : "No longer installed — remove it from the profile or import it again",
         ),
       ),
       h(
@@ -542,7 +568,7 @@ function modsTab(d) {
       h(
         "div",
         { class: "store-section" },
-        h("h3", {}, "In the store, not in this profile"),
+        h("h3", {}, "Installed for this game, not in this profile"),
         h(
           "ul",
           { class: "store-list" },
@@ -689,6 +715,7 @@ function actionsTab(d) {
     h(
       "div",
       { class: "actions-grid" },
+      loaderAction(g, playing),
       action("Restore the game folder", "Undo a deployment left in place (after a crash, or after you stopped waiting).", "Restore now", revertNow, !g.deployed || playing),
       action("Open UMM's data for this game", "Mods, profiles, backups and runtime folders.", "Open folder", () => attempt(() => api.openFolder(d.dataDir)), false),
       action(
@@ -700,6 +727,428 @@ function actionsTab(d) {
         true,
       ),
     ),
+  );
+}
+
+// ----- Thunderstore tab -----
+
+let tsSearchTimer = null;
+
+async function loadTs(reset) {
+  const game = S.gameId;
+  if (reset) {
+    // A new search keeps showing the last results until the new ones arrive.
+    if (S.ts.game !== game) S.ts.page = null;
+    S.ts.game = game;
+    S.ts.query.offset = 0;
+    renderMain();
+  }
+  const page = await attempt(() => api.tsSearch(game, S.ts.query));
+  if (S.gameId !== game) return;
+  if (!page) {
+    S.ts.page = { error: true, items: [], total: 0, categories: [], updates: [] };
+  } else if (!reset && S.ts.page && S.ts.query.offset > 0) {
+    S.ts.page = { ...page, items: [...S.ts.page.items, ...page.items] };
+  } else {
+    S.ts.page = page;
+  }
+  if (S.tab === "thunderstore") renderMain();
+}
+
+function fmtCount(n) {
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${Math.round(n / 1e3)}k`;
+  return String(n);
+}
+
+async function tsRun(title, call) {
+  S.ts.busy = { message: title };
+  renderMain();
+  const r = await attempt(call);
+  S.ts.busy = null;
+  if (r) {
+    const names = r.installed.map((i) => (i.replaced ? `${i.fullName} ${i.replaced} → ${i.version}` : `${i.fullName} ${i.version}`));
+    toast(names.length ? `Installed ${names.join(", ")}` : "Everything needed was already installed", "ok");
+    for (const m of r.missing) toast(`Dependency ${m} is no longer on Thunderstore; skipped`, "error");
+  }
+  await refreshAll();
+  await loadTs(false);
+}
+
+const tsInstall = (pkgs) => tsRun("Installing…", () => api.tsInstall(S.gameId, pkgs, S.profileName));
+const tsUpdate = (names) => tsRun("Updating…", () => api.tsUpdate(S.gameId, names, S.profileName));
+
+function tsTab(d) {
+  const g = d.game;
+  const playing = S.session.phase !== "idle" && S.session.game === g.id;
+  const locked = playing || g.deployed || !!S.ts.busy;
+  const q = S.ts.query;
+  const p = S.ts.page;
+
+  const search = h("input", { type: "search", placeholder: "Search packages", "aria-label": "Search packages", value: q.text });
+  search.addEventListener("input", () => {
+    q.text = search.value;
+    clearTimeout(tsSearchTimer);
+    tsSearchTimer = setTimeout(async () => {
+      await loadTs(true);
+      const box = $(".ts-toolbar input[type=search]");
+      if (box) {
+        box.focus();
+        box.setSelectionRange(box.value.length, box.value.length);
+      }
+    }, 250);
+  });
+  const category = h(
+    "select",
+    { "aria-label": "Category" },
+    h("option", { value: "" }, "All categories"),
+    (p?.categories || []).map((c) => h("option", { value: c, selected: c === q.category }, c)),
+  );
+  category.addEventListener("change", () => {
+    q.category = category.value;
+    loadTs(true);
+  });
+  const sort = h(
+    "select",
+    { "aria-label": "Sort" },
+    [
+      ["rating", "Top rated"],
+      ["downloads", "Most downloaded"],
+      ["updated", "Recently updated"],
+      ["name", "Name"],
+    ].map(([v, l]) => h("option", { value: v, selected: v === q.sort }, l)),
+  );
+  sort.addEventListener("change", () => {
+    q.sort = sort.value;
+    loadTs(true);
+  });
+  const installedOnly = h("input", { type: "checkbox", checked: q.installedOnly });
+  installedOnly.addEventListener("change", () => {
+    q.installedOnly = installedOnly.checked;
+    loadTs(true);
+  });
+  const refresh = async () => {
+    const fresh = await attempt(() => api.tsRefresh(g.id));
+    if (fresh === false) toast("Thunderstore could not be reached; showing the last list downloaded", "error");
+    loadTs(true);
+  };
+
+  const banners = [];
+  if (S.ts.busy) banners.push(h("div", { class: "ts-banner live" }, h("span", { class: "spinner" }), S.ts.busy.message));
+  if (g.deployed || playing) banners.push(h("div", { class: "ts-banner warn" }, "Mods are deployed; installing and updating wait until the game folder is restored."));
+  if (p && !p.error && !p.loaderInstalled && p.loaderPackage)
+    banners.push(
+      h(
+        "div",
+        { class: "ts-banner" },
+        h("span", {}, "BepInEx is not installed yet. It comes with the first mod you install, or install it now."),
+        h("button", { class: "primary small", disabled: locked, onclick: () => tsInstall([p.loaderPackage]) }, "Install BepInEx"),
+      ),
+    );
+  if (p?.updates?.length)
+    banners.push(
+      h(
+        "div",
+        { class: "ts-banner" },
+        h("span", {}, `${p.updates.length} update${p.updates.length === 1 ? "" : "s"} available: ${p.updates.map((u) => u[0].split("-").slice(1).join("-")).join(", ")}`),
+        h("button", { class: "small", disabled: locked, onclick: () => tsUpdate([]) }, "Update all"),
+      ),
+    );
+  if (p?.stale) banners.push(h("div", { class: "ts-banner warn" }, "Thunderstore could not be reached; this is the last list downloaded."));
+
+  let list;
+  if (!p) list = h("div", { class: "loading" }, h("span", { class: "spinner" }), "Loading packages… the first time can take a while for big communities.");
+  else if (p.error) list = h("p", { class: "muted" }, "The package list could not be loaded.", " ", h("button", { class: "link", onclick: () => loadTs(true) }, "Try again"));
+  else if (!p.items.length) list = h("p", { class: "muted" }, "No packages match.");
+  else
+    list = h(
+      "div",
+      { class: "ts-list" },
+      p.items.map((it) => {
+        const action = it.installed
+          ? it.update
+            ? h("button", { class: "small", disabled: locked, onclick: () => tsUpdate([it.fullName]) }, `Update to ${it.latest}`)
+            : h("span", { class: "chip ok" }, `Installed ${it.installed}`)
+          : h("button", { class: "primary small", disabled: locked, onclick: () => tsInstall([it.fullName]) }, "Install");
+        return h(
+          "div",
+          { class: `ts-row ${it.deprecated ? "deprecated" : ""}` },
+          it.icon ? h("img", { class: "ts-icon", src: it.icon, alt: "", loading: "lazy" }) : h("div", { class: "ts-icon" }),
+          h(
+            "div",
+            { class: "ts-main" },
+            h(
+              "div",
+              { class: "ts-title" },
+              h("strong", {}, it.name.replaceAll("_", " ")),
+              h("span", { class: "muted" }, ` by ${it.owner}`),
+              it.latest && h("span", { class: "muted" }, ` · ${it.latest}`),
+              it.deprecated && h("span", { class: "chip warn" }, "Deprecated"),
+            ),
+            h("div", { class: "ts-desc" }, it.description),
+            h(
+              "div",
+              { class: "ts-meta muted" },
+              `${fmtCount(it.downloads)} downloads · ${it.rating} likes`,
+              it.size ? ` · ${fmtBytes(it.size)}` : "",
+              it.categories.length ? ` · ${it.categories.join(", ")}` : "",
+            ),
+          ),
+          action,
+        );
+      }),
+    );
+
+  return h(
+    "section",
+    { class: "panel" },
+    h(
+      "div",
+      { class: "ts-share" },
+      h("span", { class: "muted small" }, "r2modman profiles:"),
+      h("button", { class: "link", disabled: locked, onclick: shareProfile }, `Share “${S.profileName}”…`),
+      h("button", { class: "link", disabled: locked, onclick: importProfile }, "Import a profile…"),
+    ),
+    h(
+      "div",
+      { class: "ts-toolbar" },
+      search,
+      category,
+      sort,
+      h("label", { class: "check inline" }, installedOnly, "Installed"),
+      h("button", { class: "ghost small", onclick: refresh, title: "Download the package list again" }, "Refresh"),
+    ),
+    banners,
+    p && !p.error && h("p", { class: "muted small" }, `${p.total} package${p.total === 1 ? "" : "s"} · installs into the profile “${S.profileName}” with dependencies`),
+    list,
+    p && !p.error && p.items.length < p.total &&
+      h(
+        "div",
+        { class: "ts-more" },
+        h(
+          "button",
+          {
+            class: "ghost",
+            onclick: () => {
+              q.offset = p.items.length;
+              loadTs(false);
+            },
+          },
+          "Show more",
+        ),
+      ),
+  );
+}
+
+// ----- r2modman profiles: share and import -----
+
+async function shareProfile() {
+  const game = S.gameId;
+  const profile = S.profileName;
+  const e = await attempt(() => api.exportPreview(game, profile));
+  if (!e) return;
+  const body = [
+    h("p", {}, `${e.mods} mod${e.mods === 1 ? "" : "s"} and ${e.files.length} config file${e.files.length === 1 ? "" : "s"} (${fmtBytes(e.size)}).`),
+    e.leftOut.length > 0 && h("p", { class: "muted" }, `Left out, because they are not from Thunderstore: ${e.leftOut.join(", ")}.`),
+    e.files.length === 0 && h("p", { class: "muted" }, "No config files yet: BepInEx and the mods write them the first time the game runs with this profile."),
+    h("p", { class: "muted" }, "Save as file writes an .r2z file on this computer. Nothing is uploaded."),
+    h("p", { class: "muted" }, "Get a code uploads the profile, configs included, to Thunderstore. Anyone with the code can download it, and Thunderstore may delete it after a while."),
+  ];
+  const choice = await modal({
+    title: `Share the profile “${profile}”`,
+    body,
+    actions: [
+      { label: "Cancel", value: null, class: "ghost" },
+      { label: "Save as file…", value: "file", class: "" },
+      { label: "Get a code", value: "code", class: "primary" },
+    ],
+  });
+  if (choice === "file") {
+    const path = await attempt(() => api.exportFile(game, profile));
+    if (path) toast(`Saved ${path}`, "ok");
+  } else if (choice === "code") {
+    const code = await attempt(() => api.exportCode(game, profile));
+    if (!code) return;
+    const field = h("input", { type: "text", value: code, readonly: true, "aria-label": "Profile code" });
+    const copy = await modal({
+      title: "Profile code",
+      body: [h("p", {}, "Anyone can import this profile in UMM or r2modman with this code."), field],
+      actions: [
+        { label: "Close", value: null, class: "ghost" },
+        { label: "Copy", value: "copy", class: "primary", focus: true },
+      ],
+    });
+    if (copy === "copy") {
+      try {
+        await navigator.clipboard.writeText(code);
+        toast("Code copied", "ok");
+      } catch {
+        field.select();
+        toast("Select the code and copy it", "info");
+      }
+    }
+  }
+}
+
+function importSummary(r) {
+  const n = r.installed.installed.length;
+  toast(`Imported into the new profile “${r.profile}”: ${n} package${n === 1 ? "" : "s"} downloaded, ${r.files} config file${r.files === 1 ? "" : "s"}`, "ok");
+  for (const m of r.notes) toast(m, "info");
+  for (const x of r.installed.missing) toast(`${x} is no longer on Thunderstore; skipped`, "error");
+}
+
+async function importProfile() {
+  const game = S.gameId;
+  const field = h("input", { type: "text", placeholder: "Profile code", "aria-label": "Profile code" });
+  const choice = await modal({
+    title: "Import an r2modman profile",
+    body: [h("p", {}, "Paste a profile code, or pick an .r2z file. The mods are installed into a new profile."), field],
+    actions: [
+      { label: "Cancel", value: null, class: "ghost" },
+      { label: "From a file…", value: "file", class: "" },
+      { label: "Import code", value: "code", class: "primary" },
+    ],
+  });
+  if (!choice) return;
+  S.ts.busy = { message: "Importing…" };
+  renderMain();
+  const r = choice === "code" ? await attempt(() => api.importCode(game, field.value.trim())) : await attempt(() => api.importFile(game));
+  S.ts.busy = null;
+  if (r) {
+    importSummary(r);
+    S.profileName = r.profile;
+  }
+  await refreshAll();
+  if (S.tab === "thunderstore") await loadTs(false);
+}
+
+// ----- Thunderstore's "Install with Mod Manager" links -----
+
+/// The program in a link handler's command (`"C:\…\r2modman.exe" "%1"`): its path, without
+/// the arguments.
+function programOf(command) {
+  const m = command.match(/^\s*"([^"]+)"/) || command.match(/^\s*(\S+)/);
+  return m ? m[1] : command;
+}
+
+const LINK_TITLE = "Install from the Thunderstore website";
+
+async function linkSettings() {
+  const st = await attempt(api.linkHandler);
+  if (!st) return;
+  if (!st.supported) {
+    await modal({ title: LINK_TITLE, body: h("p", {}, "This is not available on this system."), actions: [{ label: "OK", value: true, class: "primary", focus: true }] });
+    return;
+  }
+  let status;
+  if (st.ours) status = h("p", { class: "muted" }, "The button currently opens UMM.");
+  else if (st.other) {
+    status = [
+      h("p", { class: "muted" }, "The button currently opens:"),
+      h("p", { class: "muted small path-text" }, programOf(st.other)),
+    ];
+  } else status = [];
+  const v = await modal({
+    title: LINK_TITLE,
+    body: [h("p", {}, "Mod pages on thunderstore.io have an “Install with Mod Manager” button. Turn this on to make that button open UMM, which then asks which of your games to install the mod into."), ...[status].flat()],
+    actions: [
+      { label: "Close", value: null, class: "ghost" },
+      st.ours ? { label: "Turn off", value: "off", class: "" } : { label: "Turn on", value: "on", class: "primary" },
+    ],
+  });
+  if (v) {
+    const r = await attempt(() => api.setLinkHandler(v === "on"), v === "on" ? "The Thunderstore install button now opens UMM" : "The Thunderstore install button no longer opens UMM");
+    if (r) renderSidebar();
+  }
+}
+
+async function handleInstallLink(url) {
+  const l = await attempt(() => api.resolveLink(url));
+  if (!l) return;
+  const what = `${l.name.replaceAll("_", " ")}${l.version ? ` ${l.version}` : ""} by ${l.owner}`;
+  if (!l.games.length) {
+    await modal({
+      title: `Install ${what}?`,
+      body: h("p", {}, "None of your games set up for BepInEx from Thunderstore has this package. Add the game from Steam, or set its mod loader to BepInEx from Thunderstore."),
+      actions: [{ label: "OK", value: true, class: "primary", focus: true }],
+    });
+    return;
+  }
+  const pick = h("select", { "aria-label": "Game" }, l.games.map((g) => h("option", { value: g.id, selected: g.id === S.gameId }, g.name)));
+  const ok = await modal({
+    title: `Install ${what}?`,
+    body: [h("p", {}, "From a Thunderstore link. Its dependencies are installed too, into the current profile of the game you pick."), h("label", { class: "field" }, h("span", {}, "Game"), pick)],
+    actions: [
+      { label: "Cancel", value: null, class: "ghost" },
+      { label: "Install", value: "go", class: "primary", focus: true },
+    ],
+  });
+  if (ok !== "go") return;
+  if (S.gameId !== pick.value) {
+    S.gameId = pick.value;
+    S.profileName = "Default";
+  }
+  S.tab = "thunderstore";
+  await refreshAll();
+  await tsInstall([l.version ? `${l.fullName}@${l.version}` : l.fullName]);
+}
+
+async function loadLoaderChoice() {
+  const game = S.gameId;
+  const c = await attempt(() => api.loaderChoice(game));
+  if (c && S.gameId === game) {
+    S.loader = { ...c, game };
+    if (S.tab === "actions") renderMain();
+  }
+}
+
+const SETUP_HELP = {
+  thunderstore: "Mods and the BepInEx pack come from Thunderstore, laid out the way r2modman does.",
+  bepinex: "BepInEx 5 through Doorstop, with a pack you import yourself as the mod “bepinex”.",
+  generic: "No mod loader: mod files are copied into the game folder as they are.",
+};
+
+function loaderAction(g, playing) {
+  const c = S.loader;
+  if (!c) return h("div", { class: "action" }, h("div", { class: "loading" }, h("span", { class: "spinner" }), "Mod loader…"));
+  const select = h(
+    "select",
+    { "aria-label": "Mod loader" },
+    c.available.map((o) => h("option", { value: o.value, selected: o.value === c.current }, o.label)),
+    c.current === null && h("option", { value: "", selected: true }, c.currentLabel),
+  );
+  const notes = [
+    c.community && `Thunderstore community: ${c.community}.`,
+    c.otherLoader && `On Thunderstore this game uses ${c.otherLoader}, which UMM does not support yet.`,
+  ].filter(Boolean);
+  const apply = async () => {
+    const value = select.value;
+    if (!value || value === c.current) return;
+    const ok = await confirmModal(
+      "Change the mod loader?",
+      "UMM rewrites the loader and install rule sections of this game's game.toml. Install rules you wrote there by hand are replaced; the rest of the file is kept.",
+      "Change",
+    );
+    if (!ok) return;
+    const r = await attempt(() => api.setLoader(g.id, value), "Mod loader changed");
+    if (r) {
+      S.loader = { ...r, game: g.id };
+      S.plan = null;
+      await refreshAll();
+    }
+  };
+  return h(
+    "div",
+    { class: "action loader-action" },
+    h(
+      "div",
+      {},
+      h("strong", {}, "Mod loader"),
+      h("p", { class: "muted" }, SETUP_HELP[c.current] || "Set by hand in this game's game.toml."),
+      notes.length > 0 && h("p", { class: "muted small" }, notes.join(" ")),
+      g.deployed && h("p", { class: "muted small" }, "Restore the game folder before changing it."),
+    ),
+    h("div", { class: "row" }, select, h("button", { disabled: playing || g.deployed, onclick: apply }, "Apply")),
   );
 }
 
@@ -728,7 +1177,15 @@ function renderMain() {
     return;
   }
   const body =
-    S.tab === "mods" ? modsTab(d) : S.tab === "files" ? filesTab() : S.tab === "health" ? healthTab() : actionsTab(d);
+    S.tab === "mods"
+      ? modsTab(d)
+      : S.tab === "thunderstore"
+        ? tsTab(d)
+        : S.tab === "files"
+          ? filesTab()
+          : S.tab === "health"
+            ? healthTab()
+            : actionsTab(d);
   $("#main").replaceChildren(header(d), tabs(), body);
 }
 
@@ -763,7 +1220,7 @@ async function newProfile() {
 async function deleteProfile() {
   const ok = await confirmModal(
     `Delete “${S.profileName}”?`,
-    "The profile and its runtime folder (configs the game saved for this profile) are deleted. Mods stay in the store.",
+    "The profile and its runtime folder (configs the game saved for this profile) are deleted. Its mods stay installed for this game.",
     "Delete profile",
     true,
   );
@@ -789,7 +1246,9 @@ async function importPath(path) {
 }
 
 async function removeFromStore(m) {
-  const ok = await confirmModal(`Delete ${m.name}?`, "Removes the mod from the store and from every profile. This cannot be undone.", "Delete mod", true);
+  const dependents = m.thunderstore ? (await attempt(() => api.tsDependents(S.gameId, m.id))) || [] : [];
+  const needed = dependents.length ? ` ${dependents.join(", ")} ${dependents.length === 1 ? "needs" : "need"} it and may stop working.` : "";
+  const ok = await confirmModal(`Delete ${m.name}?`, `Removes the mod from UMM and from every profile. This cannot be undone.${needed}`, "Delete mod", true);
   if (!ok) return;
   await attempt(() => api.removeMod(S.gameId, m.id), `Deleted ${m.name}`);
   await refreshAll();
@@ -831,6 +1290,55 @@ async function deleteAllData() {
   await refreshAll();
 }
 
+// ----- Add game manually: pick a folder, confirm what UMM found -----
+
+async function addManually() {
+  const info = await attempt(api.pickGameFolder);
+  if (!info) return;
+  const name = h("input", { type: "text", value: info.name, "aria-label": "Name" });
+  const exe = h(
+    "select",
+    { "aria-label": "Exe to launch" },
+    info.exes.map((e, i) => h("option", { value: e, selected: i === 0 }, e)),
+    h("option", { value: "" }, "None (UMM only deploys mods)"),
+  );
+  const setup = h(
+    "select",
+    { "aria-label": "Mod loader", disabled: info.setups.length < 2 },
+    info.setups.map((o) => h("option", { value: o.value }, o.label)),
+  );
+  const found = [
+    info.engine,
+    info.community ? "on Thunderstore" : info.otherLoader ? `${info.otherLoader} on Thunderstore` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const v = await modal({
+    title: "Add game manually",
+    body: [
+      h("p", { class: "muted small path-text" }, info.folder),
+      h("p", { class: "muted small" }, `Found: ${found}`),
+      info.steamAppId &&
+        h("p", { class: "banner warn" }, `This is ${info.steamName} from Steam. Add from Steam sets it up with its Steam details, which this form leaves out.`),
+      h("label", { class: "field" }, h("span", {}, "Name"), name),
+      h("label", { class: "field" }, h("span", {}, "Exe to launch"), exe),
+      h("label", { class: "field" }, h("span", {}, "Mod loader"), setup),
+    ],
+    actions: [
+      { label: "Cancel", value: null, class: "ghost" },
+      { label: "Add game", value: "add", class: "primary", focus: true },
+    ],
+  });
+  if (v !== "add") return;
+  const r = await attempt(() => api.addManualGame(info.folder, name.value.trim(), exe.value, setup.value || null));
+  if (!r) return;
+  toast(r.message, "ok");
+  S.gameId = r.id;
+  S.profileName = "Default";
+  await refreshAll();
+  await showNotes([r]);
+}
+
 async function addFromSteam() {
   $("#modal-root").replaceChildren(
     h(
@@ -843,9 +1351,10 @@ async function addFromSteam() {
       ),
     ),
   );
-  const list = await attempt(api.steamGames);
+  const res = await attempt(api.steamGames);
   $("#modal-root").replaceChildren();
-  if (!list) return;
+  if (!res) return;
+  const list = res.games;
   if (!list.length) {
     await modal({
       title: "No Steam games found",
@@ -860,18 +1369,29 @@ async function addFromSteam() {
   const filter = h("input", { type: "text", placeholder: "Filter by name", "aria-label": "Filter games" });
   const rows = list.map((g) => {
     const box = h("input", { type: "checkbox", disabled: !!g.definedAs, "aria-label": `Add ${g.name}` });
-    if (!g.definedAs) checks.set(g.appId, box);
+    const setup = g.definedAs
+      ? null
+      : h(
+          "select",
+          { class: "setup", "aria-label": `Mod loader for ${g.name}`, title: "Mod loader", disabled: g.setups.length < 2 },
+          g.setups.map((o) => h("option", { value: o.value }, o.label)),
+        );
+    // Changing the loader means the game is wanted.
+    setup?.addEventListener("change", () => (box.checked = true));
+    if (!g.definedAs) checks.set(g.appId, { box, setup });
+    const meta = [g.engine, g.community ? "on Thunderstore" : g.otherLoader ? `${g.otherLoader} on Thunderstore` : null, `app ${g.appId}`]
+      .filter(Boolean)
+      .join(" · ");
     return h(
-      "label",
+      "div",
       { class: `steam-row ${g.definedAs ? "added" : ""}`, "data-name": g.name.toLowerCase() },
-      box,
       h(
-        "div",
-        { class: "mod-main" },
-        h("div", { class: "mod-name" }, g.name),
-        h("div", { class: "mod-meta", title: g.path }, `${g.engine} · app ${g.appId}`),
+        "label",
+        { class: "steam-pick" },
+        box,
+        h("div", { class: "mod-main" }, h("div", { class: "mod-name" }, g.name), h("div", { class: "mod-meta", title: g.path }, meta)),
       ),
-      g.definedAs ? h("span", { class: "chip" }, "Added") : null,
+      g.definedAs ? h("span", { class: "chip" }, "Added") : setup,
     );
   });
   filter.addEventListener("input", () => {
@@ -882,7 +1402,8 @@ async function addFromSteam() {
   const choice = await modal({
     title: "Add games from Steam",
     body: [
-      h("p", { class: "muted" }, `${list.length} installed game${list.length === 1 ? "" : "s"}, ${fresh.length} not in UMM yet. UMM drafts a game definition for each one you pick; you can edit it later.`),
+      h("p", { class: "muted" }, `${list.length} installed game${list.length === 1 ? "" : "s"}, ${fresh.length} not in UMM yet. UMM drafts a game definition for each one you pick, with the mod loader shown; you can change it later.`),
+      res.thunderstoreError && h("p", { class: "banner warn" }, `Thunderstore's game list could not be loaded, so every game is offered as generic. ${res.thunderstoreError}`),
       list.length > 8 && filter,
       h("div", { class: "steam-list" }, rows),
     ],
@@ -892,10 +1413,10 @@ async function addFromSteam() {
     ],
   });
   if (choice !== "add") return;
-  const ids = [...checks].filter(([, box]) => box.checked).map(([id]) => id);
-  if (!ids.length) return toast("No games selected.");
+  const picks = [...checks].filter(([, c]) => c.box.checked).map(([appId, c]) => ({ appId, setup: c.setup.value }));
+  if (!picks.length) return toast("No games selected.");
 
-  const results = await attempt(() => api.addSteamGames(ids));
+  const results = await attempt(() => api.addSteamGames(picks));
   if (!results) return;
   const added = results.filter((r) => r.ok);
   for (const r of results.filter((r) => !r.ok)) toast(r.message, "error");
@@ -945,14 +1466,18 @@ async function showNotes(added) {
   }
   if (!items.length) return;
   const box = h("input", { type: "checkbox" });
+  // One note reads as a sentence; several (more games, or more to check) as a list.
+  const single = items.length === 1;
   await modal({
-    title: "Check these before adding mods",
+    title: single ? `Added ${items[0].games.join(", ")}` : "Check these before adding mods",
     body: [
-      h(
-        "ul",
-        { class: "notes" },
-        items.map((i) => h("li", {}, many && h("strong", {}, `${i.games.join(", ")}: `), i.text)),
-      ),
+      single
+        ? h("p", {}, items[0].text)
+        : h(
+            "ul",
+            { class: "notes" },
+            items.map((i) => h("li", {}, many && h("strong", {}, `${i.games.join(", ")}: `), i.text)),
+          ),
       h("label", { class: "check" }, box, items.length === 1 ? "Don't show this message again" : "Don't show these messages again"),
     ],
     actions: [{ label: "OK", value: true, class: "primary", focus: true }],
@@ -1089,6 +1614,14 @@ function setupDrop() {
 
 async function main() {
   api.listen("session", onSession);
+  api.listen("install-link", (url) => handleInstallLink(url));
+  api.listen("ts-progress", (e) => {
+    if (S.ts.busy && e.game === S.gameId) {
+      S.ts.busy.message = e.message;
+      const b = $(".ts-banner.live");
+      if (b) b.lastChild.textContent = e.message;
+    }
+  });
   api.listen("close-blocked", async () => {
     const ok = await confirmModal(
       "A game is still running",
@@ -1104,6 +1637,9 @@ async function main() {
   S.startup = await attempt(api.startup);
   if (S.startup) showStartup(S.startup);
   await refreshAll();
+  // Started from a Thunderstore install link.
+  const link = await attempt(api.takePendingLink);
+  if (link) await handleInstallLink(link);
 }
 
 main();

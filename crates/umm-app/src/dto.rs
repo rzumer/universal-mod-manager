@@ -2,7 +2,10 @@
 //! UI concerns.
 
 use serde::Serialize;
-use umm_core::{Finding, GameStatus, LaunchEvent, Level, ModMeta, Plan, RevertReport, SyncReport};
+use umm_core::{
+    Finding, GameStatus, LaunchEvent, Level, LoaderChoice, LoaderSetup, ModMeta, Plan,
+    RevertReport, SyncReport,
+};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -17,12 +20,24 @@ pub struct GameDto {
     pub can_launch: bool,
     pub loader: Option<String>,
     pub inject: Option<String>,
+    /// Label of the mod loader setup in effect.
+    pub setup: &'static str,
+    pub community: Option<String>,
+    /// Set up for BepInEx from Thunderstore, so the Thunderstore tab applies.
+    pub thunderstore: bool,
 }
 
 impl GameDto {
     pub fn new(s: GameStatus, running: bool) -> Self {
         let loader = s.def.loader.as_ref();
         GameDto {
+            setup: s
+                .def
+                .setup()
+                .map(LoaderSetup::label)
+                .unwrap_or("Loader from the game definition"),
+            community: s.def.community().map(str::to_string),
+            thunderstore: loader.is_some_and(|l| l.from_thunderstore()),
             install: s.install.map(|p| p.display().to_string()),
             found_via: s.found_via,
             deployed: s.deployed,
@@ -47,11 +62,14 @@ pub struct ModDto {
     pub files: usize,
     pub size: u64,
     pub imported_unix: u64,
+    /// `Owner-Name`, for packages installed from Thunderstore.
+    pub thunderstore: Option<String>,
 }
 
 impl From<ModMeta> for ModDto {
     fn from(m: ModMeta) -> Self {
         ModDto {
+            thunderstore: m.thunderstore.as_ref().map(|t| t.full_name.clone()),
             files: m.files.len(),
             size: m.files.values().map(|f| f.size).sum(),
             id: m.id,
@@ -287,9 +305,25 @@ pub struct RecoveryDto {
 #[serde(rename_all = "camelCase")]
 pub struct StartupDto {
     pub data_dir: String,
-    pub gamedefs_dir: String,
     pub recovery: Vec<RecoveryDto>,
     pub def_errors: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetupOption {
+    pub value: LoaderSetup,
+    pub label: &'static str,
+}
+
+fn options(setups: &[LoaderSetup]) -> Vec<SetupOption> {
+    setups
+        .iter()
+        .map(|&value| SetupOption {
+            value,
+            label: value.label(),
+        })
+        .collect()
 }
 
 #[derive(Serialize)]
@@ -300,6 +334,10 @@ pub struct SteamGameDto {
     pub path: String,
     pub engine: &'static str,
     pub defined_as: Option<String>,
+    pub community: Option<String>,
+    pub other_loader: Option<String>,
+    /// Default first.
+    pub setups: Vec<SetupOption>,
 }
 
 impl From<umm_core::SteamCandidate> for SteamGameDto {
@@ -310,6 +348,81 @@ impl From<umm_core::SteamCandidate> for SteamGameDto {
             path: c.app.path.display().to_string(),
             engine: c.engine.label(),
             defined_as: c.defined_as,
+            community: c.community,
+            other_loader: c.other_loader,
+            setups: options(&c.setups),
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SteamListDto {
+    pub games: Vec<SteamGameDto>,
+    pub thunderstore_error: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SteamPick {
+    pub app_id: u32,
+    pub setup: Option<LoaderSetup>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderInfoDto {
+    pub folder: String,
+    pub engine: &'static str,
+    pub name: String,
+    pub exes: Vec<String>,
+    pub community: Option<String>,
+    pub other_loader: Option<String>,
+    /// Default first.
+    pub setups: Vec<SetupOption>,
+    /// Set when the folder is a Steam game's install.
+    pub steam_app_id: Option<u32>,
+    pub steam_name: Option<String>,
+}
+
+impl From<umm_core::FolderInfo> for FolderInfoDto {
+    fn from(f: umm_core::FolderInfo) -> Self {
+        FolderInfoDto {
+            folder: f.folder.display().to_string(),
+            engine: f.engine.label(),
+            name: f.name,
+            exes: f.exes,
+            community: f.community,
+            other_loader: f.other_loader,
+            setups: options(&f.setups),
+            steam_app_id: f.steam_app.as_ref().map(|s| s.0),
+            steam_name: f.steam_app.map(|s| s.1),
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoaderChoiceDto {
+    /// `None`: the definition's own loader, which no setup describes.
+    pub current: Option<LoaderSetup>,
+    pub current_label: &'static str,
+    pub available: Vec<SetupOption>,
+    pub community: Option<String>,
+    pub other_loader: Option<String>,
+}
+
+impl From<LoaderChoice> for LoaderChoiceDto {
+    fn from(c: LoaderChoice) -> Self {
+        LoaderChoiceDto {
+            current: c.current,
+            current_label: c
+                .current
+                .map(LoaderSetup::label)
+                .unwrap_or("Set by hand in game.toml"),
+            available: options(&c.available),
+            community: c.community,
+            other_loader: c.other_loader,
         }
     }
 }
@@ -324,4 +437,196 @@ pub struct AddedGameDto {
     pub name: Option<String>,
     pub message: String,
     pub notes: Vec<umm_core::Note>,
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TsQueryDto {
+    pub text: String,
+    pub category: Option<String>,
+    /// "rating", "downloads", "updated" or "name".
+    pub sort: Option<String>,
+    pub include_deprecated: bool,
+    pub include_nsfw: bool,
+    pub installed_only: bool,
+    pub offset: usize,
+    pub limit: usize,
+}
+
+impl From<TsQueryDto> for umm_core::TsQuery {
+    fn from(q: TsQueryDto) -> Self {
+        use umm_core::TsSort;
+        umm_core::TsQuery {
+            text: q.text,
+            category: q.category.filter(|c| !c.is_empty()),
+            sort: match q.sort.as_deref() {
+                Some("downloads") => TsSort::Downloads,
+                Some("updated") => TsSort::Updated,
+                Some("name") => TsSort::Name,
+                _ => TsSort::Rating,
+            },
+            include_deprecated: q.include_deprecated,
+            include_nsfw: q.include_nsfw,
+            installed_only: q.installed_only,
+            offset: q.offset,
+            limit: q.limit,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TsPackageDto {
+    pub full_name: String,
+    pub owner: String,
+    pub name: String,
+    pub description: String,
+    pub icon: String,
+    pub website: String,
+    pub categories: Vec<String>,
+    pub rating: i64,
+    pub downloads: u64,
+    pub deprecated: bool,
+    pub latest: Option<String>,
+    pub size: u64,
+    pub updated: String,
+    pub installed: Option<String>,
+    pub update: bool,
+    pub mod_id: String,
+}
+
+impl From<umm_core::TsItem> for TsPackageDto {
+    fn from(i: umm_core::TsItem) -> Self {
+        let p = i.package;
+        let latest = p.latest().cloned();
+        TsPackageDto {
+            mod_id: umm_core::package_mod_id(&p.full_name),
+            latest: latest.as_ref().map(|v| v.version.clone()),
+            size: latest.map(|v| v.size).unwrap_or(0),
+            full_name: p.full_name,
+            owner: p.owner,
+            name: p.name,
+            description: p.description,
+            icon: p.icon,
+            website: p.website,
+            categories: p.categories,
+            rating: p.rating,
+            downloads: p.downloads,
+            deprecated: p.deprecated,
+            updated: p.updated,
+            installed: i.installed,
+            update: i.update,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TsPageDto {
+    pub total: usize,
+    pub items: Vec<TsPackageDto>,
+    pub categories: Vec<String>,
+    pub stale: bool,
+    pub loader_package: Option<String>,
+    pub loader_installed: bool,
+    /// Installed packages with a newer version: (Owner-Name, installed, latest).
+    pub updates: Vec<(String, String, String)>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TsInstalledDto {
+    pub full_name: String,
+    pub version: String,
+    pub replaced: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TsReportDto {
+    pub installed: Vec<TsInstalledDto>,
+    pub missing: Vec<String>,
+}
+
+impl From<umm_core::TsInstallReport> for TsReportDto {
+    fn from(r: umm_core::TsInstallReport) -> Self {
+        TsReportDto {
+            installed: r
+                .installed
+                .into_iter()
+                .map(|(full_name, version, replaced)| TsInstalledDto {
+                    full_name,
+                    version,
+                    replaced,
+                })
+                .collect(),
+            missing: r.missing,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportPreviewDto {
+    pub mods: usize,
+    pub files: Vec<String>,
+    pub left_out: Vec<String>,
+    pub size: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportDto {
+    pub profile: String,
+    pub installed: TsReportDto,
+    pub notes: Vec<String>,
+    pub files: usize,
+    pub skipped: Vec<String>,
+}
+
+impl From<umm_core::ProfileImport> for ImportDto {
+    fn from(i: umm_core::ProfileImport) -> Self {
+        ImportDto {
+            profile: i.profile,
+            installed: i.installed.into(),
+            notes: i.notes,
+            files: i.files,
+            skipped: i.skipped,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkHandlerDto {
+    /// Link handling can be set up on this system.
+    pub supported: bool,
+    pub ours: bool,
+    /// Another program's command, when it handles the links.
+    pub other: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkGameDto {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkDto {
+    pub full_name: String,
+    pub owner: String,
+    pub name: String,
+    pub version: Option<String>,
+    pub games: Vec<LinkGameDto>,
+}
+
+/// Payload of the `ts-progress` event.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TsProgressDto {
+    pub game: String,
+    pub message: String,
 }

@@ -8,7 +8,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Runtime, State};
 use tauri_plugin_dialog::DialogExt;
-use umm_core::{Faults, ImportOptions, Profile, Session};
+use umm_core::{Faults, ImportOptions, LoaderSetup, Profile, Session};
 
 type Res<T> = Result<T, String>;
 
@@ -57,7 +57,6 @@ pub async fn startup(state: State<'_, AppState>) -> Res<StartupDto> {
         let (_, errors) = s.defs();
         Ok(StartupDto {
             data_dir: s.data().root().display().to_string(),
-            gamedefs_dir: s.data().gamedefs_dir().display().to_string(),
             recovery: recovery_results(s),
             def_errors: errors.into_iter().map(|e| e.to_string()).collect(),
         })
@@ -299,29 +298,34 @@ pub fn quit_anyway<R: Runtime>(app: AppHandle<R>, state: State<'_, AppState>) {
     app.exit(0);
 }
 
-/// Installed Steam games, with their guessed engine and whether UMM already has each.
+/// Installed Steam games, with their engine, Thunderstore status, setup choices and whether
+/// UMM already has each.
 #[tauri::command]
-pub async fn steam_games(state: State<'_, AppState>) -> Res<Vec<SteamGameDto>> {
+pub async fn steam_games(state: State<'_, AppState>) -> Res<SteamListDto> {
     blocking(&state, |s| {
-        Ok(s.steam_games().into_iter().map(Into::into).collect())
+        let list = s.steam_games();
+        Ok(SteamListDto {
+            games: list.games.into_iter().map(Into::into).collect(),
+            thunderstore_error: list.thunderstore_error,
+        })
     })
     .await
 }
 
-/// Writes a drafted game definition for each app. One failure does not stop the others.
+/// Writes a drafted game definition for each pick. One failure does not stop the others.
 #[tauri::command]
 pub async fn add_steam_games(
     state: State<'_, AppState>,
-    app_ids: Vec<u32>,
+    picks: Vec<SteamPick>,
 ) -> Res<Vec<AddedGameDto>> {
     blocking(&state, move |s| {
-        Ok(app_ids
+        Ok(picks
             .into_iter()
-            .map(|app_id| match s.add_steam_game(app_id) {
+            .map(|SteamPick { app_id, setup }| match s.add_steam_game(app_id, setup) {
                 Ok(d) => AddedGameDto {
                     app_id,
                     ok: true,
-                    message: format!("Added {} ({})", d.def.name, d.engine.label()),
+                    message: format!("Added {} ({})", d.def.name, d.setup.label()),
                     id: Some(d.def.id),
                     name: Some(d.def.name),
                     notes: d.notes,
@@ -336,6 +340,328 @@ pub async fn add_steam_games(
                 },
             })
             .collect())
+    })
+    .await
+}
+
+/// The game's mod loader setup and what it can switch to.
+#[tauri::command]
+pub async fn loader_choice(state: State<'_, AppState>, game: String) -> Res<LoaderChoiceDto> {
+    blocking(&state, move |s| Ok(s.loader_choice(&game)?.into())).await
+}
+
+/// Switches the game's mod loader setup, written into its `game.toml`.
+#[tauri::command]
+pub async fn set_loader(
+    state: State<'_, AppState>,
+    game: String,
+    setup: LoaderSetup,
+) -> Res<LoaderChoiceDto> {
+    blocking(&state, move |s| Ok(s.set_loader(&game, setup)?.into())).await
+}
+
+/// Opens a folder picker for "Add game manually" and describes the folder picked. `None` if
+/// cancelled.
+#[tauri::command]
+pub async fn pick_game_folder<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Res<Option<FolderInfoDto>> {
+    let folder = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .blocking_pick_folder()
+            .and_then(|p| p.into_path().ok())
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some(folder) = folder else { return Ok(None) };
+    blocking(&state, move |s| Ok(Some(s.inspect_game_folder(&folder)?.into()))).await
+}
+
+/// Adds a game from the "Add game manually" form.
+#[tauri::command]
+pub async fn add_manual_game(
+    state: State<'_, AppState>,
+    folder: String,
+    name: String,
+    exe: String,
+    setup: Option<LoaderSetup>,
+) -> Res<AddedGameDto> {
+    blocking(&state, move |s| {
+        let d = s.add_manual_game(Path::new(&folder), &name, &exe, setup)?;
+        Ok(AddedGameDto {
+            app_id: 0,
+            ok: true,
+            message: format!("Added {} ({})", d.def.name, d.setup.label()),
+            id: Some(d.def.id),
+            name: Some(d.def.name),
+            notes: d.notes,
+        })
+    })
+    .await
+}
+
+/// A page of the game's Thunderstore packages, plus updates for what is installed.
+#[tauri::command]
+pub async fn ts_search(
+    state: State<'_, AppState>,
+    game: String,
+    query: TsQueryDto,
+) -> Res<TsPageDto> {
+    blocking(&state, move |s| {
+        let page = s.ts_search(&game, &query.into())?;
+        Ok(TsPageDto {
+            updates: s.ts_updates(&game)?,
+            total: page.total,
+            items: page.items.into_iter().map(Into::into).collect(),
+            categories: page.categories,
+            stale: page.stale,
+            loader_package: page.loader_package,
+            loader_installed: page.loader_installed,
+        })
+    })
+    .await
+}
+
+/// Downloads the game's package list again. Returns whether Thunderstore could be reached.
+#[tauri::command]
+pub async fn ts_refresh(state: State<'_, AppState>, game: String) -> Res<bool> {
+    blocking(&state, move |s| Ok(!s.ts_packages(&game, true)?.1)).await
+}
+
+fn progress_to<R: Runtime>(app: AppHandle<R>, game: String) -> impl FnMut(&str) {
+    move |m: &str| {
+        let _ = app.emit(
+            "ts-progress",
+            TsProgressDto {
+                game: game.clone(),
+                message: m.to_string(),
+            },
+        );
+    }
+}
+
+/// Installs packages (`Owner-Name`, or `Owner-Name@1.2.3`) with their dependencies into the
+/// profile. Progress arrives as `ts-progress` events.
+#[tauri::command]
+pub async fn ts_install<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+    game: String,
+    packages: Vec<String>,
+    profile: String,
+) -> Res<TsReportDto> {
+    blocking(&state, move |s| {
+        let wanted: Vec<(String, Option<String>)> = packages
+            .iter()
+            .map(|p| match p.split_once('@') {
+                Some((n, v)) => (n.to_string(), Some(v.to_string())),
+                None => (p.clone(), None),
+            })
+            .collect();
+        let mut progress = progress_to(app, game.clone());
+        Ok(s.ts_install(&game, &wanted, &profile, &mut progress)?.into())
+    })
+    .await
+}
+
+/// Updates the named packages, or all of them when none are named.
+#[tauri::command]
+pub async fn ts_update<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+    game: String,
+    packages: Vec<String>,
+    profile: String,
+) -> Res<TsReportDto> {
+    blocking(&state, move |s| {
+        let mut progress = progress_to(app, game.clone());
+        Ok(s.ts_update(&game, &packages, &profile, &mut progress)?.into())
+    })
+    .await
+}
+
+/// Installed packages that depend on the mod, to warn before removing it.
+#[tauri::command]
+pub async fn ts_dependents(
+    state: State<'_, AppState>,
+    game: String,
+    mod_id: String,
+) -> Res<Vec<String>> {
+    blocking(&state, move |s| s.ts_dependents(&game, &mod_id)).await
+}
+
+/// What an export of the profile would hold, shown before anything is saved or uploaded.
+#[tauri::command]
+pub async fn profile_export_preview(
+    state: State<'_, AppState>,
+    game: String,
+    profile: String,
+) -> Res<ExportPreviewDto> {
+    blocking(&state, move |s| {
+        let e = s.profile_export(&game, &profile)?;
+        Ok(ExportPreviewDto {
+            mods: e.mods,
+            files: e.files,
+            left_out: e.left_out,
+            size: e.r2z.len(),
+        })
+    })
+    .await
+}
+
+/// Uploads the profile's export to Thunderstore and returns its code. The interface asks
+/// first, since this publishes the mod list and configs.
+#[tauri::command]
+pub async fn profile_export_code(
+    state: State<'_, AppState>,
+    game: String,
+    profile: String,
+) -> Res<String> {
+    blocking(&state, move |s| s.profile_export_code(&game, &profile)).await
+}
+
+/// Saves the profile's export as an `.r2z` file the user picks. `None` if cancelled.
+#[tauri::command]
+pub async fn profile_export_file<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+    game: String,
+    profile: String,
+) -> Res<Option<String>> {
+    let export = blocking(&state, {
+        let (game, profile) = (game.clone(), profile.clone());
+        move |s| s.profile_export(&game, &profile)
+    })
+    .await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let picked = app
+            .dialog()
+            .file()
+            .add_filter("r2modman profile", &["r2z"])
+            .set_file_name(format!("{profile}.r2z"))
+            .blocking_save_file();
+        let Some(path) = picked.and_then(|p| p.into_path().ok()) else {
+            return Ok(None);
+        };
+        std::fs::write(&path, &export.r2z).map_err(|e| format!("writing {}: {e}", path.display()))?;
+        Ok(Some(path.display().to_string()))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Imports a profile code into a new profile.
+#[tauri::command]
+pub async fn profile_import_code<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+    game: String,
+    code: String,
+) -> Res<ImportDto> {
+    blocking(&state, move |s| {
+        let mut progress = progress_to(app, game.clone());
+        Ok(s.profile_import_code(&game, &code, &mut progress)?.into())
+    })
+    .await
+}
+
+/// Imports an `.r2z` file the user picks into a new profile. `None` if cancelled.
+#[tauri::command]
+pub async fn profile_import_file<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+    game: String,
+) -> Res<Option<ImportDto>> {
+    let picker = app.clone();
+    let path = tauri::async_runtime::spawn_blocking(move || {
+        picker
+            .dialog()
+            .file()
+            .add_filter("r2modman profile", &["r2z"])
+            .blocking_pick_file()
+            .and_then(|p| p.into_path().ok())
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some(path) = path else { return Ok(None) };
+    blocking(&state, move |s| {
+        let mut progress = progress_to(app, game.clone());
+        Ok(Some(s.profile_import_file(&game, &path, &mut progress)?.into()))
+    })
+    .await
+}
+
+fn current_exe() -> Res<PathBuf> {
+    std::env::current_exe().map_err(|e| format!("cannot find UMM's own program: {e}"))
+}
+
+/// Whether UMM handles Thunderstore's install links, or which program does.
+#[tauri::command]
+pub async fn link_handler(state: State<'_, AppState>) -> Res<LinkHandlerDto> {
+    let exe = current_exe()?;
+    blocking(&state, move |s| {
+        Ok(match umm_core::system_registry() {
+            Some(reg) => {
+                let h = s.link_handler(reg.as_ref(), &exe);
+                LinkHandlerDto {
+                    supported: true,
+                    ours: h.ours,
+                    other: h.other,
+                }
+            }
+            None => LinkHandlerDto {
+                supported: false,
+                ours: false,
+                other: None,
+            },
+        })
+    })
+    .await
+}
+
+/// Turns handling of Thunderstore's install links on or off for this user.
+#[tauri::command]
+pub async fn set_link_handler(state: State<'_, AppState>, on: bool) -> Res<LinkHandlerDto> {
+    let exe = current_exe()?;
+    blocking(&state, move |s| {
+        let reg = umm_core::system_registry()
+            .ok_or_else(|| umm_core::CoreError::Invalid("not supported on this system".into()))?;
+        let h = s.set_link_handler(reg.as_ref(), &exe, on)?;
+        Ok(LinkHandlerDto {
+            supported: true,
+            ours: h.ours,
+            other: h.other,
+        })
+    })
+    .await
+}
+
+/// A link UMM was started with, once.
+#[tauri::command]
+pub fn take_pending_link(state: State<'_, AppState>) -> Option<String> {
+    state.pending_link.lock().ok().and_then(|mut l| l.take())
+}
+
+/// The package an install link names, and the games it can go into.
+#[tauri::command]
+pub async fn resolve_link(state: State<'_, AppState>, url: String) -> Res<LinkDto> {
+    blocking(&state, move |s| {
+        let link = umm_core::parse_link(&url)
+            .ok_or_else(|| umm_core::CoreError::Invalid(format!("not a Thunderstore install link: {url}")))?;
+        let games = s
+            .link_games(&link)?
+            .into_iter()
+            .map(|(id, name)| LinkGameDto { id, name })
+            .collect();
+        Ok(LinkDto {
+            full_name: link.full_name(),
+            name: link.name,
+            owner: link.owner,
+            version: link.version,
+            games,
+        })
     })
     .await
 }

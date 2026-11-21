@@ -3,12 +3,23 @@
 mod doctor;
 mod launch;
 mod runtime;
+mod setup;
 mod steam;
+mod link;
+mod manual;
+mod share;
+mod ts;
 
 pub use doctor::{Finding, Level};
 pub use launch::{LaunchEvent, LaunchOutcome};
 pub use runtime::SyncReport;
-pub use steam::{Draft, Engine, Note, SteamApp, SteamCandidate};
+pub use manual::FolderInfo;
+pub use setup::LoaderChoice;
+pub use link::{parse_link, system_registry, InstallLink, LinkHandler, SchemeRegistry, LINK_SCHEME};
+pub use share::{ProfileExport, ProfileImport};
+pub use ts::{package_mod_id, InstalledPackage, TsInstallReport, TsItem, TsPage, TsQuery, TsSort};
+pub use umm_thunderstore::index::Package;
+pub use steam::{Draft, Engine, Note, SteamApp, SteamCandidate, SteamList};
 pub use umm_deploy::{
     Conflict, DeployError, Faults, Journal, Method as DeployMethod, Op as DeployOp, Plan,
     RevertReport, Skipped,
@@ -19,8 +30,12 @@ pub use umm_store::{
     DataDir, GameDir, ImportOptions, ModMeta, Profile, ProfileEntry, StoreError, DEFAULT_PROFILE,
 };
 
+pub use umm_gamedef::LoaderSetup;
+pub use umm_thunderstore::{Ecosystem, Http, TsError, UreqHttp};
+
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use umm_deploy::{build_plan, revert, GameLock};
 use umm_gamedef::detect_install;
 use umm_store::fsutil::IoCtx;
@@ -49,6 +64,8 @@ pub enum CoreError {
     NoLaunch(String),
     #[error(transparent)]
     Launch(#[from] umm_launch::LaunchError),
+    #[error(transparent)]
+    Thunderstore(#[from] TsError),
 }
 
 impl From<umm_gamedef::RelPathError> for CoreError {
@@ -83,13 +100,47 @@ pub struct GameStatus {
 
 pub struct Session {
     data: DataDir,
+    http: Arc<dyn Http>,
+    ecosystem: Mutex<Option<Arc<Ecosystem>>>,
+    ts: Mutex<ts::TsCache>,
 }
 
 impl Session {
     pub fn open(root: Option<PathBuf>) -> Result<Self> {
+        Self::open_with(root, Arc::new(UreqHttp::default()))
+    }
+
+    /// Like [`Session::open`], with the given network access (tests pass a fake).
+    pub fn open_with(root: Option<PathBuf>, http: Arc<dyn Http>) -> Result<Self> {
         Ok(Self {
             data: DataDir::open(root.unwrap_or_else(DataDir::default_root))?,
+            http,
+            ecosystem: Mutex::new(None),
+            ts: Mutex::new(ts::TsCache::new()),
         })
+    }
+
+    pub(crate) fn http(&self) -> &dyn Http {
+        self.http.as_ref()
+    }
+
+    /// Folder for downloaded Thunderstore data.
+    pub fn thunderstore_dir(&self) -> PathBuf {
+        self.data.root().join("thunderstore")
+    }
+
+    /// Thunderstore's list of games and loaders: cached for a week, downloaded when missing or
+    /// when `refresh` is set, and the cached copy used when the network fails.
+    pub fn ecosystem(&self, refresh: bool) -> Result<Arc<Ecosystem>> {
+        let mut slot = self.ecosystem.lock().unwrap_or_else(|e| e.into_inner());
+        if let (Some(e), false) = (slot.as_ref(), refresh) {
+            return Ok(e.clone());
+        }
+        let file = self.thunderstore_dir().join("ecosystem.json");
+        let (eco, _) = umm_thunderstore::ecosystem::load(self.http(), &file, refresh)?;
+        let eco = Arc::new(eco);
+        *slot = Some(eco.clone());
+        Ok(eco)
     }
 
     pub fn data(&self) -> &DataDir {
@@ -100,25 +151,57 @@ impl Session {
         self.data.game(id)
     }
 
-    /// Valid definitions, plus one error per invalid file.
+    /// Every game's definition (`games/<id>/game.toml`), plus one error per invalid file.
     pub fn defs(&self) -> (Vec<GameDef>, Vec<GameDefError>) {
-        GameDef::load_dir(&self.data.gamedefs_dir())
+        GameDef::load_games(&self.data.games_dir())
+    }
+
+    /// The game's definition, as its `game.toml` says.
+    pub fn game_def(&self, id: &str) -> Result<GameDef> {
+        let game = self.data.game(id);
+        if !umm_gamedef::is_valid_id(id) || !game.def_path().is_file() {
+            return Err(CoreError::UnknownGame(id.into()));
+        }
+        Ok(GameDef::load_game(game.root())?)
     }
 
     pub fn def(&self, id: &str) -> Result<CompiledDef> {
-        let (defs, _) = self.defs();
-        let def = defs
-            .into_iter()
-            .find(|d| d.id == id)
-            .ok_or_else(|| CoreError::UnknownGame(id.into()))?;
-        Ok(def.compile()?)
+        Ok(self.game_def(id)?.compile()?)
     }
 
-    /// The manual path if one is set, otherwise detection.
+    /// Writes a new game's `game.toml`. Refuses to replace one.
+    pub(crate) fn create_game_file(&self, id: &str, text: &str) -> Result<PathBuf> {
+        use std::io::Write;
+        let game = self.data.game(id);
+        fs::create_dir_all(game.root()).ctx(|| format!("creating {}", game.root().display()))?;
+        let path = game.def_path();
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .ctx(|| format!("creating {}", path.display()))?;
+        f.write_all(text.as_bytes())
+            .ctx(|| format!("writing {}", path.display()))?;
+        Ok(path)
+    }
+
+    /// Rewrites the game's `game.toml` with `change`, refusing a result that no longer loads.
+    pub(crate) fn edit_game_file(
+        &self,
+        id: &str,
+        change: impl FnOnce(&str, &Path) -> Result<String, GameDefError>,
+    ) -> Result<GameDef> {
+        let path = self.data.game(id).def_path();
+        let text = fs::read_to_string(&path).ctx(|| format!("reading {}", path.display()))?;
+        let new = change(&text, &path)?;
+        let def = GameDef::parse_game(&new, &path, id)?;
+        umm_store::fsutil::write_atomic(&path, new.as_bytes())
+            .ctx(|| format!("writing {}", path.display()))?;
+        Ok(def)
+    }
+
+    /// `[detect] path` if set and still there, otherwise detection.
     pub fn install_path(&self, def: &GameDef) -> Result<Option<(PathBuf, &'static str)>> {
-        if let Some(p) = self.data.game(&def.id).settings()?.install_path {
-            return Ok(Some((p, "manual")));
-        }
         Ok(detect_install(def).map(|d| (d.path, d.via)))
     }
 
@@ -164,11 +247,9 @@ impl Session {
                 )));
             }
         }
-        let game = self.data.game(id);
-        game.ensure()?;
-        let mut s = game.settings()?;
-        s.install_path = Some(path.to_path_buf());
-        game.save_settings(&s)?;
+        self.edit_game_file(id, |text, origin| {
+            umm_gamedef::edit::set_install_path(text, origin, Some(path))
+        })?;
         Ok(())
     }
 
@@ -192,7 +273,25 @@ impl Session {
                 );
             }
         }
-        let meta = umm_store::import_mod(&game, src, &opts)?;
+        let meta = match self.thunderstore_layout(&def.def, src)? {
+            // A Thunderstore package zip, for a game set up that way: lay it out like one.
+            Some((files, manifest)) => {
+                let staging = game.staging_dir().join(umm_store::fsutil::unique_suffix());
+                let result = (|| -> Result<ModMeta> {
+                    umm_thunderstore::layout::write(&files, &staging)?;
+                    opts.name = opts.name.or(Some(manifest.name.replace('_', " ")));
+                    if !manifest.version_number.is_empty() {
+                        opts.version = opts.version.or(Some(manifest.version_number.clone()));
+                    }
+                    opts.layout = umm_store::Layout::Game;
+                    opts.unwrap = false;
+                    Ok(umm_store::import_mod(&game, &staging, &opts)?)
+                })();
+                let _ = fs::remove_dir_all(&staging);
+                result?
+            }
+            None => umm_store::import_mod(&game, src, &opts)?,
+        };
         let mut p = umm_store::load_profile(&game, profile)?;
         if p.position(&meta.id).is_none() {
             p.mods.push(ProfileEntry {
@@ -202,6 +301,43 @@ impl Session {
             umm_store::save_profile(&game, &p)?;
         }
         Ok(meta)
+    }
+
+    /// For a game set up for BepInEx from Thunderstore, a `.zip` with a `manifest.json` is
+    /// laid out the way Thunderstore packages are. `None` for anything else.
+    #[allow(clippy::type_complexity)]
+    fn thunderstore_layout(
+        &self,
+        def: &GameDef,
+        src: &Path,
+    ) -> Result<
+        Option<(
+            std::collections::BTreeMap<String, Vec<u8>>,
+            umm_thunderstore::layout::Manifest,
+        )>,
+    > {
+        let ts = def.loader.as_ref().is_some_and(|l| l.from_thunderstore());
+        let zip = src
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("zip"));
+        let (true, true, Some(community)) = (ts, zip, def.community()) else {
+            return Ok(None);
+        };
+        let bytes = fs::read(src).ctx(|| format!("reading {}", src.display()))?;
+        let Some(manifest) = umm_thunderstore::layout::manifest(&bytes)? else {
+            return Ok(None);
+        };
+        let eco = self.ecosystem(false)?;
+        let Some(m) = eco.community(community) else {
+            return Ok(None);
+        };
+        let name = if manifest.name.is_empty() {
+            "Local-Mod".to_string()
+        } else {
+            manifest.name.clone()
+        };
+        let files = umm_thunderstore::layout::plan(&bytes, &name, &m.r2.install_rules, None)?;
+        Ok(Some((files, manifest)))
     }
 
     pub fn mods(&self, id: &str) -> Result<Vec<ModMeta>> {
@@ -366,10 +502,13 @@ impl Session {
             .collect()
     }
 
-    /// Removes a game from UMM: its mods, profiles and settings, then its definition file, so
-    /// it leaves the games list. Explicit user action only; refused while mods are deployed.
-    /// The game's own folder is never touched.
+    /// Removes a game from UMM: its folder under `games/`, with its definition, mods,
+    /// profiles and settings. Explicit user action only; refused while mods are deployed.
+    /// The game's own install folder is never touched.
     pub fn delete_game_data(&self, id: &str) -> Result<()> {
+        if !umm_gamedef::is_valid_id(id) {
+            return Err(CoreError::UnknownGame(id.into()));
+        }
         let game = self.data.game(id);
         if game.exists() {
             {
@@ -381,24 +520,7 @@ impl Session {
             fs::remove_dir_all(game.root())
                 .ctx(|| format!("removing {}", game.root().display()))?;
         }
-        for path in self.def_files(id) {
-            fs::remove_file(&path).ctx(|| format!("removing {}", path.display()))?;
-        }
         Ok(())
-    }
-
-    /// The definition files in `gamedefs/` that define `id`.
-    fn def_files(&self, id: &str) -> Vec<PathBuf> {
-        let Ok(entries) = fs::read_dir(self.data.gamedefs_dir()) else {
-            return Vec::new();
-        };
-        entries
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| {
-                p.extension().is_some_and(|e| e.eq_ignore_ascii_case("toml"))
-                    && GameDef::load_file(p).is_ok_and(|d| d.id == id)
-            })
-            .collect()
     }
 
     pub fn doctor(&self, id: &str) -> Result<Vec<Finding>> {

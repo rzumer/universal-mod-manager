@@ -10,14 +10,14 @@ mod profile;
 pub use fsutil::{IoCtx, IoError};
 pub use mods::{
     import_mod, list_mods, load_mod, remove_mod, slugify, verify_mod, FileIssue, FileRecord,
-    ImportOptions, ModMeta, MOD_META_FILE,
+    ImportOptions, Layout, ModMeta, ThunderstoreMeta, MOD_META_FILE,
 };
 pub use profile::{
     list_profiles, load_profile, save_profile, Profile, ProfileEntry, DEFAULT_PROFILE,
 };
 
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use umm_gamedef::RelPathError;
@@ -89,19 +89,13 @@ impl DataDir {
 
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
-        for sub in ["gamedefs", "games"] {
-            let p = root.join(sub);
-            fs::create_dir_all(&p).ctx(|| format!("creating {}", p.display()))?;
-        }
+        let games = root.join("games");
+        fs::create_dir_all(&games).ctx(|| format!("creating {}", games.display()))?;
         Ok(Self { root })
     }
 
     pub fn root(&self) -> &Path {
         &self.root
-    }
-
-    pub fn gamedefs_dir(&self) -> PathBuf {
-        self.root.join("gamedefs")
     }
 
     pub fn games_dir(&self) -> PathBuf {
@@ -178,8 +172,10 @@ impl GameDir {
     pub fn lock_path(&self) -> PathBuf {
         self.root.join("state.lock")
     }
-    pub fn settings_path(&self) -> PathBuf {
-        self.root.join("game.toml")
+    /// The game's definition, which also holds what UMM sets for it (install path, mod
+    /// loader).
+    pub fn def_path(&self) -> PathBuf {
+        self.root.join(umm_gamedef::GAME_FILE)
     }
     /// Per-profile folder a Doorstop-style loader is pointed at. Kept between launches, so
     /// configs and logs the game writes there survive.
@@ -190,23 +186,4 @@ impl GameDir {
     pub fn generated_dir(&self) -> PathBuf {
         self.root.join("generated")
     }
-
-    pub fn settings(&self) -> Result<GameSettings> {
-        let p = self.settings_path();
-        if !p.exists() {
-            return Ok(GameSettings::default());
-        }
-        read_toml(&p)
-    }
-
-    pub fn save_settings(&self, s: &GameSettings) -> Result<()> {
-        write_toml(&self.settings_path(), s)
-    }
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct GameSettings {
-    /// Overrides detection when set.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub install_path: Option<PathBuf>,
 }

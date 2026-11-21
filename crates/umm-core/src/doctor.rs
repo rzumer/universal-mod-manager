@@ -32,13 +32,15 @@ pub(crate) fn run(s: &Session, id: &str) -> Result<Vec<Finding>> {
     let game = s.game_dir(id);
 
     let install = s.install_path(&def.def)?;
-    match &install {
-        Some((p, via)) if p.is_dir() => out.push(f(Level::Ok, format!("installed at {} (found via {via})", p.display()))),
-        Some((p, _)) => out.push(f(Level::Warn, format!(
+    // A folder set in game.toml that is gone: say which, rather than just "not found".
+    let missing = def.def.detect.path.as_ref().filter(|p| !p.is_dir());
+    match (&install, missing) {
+        (Some((p, via)), None) if p.is_dir() => out.push(f(Level::Ok, format!("installed at {} (found via {via})", p.display()))),
+        (_, Some(p)) | (Some((p, _)), None) => out.push(f(Level::Warn, format!(
             "install folder {} does not exist; the game may be uninstalled. Mods and profiles are kept.",
             p.display()
         ))),
-        None => out.push(f(Level::Warn, "game not found; mods and profiles are kept. Set the folder with `umm game set-path`.")),
+        (None, None) => out.push(f(Level::Warn, "game not found; mods and profiles are kept. Set the folder with `umm game set-path`.")),
     }
 
     match Journal::load(&game.journal_path()) {
@@ -132,7 +134,7 @@ pub(crate) fn run(s: &Session, id: &str) -> Result<Vec<Finding>> {
     out.push(f(
         Level::Ok,
         format!(
-            "{clean} of {} stored mod(s) match their recorded hashes",
+            "{clean} of {} installed mod(s) match their recorded hashes",
             mods.len()
         ),
     ));
@@ -144,7 +146,7 @@ pub(crate) fn run(s: &Session, id: &str) -> Result<Vec<Finding>> {
                 out.push(f(
                     Level::Warn,
                     format!(
-                        "profile `{name}` lists `{}`, which is not in the store",
+                        "profile `{name}` lists `{}`, which is not installed",
                         m.id
                     ),
                 ));

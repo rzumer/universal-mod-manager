@@ -12,6 +12,13 @@ use tauri::test::{get_ipc_response, mock_builder, mock_context, noop_assets, INV
 use tauri::webview::InvokeRequest;
 use tauri::{Listener, WebviewWindow, WebviewWindowBuilder};
 
+/// The game's `games/<id>/game.toml`, its folder created.
+fn def_file(s: &umm_core::Session, id: &str) -> std::path::PathBuf {
+    let p = s.data().game(id).def_path();
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    p
+}
+
 struct Fx {
     _tmp: tempfile::TempDir,
     base: std::path::PathBuf,
@@ -32,7 +39,7 @@ fn setup(exe: &str) -> Fx {
     write(&game_root.join(exe), "placeholder exe");
     let session = umm_core::Session::open(Some(base.join("data"))).unwrap();
     fs::write(
-        session.data().gamedefs_dir().join("g.toml"),
+        def_file(&session, "ipc-game"),
         format!(
             "schema = 1\nid = \"ipc-game\"\nname = \"IPC Game\"\n[detect]\nmarker = \"{exe}\"\n\
              [launch]\nexe = \"{exe}\"\n"
@@ -47,6 +54,7 @@ fn setup(exe: &str) -> Fx {
         session: Arc::new(session),
         active: Arc::new(Mutex::new(None)),
         stop: Arc::new(AtomicBool::new(false)),
+        pending_link: Arc::new(Mutex::new(None)),
     };
     let app = mock_builder()
         .manage(state)

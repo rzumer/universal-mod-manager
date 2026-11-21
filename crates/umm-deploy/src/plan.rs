@@ -2,7 +2,7 @@ use crate::DeployError;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use umm_gamedef::{CompiledDef, RelPath, IN_GAME_BACKUP_DIR};
-use umm_store::{load_mod, GameDir, Profile, StoreError};
+use umm_store::{load_mod, GameDir, Layout, Profile, StoreError};
 
 /// Which stored file goes to which game path. Pure: reads the store, never the game folder.
 #[derive(Debug, Clone)]
@@ -79,9 +79,19 @@ pub fn build_plan(
             Err(e) => return Err(e.into()),
         };
         let files_root = game.mod_files_dir(id);
+        if meta.thunderstore.is_some() && !def.def.loader.as_ref().is_some_and(|l| l.from_thunderstore()) {
+            // Laid out for BepInEx from Thunderstore; meaningless in any other setup.
+            skipped.push(Skipped {
+                owner: id.clone(),
+                file: "(all files)".into(),
+                reason: "installed from Thunderstore; needs the BepInEx from Thunderstore setup".into(),
+            });
+            continue;
+        }
+        let identity = *identity || meta.layout == Layout::Game;
         for (file, rec) in &meta.files {
             let rel = RelPath::parse(file)?;
-            let target = if *identity {
+            let target = if identity {
                 Some(rel.clone())
             } else {
                 def.map_mod_file(id, &rel)?

@@ -2,8 +2,110 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use umm_core::{
-    DeployOp, Faults, ImportOptions, LaunchEvent, Level, RevertReport, Session, DEFAULT_PROFILE,
+    DeployOp, Faults, ImportOptions, LaunchEvent, Level, LoaderSetup, RevertReport, Session,
+    TsInstallReport, TsQuery, TsSort, DEFAULT_PROFILE,
 };
+
+fn print_install(r: &TsInstallReport) {
+    if r.installed.is_empty() {
+        println!("nothing to install: everything needed is already there");
+    }
+    for (name, version, replaced) in &r.installed {
+        match replaced {
+            Some(old) => println!("updated {name} {old} -> {version}"),
+            None => println!("installed {name} {version}"),
+        }
+    }
+    for m in &r.missing {
+        eprintln!("warning: dependency {m} is no longer on Thunderstore; skipped");
+    }
+}
+
+fn ts(s: &Session, cmd: TsCmd) -> Result<()> {
+    let progress = &mut |m: &str| eprintln!("{m}");
+    match cmd {
+        TsCmd::Search {
+            game,
+            query,
+            category,
+            sort,
+            all,
+            limit,
+        } => {
+            let sort = match sort.as_str() {
+                "rating" => TsSort::Rating,
+                "downloads" => TsSort::Downloads,
+                "updated" => TsSort::Updated,
+                "name" => TsSort::Name,
+                other => bail!("unknown sort `{other}` (rating, downloads, updated, name)"),
+            };
+            let page = s.ts_search(
+                &game,
+                &TsQuery {
+                    text: query.join(" "),
+                    category,
+                    sort,
+                    include_deprecated: all,
+                    include_nsfw: all,
+                    limit,
+                    ..Default::default()
+                },
+            )?;
+            if page.stale {
+                eprintln!("note: Thunderstore could not be reached; this is an older copy of the list");
+            }
+            for i in &page.items {
+                let p = &i.package;
+                let state = match (&i.installed, i.update) {
+                    (Some(v), true) => format!("installed {v}, update available"),
+                    (Some(v), false) => format!("installed {v}"),
+                    (None, _) => String::new(),
+                };
+                println!(
+                    "{:<40} {:<10} {:>9} dl  {state}",
+                    p.full_name,
+                    p.latest().map(|v| v.version.as_str()).unwrap_or("?"),
+                    p.downloads
+                );
+            }
+            println!("{} of {} packages", page.items.len(), page.total);
+        }
+        TsCmd::Install {
+            game,
+            packages,
+            profile,
+        } => {
+            let wanted: Vec<(String, Option<String>)> = packages
+                .iter()
+                .map(|p| match p.split_once('@') {
+                    Some((n, v)) => (n.to_string(), Some(v.to_string())),
+                    None => (p.clone(), None),
+                })
+                .collect();
+            print_install(&s.ts_install(&game, &wanted, &profile, progress)?);
+        }
+        TsCmd::Update {
+            game,
+            packages,
+            profile,
+        } => {
+            let r = s.ts_update(&game, &packages, &profile, progress)?;
+            if r.installed.is_empty() {
+                println!("everything is up to date");
+            } else {
+                print_install(&r);
+            }
+        }
+        TsCmd::Refresh { game } => {
+            let (p, stale) = s.ts_packages(&game, true)?;
+            if stale {
+                bail!("Thunderstore could not be reached; kept the older copy");
+            }
+            println!("{} packages", p.len());
+        }
+    }
+    Ok(())
+}
 
 fn launch(s: &Session, game: &str, profile: &str) -> Result<()> {
     use std::cell::Cell;
@@ -92,7 +194,7 @@ enum Cmd {
     /// Manage a game's settings and data
     #[command(subcommand)]
     Game(GameCmd),
-    /// Import a mod (folder or .zip) into the store and add it to a profile
+    /// Install a mod (folder or .zip) and add it to a profile
     Import {
         game: String,
         path: PathBuf,
@@ -108,9 +210,9 @@ enum Cmd {
         #[arg(short, long, default_value = DEFAULT_PROFILE)]
         profile: String,
     },
-    /// List stored mods
+    /// List installed mods
     Mods { game: String },
-    /// Delete a mod from the store and all profiles
+    /// Delete a mod from UMM and all profiles
     RemoveMod {
         game: String,
         id: String,
@@ -150,11 +252,51 @@ enum Cmd {
         #[arg(long)]
         discard_if_missing: bool,
     },
-    /// Check a game's install, deployment state and stored mods
+    /// Check a game's install, deployment state and installed mods
     Doctor { game: String },
     /// Add game definitions for games installed through Steam
     #[command(subcommand)]
     Steam(SteamCmd),
+    /// Thunderstore packages, for games set up for BepInEx from Thunderstore
+    #[command(subcommand)]
+    Ts(TsCmd),
+}
+
+#[derive(Subcommand)]
+enum TsCmd {
+    /// Search the game's Thunderstore packages
+    Search {
+        game: String,
+        /// Words to look for in names, owners and descriptions
+        query: Vec<String>,
+        #[arg(long)]
+        category: Option<String>,
+        /// rating, downloads, updated or name
+        #[arg(long, default_value = "rating")]
+        sort: String,
+        /// Include deprecated and NSFW packages
+        #[arg(long)]
+        all: bool,
+        #[arg(long, default_value_t = 25)]
+        limit: usize,
+    },
+    /// Install packages (`Owner-Name` or `Owner-Name@1.2.3`) with their dependencies
+    Install {
+        game: String,
+        #[arg(required = true)]
+        packages: Vec<String>,
+        #[arg(short, long, default_value = DEFAULT_PROFILE)]
+        profile: String,
+    },
+    /// Update installed packages (all of them if none are named)
+    Update {
+        game: String,
+        packages: Vec<String>,
+        #[arg(short, long, default_value = DEFAULT_PROFILE)]
+        profile: String,
+    },
+    /// Download the game's package list again
+    Refresh { game: String },
 }
 
 #[derive(Subcommand)]
@@ -167,13 +309,62 @@ enum SteamCmd {
         /// Every installed game UMM does not have yet
         #[arg(long)]
         all: bool,
+        /// Mod loader setup instead of each game's default
+        #[arg(long, value_enum)]
+        loader: Option<SetupArg>,
     },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum SetupArg {
+    /// BepInEx 5, with the pack and mods from Thunderstore
+    Thunderstore,
+    /// BepInEx 5, with a pack you import as the mod `bepinex`
+    Bepinex,
+    /// No mod loader: files are copied as they are
+    Generic,
+    /// Whatever the game definition file says
+    Default,
+}
+
+impl SetupArg {
+    fn setup(self) -> Option<LoaderSetup> {
+        match self {
+            SetupArg::Thunderstore => Some(LoaderSetup::Thunderstore),
+            SetupArg::Bepinex => Some(LoaderSetup::Bepinex),
+            SetupArg::Generic => Some(LoaderSetup::Generic),
+            SetupArg::Default => None,
+        }
+    }
+}
+
+fn setup_label(s: Option<LoaderSetup>) -> &'static str {
+    s.map(LoaderSetup::label).unwrap_or("loader from the definition")
 }
 
 #[derive(Subcommand)]
 enum GameCmd {
     /// Set the install folder manually (overrides detection)
     SetPath { game: String, path: PathBuf },
+    /// Add a game from its install folder; the rest is filled in from what is there
+    Add {
+        folder: PathBuf,
+        /// Name to show (default: the folder's name)
+        #[arg(long)]
+        name: Option<String>,
+        /// Exe to launch, relative to the folder (default: the likely game exe)
+        #[arg(long)]
+        exe: Option<String>,
+        /// Mod loader setup instead of the default
+        #[arg(long, value_enum)]
+        loader: Option<SetupArg>,
+    },
+    /// Show or change the mod loader setup (the definition file is not changed)
+    Loader {
+        game: String,
+        #[arg(value_enum)]
+        setup: Option<SetupArg>,
+    },
     /// Remove a game from UMM: its definition, mods, profiles and settings
     #[command(name = "delete", alias = "delete-data")]
     DeleteData {
@@ -210,6 +401,21 @@ enum ProfileCmd {
         #[arg(short, long, default_value = DEFAULT_PROFILE)]
         profile: String,
     },
+    /// Export the profile's Thunderstore packages and configs for r2modman: an .r2z file, or
+    /// with --code, uploaded to Thunderstore as a profile code
+    Export {
+        game: String,
+        #[arg(short, long, default_value = DEFAULT_PROFILE)]
+        profile: String,
+        /// Where to write the .r2z file
+        #[arg(long, conflicts_with = "code")]
+        file: Option<PathBuf>,
+        /// Upload to Thunderstore and print the code (anyone with it can download the export)
+        #[arg(long)]
+        code: bool,
+    },
+    /// Import an r2modman profile code or .r2z file into a new profile
+    Import { game: String, code_or_file: String },
 }
 
 fn main() {
@@ -247,8 +453,8 @@ fn run(cli: Cli) -> Result<()> {
             let games = s.status()?;
             if games.is_empty() {
                 println!(
-                    "no game definitions in {}",
-                    s.data().gamedefs_dir().display()
+                    "no games in {} (add one with `umm steam add`)",
+                    s.data().games_dir().display()
                 );
             }
             for g in games {
@@ -266,6 +472,49 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Game(GameCmd::SetPath { game, path }) => {
             s.set_install_path(&game, &path)?;
             println!("{game}: install folder set to {}", path.display());
+        }
+        Cmd::Ts(cmd) => ts(&s, cmd)?,
+        Cmd::Game(GameCmd::Add {
+            folder,
+            name,
+            exe,
+            loader,
+        }) => {
+            let info = s.inspect_game_folder(&folder)?;
+            if let Some((app, n)) = &info.steam_app {
+                eprintln!("note: this is {n} from Steam; `umm steam add {app}` sets it up with its Steam details");
+            }
+            let name = name.unwrap_or(info.name.clone());
+            let exe = exe.or(info.exes.first().cloned()).unwrap_or_default();
+            let d = s.add_manual_game(&folder, &name, &exe, loader.and_then(SetupArg::setup))?;
+            println!(
+                "added `{}` ({}, {}) -> {}",
+                d.def.id,
+                d.engine.label(),
+                d.setup.label(),
+                s.data().game(&d.def.id).def_path().display()
+            );
+            for n in d.notes {
+                println!("  note: {n}");
+            }
+        }
+        Cmd::Game(GameCmd::Loader { game, setup }) => {
+            let c = match setup {
+                Some(arg) => match arg.setup() {
+                    Some(st) => s.set_loader(&game, st)?,
+                    None => bail!("pick thunderstore, bepinex or generic"),
+                },
+                None => s.loader_choice(&game)?,
+            };
+            println!("{game}: {}", setup_label(c.current));
+            if let Some(cm) = &c.community {
+                println!("  Thunderstore community: {cm}");
+            }
+            if let Some(l) = &c.other_loader {
+                println!("  on Thunderstore it uses {l}, which UMM does not support yet");
+            }
+            let others: Vec<&str> = c.available.iter().map(|a| a.label()).collect();
+            println!("  available: {}", others.join(", "));
         }
         Cmd::Game(GameCmd::DeleteData { game, yes }) => {
             if !yes {
@@ -311,7 +560,7 @@ fn run(cli: Cli) -> Result<()> {
         }
         Cmd::RemoveMod { game, id, yes } => {
             if !yes {
-                bail!("this permanently deletes `{id}` from the store; rerun with --yes");
+                bail!("this permanently deletes `{id}` from UMM; rerun with --yes");
             }
             s.remove_mod(&game, &id)?;
             println!("removed `{id}`");
@@ -387,14 +636,17 @@ fn run(cli: Cli) -> Result<()> {
             }
         }
         Cmd::Steam(SteamCmd::List) => {
-            let games = s.steam_games();
-            if games.is_empty() {
+            let list = s.steam_games();
+            if let Some(e) = &list.thunderstore_error {
+                eprintln!("note: Thunderstore's game list is unavailable ({e}); every game shows as generic");
+            }
+            if list.games.is_empty() {
                 println!("no installed Steam games found");
             }
-            for g in games {
+            for g in list.games {
                 let state = match &g.defined_as {
                     Some(id) => format!("added as `{id}`"),
-                    None => "-".into(),
+                    None => format!("would be: {}", g.default_setup.label()),
                 };
                 println!(
                     "{:>8}  {:<40} {:<16} {state}",
@@ -404,9 +656,14 @@ fn run(cli: Cli) -> Result<()> {
                 );
             }
         }
-        Cmd::Steam(SteamCmd::Add { app_ids, all }) => {
+        Cmd::Steam(SteamCmd::Add {
+            app_ids,
+            all,
+            loader,
+        }) => {
             let ids: Vec<u32> = if all {
                 s.steam_games()
+                    .games
                     .into_iter()
                     .filter(|g| g.defined_as.is_none())
                     .map(|g| g.app.app_id)
@@ -417,18 +674,17 @@ fn run(cli: Cli) -> Result<()> {
             if ids.is_empty() {
                 bail!("give one or more app ids (see `umm steam list`), or --all");
             }
+            let setup = loader.and_then(SetupArg::setup);
             let mut failed = false;
             for id in ids {
-                match s.add_steam_game(id) {
+                match s.add_steam_game(id, setup) {
                     Ok(d) => {
                         println!(
-                            "added `{}` ({}) -> {}",
+                            "added `{}` ({}, {}) -> {}",
                             d.def.id,
                             d.engine.label(),
-                            s.data()
-                                .gamedefs_dir()
-                                .join(format!("{}.toml", d.def.id))
-                                .display()
+                            d.setup.label(),
+                            s.data().game(&d.def.id).def_path().display()
                         );
                         for n in d.notes {
                             println!("  note: {n}");
@@ -496,13 +752,50 @@ fn profile_cmd(s: &Session, cmd: ProfileCmd) -> Result<()> {
             s.save_profile(&game, &p)?;
             println!("moved `{id}` to position {}", to + 1);
         }
+        ProfileCmd::Export {
+            game,
+            profile,
+            file,
+            code,
+        } => {
+            let e = s.profile_export(&game, &profile)?;
+            if !e.left_out.is_empty() {
+                eprintln!("not included (not from Thunderstore): {}", e.left_out.join(", "));
+            }
+            println!("{} package(s), {} config file(s)", e.mods, e.files.len());
+            if code {
+                println!("code: {}", s.profile_export_code(&game, &profile)?);
+            } else {
+                let path = file.unwrap_or_else(|| PathBuf::from(format!("{profile}.r2z")));
+                std::fs::write(&path, &e.r2z).with_context(|| format!("writing {}", path.display()))?;
+                println!("saved {}", path.display());
+            }
+        }
+        ProfileCmd::Import { game, code_or_file } => {
+            let progress = &mut |m: &str| eprintln!("{m}");
+            let path = PathBuf::from(&code_or_file);
+            let r = if path.is_file() {
+                s.profile_import_file(&game, &path, progress)?
+            } else {
+                s.profile_import_code(&game, &code_or_file, progress)?
+            };
+            println!("imported into the new profile `{}`", r.profile);
+            print_install(&r.installed);
+            println!("{} config file(s) copied", r.files);
+            for n in r.notes {
+                eprintln!("note: {n}");
+            }
+            if !r.skipped.is_empty() {
+                eprintln!("skipped: {}", r.skipped.join(", "));
+            }
+        }
     }
     Ok(())
 }
 
 fn set_enabled(s: &Session, game: &str, id: &str, profile: &str, on: bool) -> Result<()> {
     if !s.mods(game)?.iter().any(|m| m.id == id) {
-        bail!("mod `{id}` is not in the store");
+        bail!("mod `{id}` is not installed");
     }
     {
         let mut p = s.profile(game, profile)?;

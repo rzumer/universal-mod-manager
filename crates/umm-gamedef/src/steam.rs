@@ -7,8 +7,8 @@
 use crate::detect::steam_libraries;
 use crate::vdf::{self, Value};
 use crate::{
-    slug, Detect, GameDef, Inject, InstallRule, Launch, Loader, PathSet, SteamRelaunch,
-    SCHEMA_VERSION,
+    slug, Detect, GameDef, GameDefError, InstallRule, Launch, LoaderSetup, PathSet,
+    SteamRelaunch, Thunderstore, SCHEMA_VERSION,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -116,6 +116,7 @@ impl Engine {
 pub struct Draft {
     pub def: GameDef,
     pub engine: Engine,
+    pub setup: LoaderSetup,
     /// Things the user should know or check, in plain words.
     pub notes: Vec<Note>,
 }
@@ -130,7 +131,7 @@ pub struct Note {
 }
 
 impl Note {
-    fn new(key: &'static str, text: impl Into<String>) -> Self {
+    pub fn new(key: &'static str, text: impl Into<String>) -> Self {
         Note {
             key,
             text: text.into(),
@@ -189,12 +190,6 @@ fn exe_files(dir: &Path) -> Vec<(String, u64)> {
         .collect()
 }
 
-fn largest(exes: Vec<(String, u64)>) -> Option<String> {
-    exes.into_iter()
-        .max_by_key(|(_, size)| *size)
-        .map(|(n, _)| n)
-}
-
 fn exists_ci(dir: &Path, name: &str) -> bool {
     fs::read_dir(dir)
         .map(|rd| {
@@ -204,14 +199,159 @@ fn exists_ci(dir: &Path, name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Drafts a game definition by looking at the install folder.
-pub fn draft_definition(app: &SteamApp) -> Draft {
-    let root = &app.path;
+/// What the install folder says about the game: its engine, exe and (Unreal) project folder.
+#[derive(Debug, Clone)]
+pub struct Inspection {
+    pub engine: Engine,
+    /// Relative path of the likely game exe; empty when none was found.
+    pub exe: String,
+    /// Every exe that could be the game, the likely one first.
+    pub exes: Vec<String>,
+    pub unreal_project: Option<String>,
+}
+
+fn by_size(mut exes: Vec<(String, u64)>) -> Vec<String> {
+    exes.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    exes.into_iter().map(|(n, _)| n).collect()
+}
+
+/// Looks at a Steam game's install folder.
+pub fn inspect(app: &SteamApp) -> Inspection {
+    inspect_folder(&app.path)
+}
+
+/// Looks at an install folder to recognise the engine and find the exe.
+pub fn inspect_folder(root: &Path) -> Inspection {
+    let mut exes = by_size(exe_files(root));
+    // Unity: `<Name>.exe` next to `<Name>_Data/` and UnityPlayer.dll.
+    let unity_exe = exes.iter().find(|n| {
+        let stem = &n[..n.len() - 4];
+        root.join(format!("{stem}_Data")).is_dir()
+    });
+    if let Some(exe) = unity_exe.filter(|_| exists_ci(root, "UnityPlayer.dll")).cloned() {
+        let engine = if exists_ci(root, "GameAssembly.dll") {
+            Engine::UnityIl2cpp
+        } else {
+            Engine::UnityMono
+        };
+        exes.retain(|e| e != &exe);
+        exes.insert(0, exe.clone());
+        return Inspection {
+            engine,
+            exe,
+            exes,
+            unreal_project: None,
+        };
+    }
+    if exists_ci(root, "Engine") {
+        // Unreal: a small launcher exe at the root, the real one in <Project>/Binaries/Win64.
+        let project = fs::read_dir(root).ok().and_then(|rd| {
+            rd.flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .find(|n| {
+                    !n.eq_ignore_ascii_case("Engine") && root.join(n).join("Binaries").is_dir()
+                })
+        });
+        if let Some(p) = &project {
+            exes.extend(
+                by_size(exe_files(&root.join(p).join("Binaries").join("Win64")))
+                    .into_iter()
+                    .map(|e| format!("{p}/Binaries/Win64/{e}")),
+            );
+        }
+        return Inspection {
+            engine: Engine::Unreal,
+            exe: exes.first().cloned().unwrap_or_default(),
+            exes,
+            unreal_project: project,
+        };
+    }
+    Inspection {
+        engine: Engine::Unknown,
+        exe: exes.first().cloned().unwrap_or_default(),
+        exes,
+        unreal_project: None,
+    }
+}
+
+/// Where a draft's game comes from: everything besides the files that goes in its definition.
+struct Origin {
+    id: String,
+    name: String,
+    detect: Detect,
+    relaunch: SteamRelaunch,
+}
+
+/// Drafts a game definition with the given setup. `community` is the game's Thunderstore
+/// community, needed for [`LoaderSetup::Thunderstore`].
+pub fn draft_definition(
+    app: &SteamApp,
+    setup: LoaderSetup,
+    community: Option<&str>,
+) -> Result<Draft, GameDefError> {
+    draft_from(app, &inspect(app), setup, community)
+}
+
+pub fn draft_from(
+    app: &SteamApp,
+    found: &Inspection,
+    setup: LoaderSetup,
+    community: Option<&str>,
+) -> Result<Draft, GameDefError> {
+    let origin = Origin {
+        id: app_id_slug(app),
+        name: app.name.clone(),
+        detect: Detect {
+            steam_app_id: Some(app.app_id),
+            steam_dir: Some(app.install_dir.clone()),
+            ..Default::default()
+        },
+        // Started outside Steam, Steamworks games restart through Steam and escape
+        // tracking; steam_appid.txt during the session prevents that.
+        relaunch: SteamRelaunch::AppidFile,
+    };
+    build(origin, found, &found.exe, setup, community)
+}
+
+/// Drafts a definition for a game added by hand: its folder, the name to show, and the exe
+/// to launch (relative to the folder; empty for none).
+pub fn draft_manual(
+    folder: &Path,
+    name: &str,
+    exe: &str,
+    found: &Inspection,
+    setup: LoaderSetup,
+    community: Option<&str>,
+) -> Result<Draft, GameDefError> {
+    let folder_name = folder
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let origin = Origin {
+        id: slug(name)
+            .or_else(|| slug(&folder_name))
+            .unwrap_or_else(|| "game".into()),
+        name: name.trim().to_string(),
+        detect: Detect {
+            path: Some(folder.to_path_buf()),
+            ..Default::default()
+        },
+        relaunch: SteamRelaunch::None,
+    };
+    build(origin, found, exe, setup, community)
+}
+
+fn build(
+    origin: Origin,
+    found: &Inspection,
+    exe: &str,
+    setup: LoaderSetup,
+    community: Option<&str>,
+) -> Result<Draft, GameDefError> {
     let mut notes = Vec::new();
     let mut install = Vec::new();
-    let mut loader = None;
     let mut protect = vec!["*.exe".to_string()];
-    let mut writable = vec![
+    let writable = vec![
         "**/*.cfg".to_string(),
         "**/*.ini".to_string(),
         "**/*.json".to_string(),
@@ -221,85 +361,52 @@ pub fn draft_definition(app: &SteamApp) -> Draft {
         target: t.into(),
     };
 
-    // Unity: `<Name>.exe` next to `<Name>_Data/` and UnityPlayer.dll.
-    let unity_exe = exe_files(root).into_iter().map(|(n, _)| n).find(|n| {
-        let stem = &n[..n.len() - 4];
-        root.join(format!("{stem}_Data")).is_dir()
-    });
-    let (engine, exe) = if let Some(exe) = unity_exe.filter(|_| exists_ci(root, "UnityPlayer.dll"))
-    {
-        protect.push("UnityPlayer.dll".into());
-        if exists_ci(root, "GameAssembly.dll") {
-            notes.push(Note::new(
-                "unity-il2cpp",
-                "IL2CPP Unity game: BepInEx 5 does not support it. Mods are deployed as plain \
-                 files; for BepInEx 6 or MelonLoader, import the loader as a mod and keep inject = \"files\".",
-            ));
-            install.push(rule("**", ""));
-            (Engine::UnityIl2cpp, exe)
-        } else {
-            loader = Some(Loader {
-                kind: "bepinex5".into(),
-                source: Some("mod:bepinex".into()),
-                inject: Inject::Doorstop,
-            });
-            notes.push(Note::new(
-                "bepinex",
-                "Unity (Mono) game: set up for BepInEx 5 through Doorstop. Import the BepInEx 5 \
-                 pack (5.4.22 or later) with the mod id `bepinex`.",
-            ));
-            install.extend([
-                rule("BepInEx/**", "BepInEx/"),
-                rule("plugins/**", "BepInEx/plugins/{mod}/"),
-                rule("patchers/**", "BepInEx/patchers/{mod}/"),
-                rule("config/**", "BepInEx/config/"),
-                rule("*.dll", "BepInEx/plugins/{mod}/"),
-                rule("**", ""),
-            ]);
-            writable.push("BepInEx/config/**".into());
-            (Engine::UnityMono, exe)
+    match found.engine {
+        Engine::UnityMono | Engine::UnityIl2cpp => protect.push("UnityPlayer.dll".into()),
+        Engine::Unreal => {
+            if let Some(p) = &found.unreal_project {
+                for ext in ["pak", "utoc", "ucas"] {
+                    install.push(rule(&format!("*.{ext}"), &format!("{p}/Content/Paks/~mods/")));
+                }
+                notes.push(Note::new(
+                    "unreal",
+                    format!(
+                        "Unreal Engine game: loose .pak/.utoc/.ucas files go to {p}/Content/Paks/~mods/. \
+                         Everything else keeps its path."
+                    ),
+                ));
+            }
         }
-    } else if exists_ci(root, "Engine") {
-        // Unreal: a small launcher exe at the root, the real one in <Project>/Binaries/Win64.
-        let project = fs::read_dir(root).ok().and_then(|rd| {
-            rd.flatten()
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .find(|n| {
-                    !n.eq_ignore_ascii_case("Engine") && root.join(n).join("Binaries").is_dir()
-                })
-        });
-        let exe = largest(exe_files(root))
-            .or_else(|| {
-                let p = project.as_ref()?;
-                largest(exe_files(&root.join(p).join("Binaries").join("Win64")))
-                    .map(|e| format!("{p}/Binaries/Win64/{e}"))
-            })
-            .unwrap_or_default();
-        if let Some(p) = &project {
-            install.push(rule("*.pak", &format!("{p}/Content/Paks/~mods/")));
-            install.push(rule("*.utoc", &format!("{p}/Content/Paks/~mods/")));
-            install.push(rule("*.ucas", &format!("{p}/Content/Paks/~mods/")));
-            notes.push(Note::new(
-                "unreal",
-                format!(
-                "Unreal Engine game: loose .pak/.utoc/.ucas files go to {p}/Content/Paks/~mods/. \
-                 Everything else keeps its path."
-                ),
-            ));
-        }
-        install.push(rule("**", ""));
-        (Engine::Unreal, exe)
-    } else {
-        install.push(rule("**", ""));
-        notes.push(Note::new(
+        Engine::Unknown => notes.push(Note::new(
             "unknown-engine",
             "Engine not recognised: mod files keep their paths relative to the game folder.",
-        ));
-        (
-            Engine::Unknown,
-            largest(exe_files(root)).unwrap_or_default(),
-        )
-    };
+        )),
+    }
+    install.push(rule("**", ""));
+
+    match (setup, found.engine) {
+        (LoaderSetup::Thunderstore, _) => notes.push(Note::new(
+            "thunderstore",
+            "This game is set up for BepInEx 5. You can download mods directly from the \
+             Thunderstore tab.",
+        )),
+        (LoaderSetup::Bepinex, _) => notes.push(Note::new(
+            "bepinex",
+            "Set up for BepInEx 5 through Doorstop. Import the BepInEx 5 pack (5.4.22 or later) \
+             with the mod id `bepinex`.",
+        )),
+        (LoaderSetup::Generic, Engine::UnityMono) => notes.push(Note::new(
+            "generic-unity",
+            "Unity game set up as generic: mod files are copied as they are. To use BepInEx \
+             mods, change the mod loader in the Actions tab.",
+        )),
+        (LoaderSetup::Generic, Engine::UnityIl2cpp) => notes.push(Note::new(
+            "unity-il2cpp",
+            "IL2CPP Unity game: its mods need BepInEx 6 or MelonLoader, which UMM does not \
+             support yet. Set up as generic: mod files are copied as they are.",
+        )),
+        (LoaderSetup::Generic, _) => {}
+    }
 
     let launch = if exe.is_empty() {
         notes.push(Note::new(
@@ -308,50 +415,52 @@ pub fn draft_definition(app: &SteamApp) -> Draft {
         ));
         None
     } else {
-        let name = exe.rsplit('/').next().unwrap_or(&exe).to_string();
+        let name = exe.rsplit('/').next().unwrap_or(exe).to_string();
         Some(Launch {
-            exe: exe.clone(),
+            exe: exe.to_string(),
             args: Vec::new(),
-            // Started outside Steam, Steamworks games restart through Steam and escape
-            // tracking; steam_appid.txt during the session prevents that.
-            steam_relaunch: SteamRelaunch::AppidFile,
+            steam_relaunch: origin.relaunch,
             process_names: vec![name],
         })
     };
 
-    let def = GameDef {
+    let mut detect = origin.detect;
+    detect.marker = launch.as_ref().map(|l| l.exe.clone());
+    let generic = GameDef {
         schema: SCHEMA_VERSION,
-        id: app_id_slug(app),
-        name: app.name.clone(),
-        detect: Detect {
-            steam_app_id: Some(app.app_id),
-            steam_dir: Some(app.install_dir.clone()),
-            registry: None,
-            marker: launch.as_ref().map(|l| l.exe.clone()),
-        },
+        id: origin.id,
+        name: origin.name,
+        detect,
         launch,
-        loader,
+        loader: None,
+        thunderstore: community.map(|c| Thunderstore {
+            community: c.to_string(),
+        }),
         install,
         protect: PathSet { paths: protect },
         writable: PathSet { paths: writable },
     };
-    Draft { def, engine, notes }
+    let def = generic.with_setup(setup, community)?;
+    Ok(Draft {
+        def,
+        engine: found.engine,
+        setup,
+        notes,
+    })
 }
 
-/// The draft as a TOML file with a header explaining where it came from.
+/// The draft as a `game.toml`, with a header saying where it came from.
 pub fn to_toml(draft: &Draft) -> String {
-    let mut out = format!(
-        "# Generated from Steam by UMM ({}; app {}).\n\
-         # Review the install rules before adding mods. Edit freely: UMM never rewrites this file.\n",
-        draft.engine.label(),
-        draft.def.detect.steam_app_id.unwrap_or_default()
-    );
-    for n in &draft.notes {
-        out.push_str(&format!("# Note: {n}\n"));
-    }
-    out.push('\n');
-    out.push_str(&toml::to_string_pretty(&draft.def).expect("game definitions serialize"));
-    out
+    let source = match draft.def.detect.steam_app_id {
+        Some(app) => format!("Generated from Steam by UMM ({}, {}; app {app}).", draft.engine.label(), draft.setup.label()),
+        None => format!("Added by UMM ({}, {}).", draft.engine.label(), draft.setup.label()),
+    };
+    let mut header = vec![
+        source,
+        "Review the install rules before adding mods. Edit freely: UMM only changes the install path and the mod loader sections.".to_string(),
+    ];
+    header.extend(draft.notes.iter().map(|n| format!("Note: {n}")));
+    crate::edit::new_file(&draft.def, &header)
 }
 
 #[cfg(test)]
@@ -422,7 +531,12 @@ mod tests {
     }
 
     fn draft_for(apps: &[SteamApp], id: u32) -> Draft {
-        draft_definition(apps.iter().find(|a| a.app_id == id).unwrap())
+        draft_definition(
+            apps.iter().find(|a| a.app_id == id).unwrap(),
+            LoaderSetup::Generic,
+            None,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -450,8 +564,16 @@ mod tests {
         assert_eq!(mono.engine, Engine::UnityMono);
         assert_eq!(mono.def.id, "mono-quest-deluxe");
         assert_eq!(mono.def.launch.as_ref().unwrap().exe, "MonoQuest.exe");
-        assert_eq!(mono.def.doorstop().unwrap().runtime_dir, "BepInEx");
+        assert!(mono.def.loader.is_none(), "generic unless asked otherwise");
         assert_eq!(mono.def.detect.marker.as_deref(), Some("MonoQuest.exe"));
+
+        let mono_app = apps.iter().find(|a| a.app_id == 1001).unwrap();
+        let own = draft_definition(mono_app, LoaderSetup::Bepinex, None).unwrap();
+        assert_eq!(own.def.doorstop().unwrap().runtime_dir, "BepInEx");
+        let ts = draft_definition(mono_app, LoaderSetup::Thunderstore, Some("mono-quest")).unwrap();
+        assert_eq!(ts.def.community(), Some("mono-quest"));
+        assert_eq!(ts.def.setup(), Some(LoaderSetup::Thunderstore));
+        assert!(draft_definition(mono_app, LoaderSetup::Thunderstore, None).is_err());
 
         let il2cpp = draft_for(&apps, 1002);
         assert_eq!(il2cpp.engine, Engine::UnityIl2cpp);
@@ -470,9 +592,9 @@ mod tests {
             "uninstaller ignored"
         );
 
-        for d in [mono, il2cpp, unreal, plain] {
+        for d in [mono, own, ts, il2cpp, unreal, plain] {
             let text = to_toml(&d);
-            let back = GameDef::parse(&text, Path::new("draft.toml"))
+            let back = GameDef::parse_game(&text, Path::new("game.toml"), &d.def.id)
                 .unwrap_or_else(|e| panic!("{} does not reload: {e}\n{text}", d.def.id));
             assert_eq!(back.id, d.def.id);
         }

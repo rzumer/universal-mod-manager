@@ -22,8 +22,49 @@ pub struct ModMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     pub imported_unix: u64,
+    /// How the files are laid out; see [`Layout`].
+    #[serde(default, skip_serializing_if = "Layout::is_raw")]
+    pub layout: Layout,
+    /// Set for packages installed from Thunderstore.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thunderstore: Option<ThunderstoreMeta>,
     /// Path inside the mod (`/`-separated) → size and hash.
     pub files: BTreeMap<String, FileRecord>,
+}
+
+/// Whether a mod's files still go through the game definition's install rules.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Layout {
+    /// As imported: the install rules decide where each file goes.
+    #[default]
+    Raw,
+    /// Already laid out relative to the game folder (Thunderstore packages).
+    Game,
+}
+
+impl Layout {
+    pub fn is_raw(&self) -> bool {
+        *self == Layout::Raw
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThunderstoreMeta {
+    pub community: String,
+    /// `Owner-Name`.
+    pub full_name: String,
+    pub version: String,
+    /// `Owner-Name-1.2.3`, as the package's manifest lists them.
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub website: Option<String>,
+    /// The package is a mod loader (the BepInEx pack).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub loader: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,6 +83,11 @@ pub struct ImportOptions {
     pub unwrap: bool,
     /// Folder names that are real content, not wrappers (e.g. `BepInEx`). Case-insensitive.
     pub keep_top_dirs: Vec<String>,
+    pub layout: Layout,
+    pub thunderstore: Option<ThunderstoreMeta>,
+    /// Replace an existing mod with the same id (an update). The old one is removed only once
+    /// the new one is fully stored.
+    pub replace: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,55 +128,90 @@ pub fn import_mod(game: &GameDir, src: &Path, opts: &ImportOptions) -> Result<Mo
         return Err(StoreError::InvalidId(id));
     }
     let dest = game.mod_dir(&id);
-    if dest.exists() {
+    if dest.exists() && !opts.replace {
         return Err(StoreError::ModExists(id));
     }
 
     let staging = game.staging_dir().join(fsutil::unique_suffix());
     fs::create_dir_all(&staging).ctx(|| format!("creating {}", staging.display()))?;
-    let result = (|| {
-        let content = staging.join("content");
-        if src.is_dir() {
-            copy_tree(src, &content)?;
-        } else if src
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("zip"))
-        {
-            extract_zip(src, &content)?;
-        } else {
-            return Err(StoreError::Unsupported(src.to_path_buf()));
-        }
-        let root = if opts.unwrap {
-            unwrap_root(&content, &opts.keep_top_dirs)?
-        } else {
-            content
-        };
-        let files = index_files(&root)?;
-        if files.is_empty() {
-            return Err(StoreError::EmptyMod);
-        }
-        fs::create_dir_all(&dest).ctx(|| format!("creating {}", dest.display()))?;
-        let files_dir = game.mod_files_dir(&id);
-        fs::rename(&root, &files_dir).ctx(|| format!("moving mod into {}", files_dir.display()))?;
-        let meta = ModMeta {
-            id: id.clone(),
-            name,
-            version: opts.version.clone(),
-            source: opts
-                .source
-                .clone()
-                .or_else(|| Some(src.display().to_string())),
-            imported_unix: fsutil::unix_now(),
-            files,
-        };
-        write_toml(&dest.join(MOD_META_FILE), &meta)?;
+    if dest.exists() {
+        // An update: build the new mod beside the old one, then swap them.
+        let result = (|| -> Result<ModMeta> {
+            let new_dir = staging.join("new");
+            let meta = stage_mod(src, &staging, &new_dir, &id, name, opts)?;
+            let old = staging.join("old");
+            fs::rename(&dest, &old).ctx(|| format!("moving {} aside", dest.display()))?;
+            if let Err(e) = fs::rename(&new_dir, &dest) {
+                let _ = fs::rename(&old, &dest);
+                let failed: io::Result<()> = Err(e);
+                failed.ctx(|| format!("moving the update into {}", dest.display()))?;
+            }
+            Ok(meta)
+        })();
+        let _ = remove_tree(&staging);
+        return result;
+    }
+    let result = (|| -> Result<ModMeta> {
+        let new_dir = staging.join("new");
+        let meta = stage_mod(src, &staging, &new_dir, &id, name, opts)?;
+        fs::create_dir_all(game.mods_dir()).ctx(|| "creating the mods folder".to_string())?;
+        fs::rename(&new_dir, &dest).ctx(|| format!("moving mod into {}", dest.display()))?;
         Ok(meta)
     })();
-    let _ = fs::remove_dir_all(&staging);
-    if result.is_err() && dest.exists() && !dest.join(MOD_META_FILE).exists() {
-        let _ = fs::remove_dir_all(&dest);
-    }
+    let _ = remove_tree(&staging);
     result
+}
+
+fn remove_tree(p: &Path) -> io::Result<()> {
+    fs::remove_dir_all(p)
+}
+
+/// Builds a complete mod folder (`files/` + `mod.toml`) at `out`, using `staging` for scratch.
+fn stage_mod(
+    src: &Path,
+    staging: &Path,
+    out: &Path,
+    id: &str,
+    name: String,
+    opts: &ImportOptions,
+) -> Result<ModMeta> {
+    let content = staging.join("content");
+    if src.is_dir() {
+        copy_tree(src, &content)?;
+    } else if src
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("zip"))
+    {
+        extract_zip(src, &content)?;
+    } else {
+        return Err(StoreError::Unsupported(src.to_path_buf()));
+    }
+    let root = if opts.unwrap {
+        unwrap_root(&content, &opts.keep_top_dirs)?
+    } else {
+        content
+    };
+    let files = index_files(&root)?;
+    if files.is_empty() {
+        return Err(StoreError::EmptyMod);
+    }
+    fs::create_dir_all(out).ctx(|| format!("creating {}", out.display()))?;
+    let files_dir = out.join("files");
+    fs::rename(&root, &files_dir).ctx(|| format!("moving mod into {}", files_dir.display()))?;
+    let meta = ModMeta {
+        id: id.to_string(),
+        name,
+        version: opts.version.clone(),
+        // Only a remote origin is worth recording: an imported file or folder's content is
+        // copied into the store, so its original path says nothing useful.
+        source: opts.source.clone(),
+        imported_unix: fsutil::unix_now(),
+        layout: opts.layout,
+        thunderstore: opts.thunderstore.clone(),
+        files,
+    };
+    write_toml(&out.join(MOD_META_FILE), &meta)?;
+    Ok(meta)
 }
 
 fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
