@@ -1,6 +1,6 @@
 //! Adding a game by hand: pick its folder, and UMM fills in the rest from what it finds there.
 
-use crate::steam::setups_for;
+use crate::steam::{setups_for, TsFit};
 use crate::{CoreError, Result, Session};
 use std::path::{Path, PathBuf};
 use umm_gamedef::steam::{draft_manual, inspect_folder, installed_games, to_toml, Draft, Engine, Note};
@@ -15,9 +15,12 @@ pub struct FolderInfo {
     pub name: String,
     /// Exes that could be the game (relative to the folder), the likely one first.
     pub exes: Vec<String>,
-    /// The game's Thunderstore community, when its exe is a BepInEx game there.
+    /// The game's Thunderstore community, when its exe is a game there whose mod loader
+    /// UMM supports.
     pub community: Option<String>,
-    /// Thunderstore's mod loader for the game when it is not BepInEx.
+    /// That community's mod loader kind.
+    pub ts_loader: Option<String>,
+    /// Thunderstore's mod loader for the game when UMM does not support it.
     pub other_loader: Option<String>,
     /// The setups it can be added with, the default first.
     pub setups: Vec<LoaderSetup>,
@@ -35,7 +38,7 @@ impl Session {
             )));
         }
         let found = inspect_folder(folder);
-        let (community, other_loader) = self.community_for_exe(&found.exe);
+        let fit = self.community_for_exe(&found.exe);
         let same = |a: &Path, b: &Path| same_file::is_same_file(a, b).unwrap_or(false);
         let steam_app = installed_games()
             .into_iter()
@@ -49,23 +52,20 @@ impl Session {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default(),
             exes: found.exes,
-            setups: setups_for(found.engine, community.is_some()),
-            community,
-            other_loader,
+            setups: setups_for(found.engine, fit.loader.as_deref()),
+            community: fit.community,
+            ts_loader: fit.loader,
+            other_loader: fit.other_loader,
             steam_app,
         })
     }
 
-    /// Thunderstore's community for an exe name, when that game is a BepInEx game there.
-    fn community_for_exe(&self, exe: &str) -> (Option<String>, Option<String>) {
+    /// What Thunderstore says about the game with this exe name.
+    fn community_for_exe(&self, exe: &str) -> TsFit {
         let name = exe.rsplit('/').next().unwrap_or(exe);
-        let Some(eco) = self.ecosystem(false).ok() else {
-            return (None, None);
-        };
-        match eco.by_exe_name(name) {
-            Some(m) if m.is_bepinex() => (Some(m.community().to_string()), None),
-            Some(m) => (None, Some(m.loader().to_string())),
-            None => (None, None),
+        match self.ecosystem(false) {
+            Ok(eco) => TsFit::of(eco.by_exe_name(name)),
+            Err(_) => TsFit::default(),
         }
     }
 
@@ -99,18 +99,18 @@ impl Session {
             }
         }
         let mut found = inspect_folder(folder);
-        let (community, other_loader) = self.community_for_exe(&exe);
-        let setups = setups_for(found.engine, community.is_some());
+        let fit = self.community_for_exe(&exe);
+        let setups = setups_for(found.engine, fit.loader.as_deref());
         let setup = setup.unwrap_or(setups[0]);
         if !setups.contains(&setup) {
             return Err(CoreError::Invalid(format!(
                 "{name} cannot be set up as {}",
-                setup.label()
+                setup.label(fit.loader.as_deref())
             )));
         }
         found.exe = exe.clone();
-        let mut draft = draft_manual(folder, name, &exe, &found, setup, community.as_deref())?;
-        if let Some(l) = &other_loader {
+        let mut draft = draft_manual(folder, name, &exe, &found, setup, fit.as_community())?;
+        if let Some(l) = &fit.other_loader {
             draft.notes.push(Note::new(
                 "thunderstore-other-loader",
                 format!("On Thunderstore this game uses {l}, which UMM does not support yet."),

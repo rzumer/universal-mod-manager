@@ -10,7 +10,7 @@ pub mod vdf;
 
 pub use detect::{detect_install, Detected};
 pub use relpath::{RelPath, RelPathError};
-pub use setup::LoaderSetup;
+pub use setup::{Community, LoaderSetup};
 
 use globset::{GlobBuilder, GlobMatcher, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
@@ -247,6 +247,65 @@ pub fn doorstop_loader(kind: &str) -> Option<DoorstopLoader> {
     })
 }
 
+/// Loader kind for Thunderstore's unreal-shimloader (RE-UE4SS behind a `dwmapi.dll` proxy).
+pub const SHIMLOADER_KIND: &str = "shimloader";
+
+/// Shimloader's folder in the runtime folder, and the launch flags pointing it at each of its
+/// parts there (the mod, pak, config and overlay folders it maps into the game).
+pub const SHIMLOADER_DIR: &str = "shimloader";
+/// Shimloader's mod folder, which stands in for UE4SS's `Mods/`.
+pub const SHIMLOADER_MOD_DIR: &str = "shimloader/mod";
+pub const SHIMLOADER_DIRS: &[(&str, &str)] = &[
+    ("--mod-dir", SHIMLOADER_MOD_DIR),
+    ("--pak-dir", "shimloader/pak"),
+    ("--cfg-dir", "shimloader/cfg"),
+    ("--overlay-dir", "shimloader/overlay"),
+];
+
+/// The folder of an Unreal game's real exe, where Shimloader's proxy goes, for the game's
+/// project folder (`Pal` for Palworld).
+pub fn unreal_binaries_dir(project: &str) -> String {
+    format!("{}/Binaries/Win64", project.trim_matches('/'))
+}
+
+/// A loader that is pointed at a per-profile runtime folder outside the game, so that only
+/// its proxy goes into the game folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeLoader {
+    /// BepInEx, started by Unity Doorstop.
+    Doorstop(DoorstopLoader),
+    /// Unreal Shimloader, which takes its folders as launch arguments.
+    Shimloader,
+}
+
+impl RuntimeLoader {
+    /// Top-level folders that live in the runtime folder instead of the game folder.
+    pub fn runtime_dirs(&self) -> &'static [&'static str] {
+        match self {
+            RuntimeLoader::Doorstop(d) => d.runtime_dirs,
+            RuntimeLoader::Shimloader => &[SHIMLOADER_DIR],
+        }
+    }
+}
+
+/// Thunderstore mod loaders UMM can set a game up with, and how each is injected.
+pub fn thunderstore_inject(kind: &str) -> Option<Inject> {
+    match kind {
+        BEPINEX_KIND => Some(Inject::Doorstop),
+        SHIMLOADER_KIND => Some(Inject::Args),
+        _ => None,
+    }
+}
+
+/// A loader kind's name as people know it.
+pub fn loader_name(kind: &str) -> &str {
+    match kind {
+        BEPINEX_KIND => "BepInEx",
+        SHIMLOADER_KIND => "Shimloader",
+        other => other,
+    }
+}
+
 impl GameDef {
     /// The Doorstop loader to inject through launch arguments, if this game uses one.
     pub fn doorstop(&self) -> Option<DoorstopLoader> {
@@ -254,6 +313,18 @@ impl GameDef {
         (l.inject == Inject::Doorstop)
             .then(|| doorstop_loader(&l.kind))
             .flatten()
+    }
+
+    /// The loader that keeps its files in a runtime folder, if this game uses one.
+    pub fn runtime_loader(&self) -> Option<RuntimeLoader> {
+        if let Some(d) = self.doorstop() {
+            return Some(RuntimeLoader::Doorstop(d));
+        }
+        let l = self.loader.as_ref()?;
+        match l.inject {
+            Inject::Args if l.kind == SHIMLOADER_KIND => Some(RuntimeLoader::Shimloader),
+            _ => None,
+        }
     }
 
     /// Executable names that mean the game is running: `process_names`, or the exe's name.
@@ -390,12 +461,17 @@ impl GameDef {
                         loader.kind
                     )))
                 }
-                Inject::Args | Inject::Env => {
+                Inject::Args if loader.kind == SHIMLOADER_KIND => {}
+                Inject::Args => {
                     return Err(GameDefError::Unsupported(format!(
-                        "inject = \"{:?}\" is not supported yet; use \"files\" or \"doorstop\"",
-                        loader.inject
-                    )
-                    .to_lowercase()))
+                        "loader kind `{}` cannot be injected with arguments (supported: shimloader); use inject = \"files\"",
+                        loader.kind
+                    )))
+                }
+                Inject::Env => {
+                    return Err(GameDefError::Unsupported(
+                        "inject = \"env\" is not supported yet; use \"files\", \"doorstop\" or \"args\"".into(),
+                    ))
                 }
             }
         }

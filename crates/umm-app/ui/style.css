@@ -321,7 +321,7 @@ button.inline-link { display: inline; padding: 0; font-size: inherit; }
 .steam-row { cursor: default; }
 .steam-pick { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; cursor: pointer; }
 .steam-row.added .steam-pick { cursor: default; }
-.steam-row select.setup { flex: none; max-width: 190px; font-size: 12px; padding: 3px 6px; }
+.steam-row select.setup { flex: none; max-width: 240px; font-size: 12px; padding: 3px 6px; }
 .modal p.banner { display: block; box-shadow: none; margin: 10px 0 0; font-size: 13px; }
 .chip-button { cursor: pointer; font: inherit; font-size: 12px; }
 .chip-button:hover { border-color: var(--accent); }

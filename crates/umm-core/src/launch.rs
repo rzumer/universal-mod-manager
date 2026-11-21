@@ -7,9 +7,10 @@ use umm_deploy::{
     apply, build_plan, prepare, Faults, GameLock, Journal, PlannedFile, RevertReport,
 };
 use umm_gamedef::{
-    detect::steam_roots, BepInExBuild, DoorstopLoader, GameDef, RelPath, SteamRelaunch,
-    CORECLR_PATH, CORLIB_DIR, DOORSTOP3_ENABLED_FLAG, DOORSTOP3_TARGET_FLAG,
+    detect::steam_roots, loader_name, BepInExBuild, BEPINEX_KIND, DoorstopLoader, GameDef, RelPath, RuntimeLoader,
+    SteamRelaunch, CORECLR_PATH, CORLIB_DIR, DOORSTOP3_ENABLED_FLAG, DOORSTOP3_TARGET_FLAG,
     DOORSTOP_CORECLR_FLAG, DOORSTOP_CORLIB_FLAG, DOORSTOP_ENABLED_FLAG, DOORSTOP_TARGET_FLAG,
+    SHIMLOADER_DIRS,
 };
 use umm_launch::{LaunchSpec, Tracking};
 use umm_store::fsutil::{hash_file, write_atomic, IoCtx};
@@ -47,11 +48,12 @@ pub struct LaunchOutcome {
 }
 
 /// Splits planned files into those that live in the runtime folder and those for the game.
-fn split_runtime(files: Vec<PlannedFile>, ds: &DoorstopLoader) -> (Vec<PlannedFile>, Vec<PlannedFile>) {
+fn split_runtime(files: Vec<PlannedFile>, rl: &RuntimeLoader) -> (Vec<PlannedFile>, Vec<PlannedFile>) {
+    let dirs = rl.runtime_dirs();
     files.into_iter().partition(|f| {
         f.target
             .first()
-            .is_some_and(|c| ds.runtime_dirs.iter().any(|d| c.eq_ignore_ascii_case(d)))
+            .is_some_and(|c| dirs.iter().any(|d| c.eq_ignore_ascii_case(d)))
     })
 }
 
@@ -62,7 +64,7 @@ impl Session {
     /// nothing is deployed.
     pub(crate) fn resync_runtimes(&self, id: &str) -> Result<()> {
         let def = self.def(id)?;
-        let Some(ds) = def.def.doorstop() else {
+        let Some(rl) = def.def.runtime_loader() else {
             return Ok(());
         };
         let game = self.data.game(id);
@@ -72,20 +74,21 @@ impl Session {
                 continue;
             }
             let profile = umm_store::load_profile(&game, &name)?;
-            let (inside, _) = split_runtime(build_plan(&game, &def, &profile)?.files, &ds);
+            let (inside, _) = split_runtime(build_plan(&game, &def, &profile)?.files, &rl);
             runtime::sync(&dir, &inside)?;
         }
         Ok(())
     }
 
     /// Deploys the profile, splitting files between the game folder (journaled) and, for
-    /// Doorstop loaders, the profile's runtime folder (synced).
+    /// loaders kept outside the game (Doorstop, Shimloader), the profile's runtime folder
+    /// (synced).
     pub(crate) fn deploy_profile(
         &self,
         id: &str,
         profile_name: &str,
         faults: &mut Faults,
-    ) -> Result<(Journal, Option<SyncReport>, Option<Doorstop>)> {
+    ) -> Result<(Journal, Option<SyncReport>, Option<Injection>)> {
         let def = self.def(id)?;
         let game = self.data.game(id);
         game.ensure()?;
@@ -97,21 +100,39 @@ impl Session {
         self.ensure_not_running(&def.def)?;
         let profile = umm_store::load_profile(&game, profile_name)?;
         let mut plan = build_plan(&game, &def, &profile)?;
-        let doorstop = match def.def.doorstop() {
-            Some(ds) => Some(check_bepinex(&def.def, &plan.files, &ds)?),
-            None => None,
+        let rl = def.def.runtime_loader();
+        let (injection, shim_bin) = match rl {
+            Some(RuntimeLoader::Doorstop(ds)) => (
+                Some(Injection::Doorstop(check_bepinex(&def.def, &plan.files, &ds)?)),
+                None,
+            ),
+            Some(RuntimeLoader::Shimloader) => (
+                Some(Injection::Shimloader),
+                Some(check_shimloader(&plan.files)?),
+            ),
+            None => (None, None),
         };
-        if let (Some(_), Some(launch)) = (doorstop, &def.def.launch) {
+        let proxied = matches!(injection, Some(Injection::Doorstop(_)));
+        if let (true, Some(launch)) = (proxied, &def.def.launch) {
             if let Ok(exe) = RelPath::parse(&launch.exe) {
                 check_proxy_architecture(&plan.files, &exe.to_path(&root), &def.def.name)?;
             }
         }
 
-        let runtime = match def.def.doorstop() {
-            Some(ds) => {
-                let (inside, outside) = split_runtime(plan.files, &ds);
+        let runtime = match rl {
+            Some(rl) => {
+                let (inside, outside) = split_runtime(plan.files, &rl);
                 plan.files = outside;
-                Some(runtime::sync(&game.runtime_dir(&profile.name), &inside)?)
+                let dir = game.runtime_dir(&profile.name);
+                let report = runtime::sync(&dir, &inside)?;
+                if rl == RuntimeLoader::Shimloader {
+                    // Shimloader wants every folder it is given to exist.
+                    for (_, rel) in SHIMLOADER_DIRS {
+                        let p = RelPath::parse(rel).expect("valid path").to_path(&dir);
+                        std::fs::create_dir_all(&p).ctx(|| format!("creating {}", p.display()))?;
+                    }
+                }
+                Some(report)
             }
             None => None,
         };
@@ -119,14 +140,23 @@ impl Session {
         if let (Some(launch), Some(app_id)) = (&def.def.launch, def.def.detect.steam_app_id) {
             if launch.steam_relaunch == SteamRelaunch::AppidFile {
                 let f = steam_appid_file(&game.generated_dir(), app_id)?;
-                plan.files.retain(|p| p.target.key() != f.target.key());
-                plan.files.push(f);
+                // An Unreal game's real exe, next to Shimloader, looks for it in its own
+                // folder: without it the game restarts through Steam, losing Shimloader's
+                // arguments.
+                let extra = shim_bin.map(|bin| PlannedFile {
+                    target: bin.join(&f.target),
+                    ..f.clone()
+                });
+                for f in std::iter::once(f).chain(extra) {
+                    plan.files.retain(|p| p.target.key() != f.target.key());
+                    plan.files.push(f);
+                }
             }
         }
 
         let mut journal = prepare(&game, &plan, &root, false)?;
         apply(&game, &mut journal, faults)?;
-        Ok((journal, runtime, doorstop))
+        Ok((journal, runtime, injection))
     }
 
     /// Deploys the profile, starts the game, waits until every game process has exited, then
@@ -148,7 +178,7 @@ impl Session {
             on_event(LaunchEvent::Recovered(r));
         }
 
-        let (journal, runtime, doorstop) =
+        let (journal, runtime, injection) =
             self.deploy_profile(id, profile_name, &mut Faults::none())?;
         let game_files = journal
             .ops
@@ -167,7 +197,7 @@ impl Session {
             &journal.game_root,
             &game.runtime_dir(&profile.name),
             &profile,
-            doorstop,
+            injection,
             find_steam_exe(),
         )?;
 
@@ -285,9 +315,15 @@ impl Session {
                 if is_64_bit(&path).is_some_and(|p| p != game_64) {
                     let bits = |b: bool| if b { "64-bit" } else { "32-bit" };
                     let current = m.thunderstore.as_ref().map(|t| t.full_name.as_str());
+                    let kind = def.loader.as_ref().map_or(BEPINEX_KIND, |l| l.kind.as_str());
+                    let (name, what) = if kind == BEPINEX_KIND {
+                        ("BepInEx", "BepInEx pack")
+                    } else {
+                        (loader_name(kind), "package")
+                    };
                     return Some(LoaderMismatch {
                         message: format!(
-                            "{} is {}, but {} is {}, so BepInEx will not load. You can try installing an unlisted BepInEx pack built for {}.",
+                            "{} is {}, but {} is {}, so {name} will not load. You can try installing an unlisted {what} built for {}.",
                             m.name,
                             bits(!game_64),
                             def.name,
@@ -295,6 +331,7 @@ impl Session {
                             bits(game_64)
                         ),
                         suggestion: known_bepinex_pack(game_64, il2cpp)
+                            .filter(|_| kind == BEPINEX_KIND)
                             .filter(|s| current.is_none_or(|c| !c.eq_ignore_ascii_case(s)))
                             .map(str::to_string),
                     });
@@ -333,6 +370,27 @@ fn check_proxy_architecture(files: &[PlannedFile], game_exe: &Path, game: &str) 
         }
     }
     Ok(())
+}
+
+/// How the profile's loader is started, as found when deploying.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Injection {
+    Doorstop(Doorstop),
+    Shimloader,
+}
+
+/// Finds Shimloader's UE4SS among the files for the game folder and returns its folder (the
+/// game's real exe's folder). Errors when the profile has none.
+fn check_shimloader(files: &[PlannedFile]) -> Result<RelPath> {
+    files
+        .iter()
+        .filter(|f| f.target.file_name().is_some_and(|n| n.eq_ignore_ascii_case("ue4ss.dll")))
+        .find_map(|f| f.target.parent())
+        .ok_or_else(|| {
+            CoreError::Invalid(
+                "the profile has no Shimloader; install it from the Thunderstore tab (it also comes with any mod that needs it)".into(),
+            )
+        })
 }
 
 /// The BepInEx build a profile has and the Doorstop that starts it.
@@ -430,7 +488,7 @@ pub(crate) fn build_spec(
     game_root: &Path,
     runtime_dir: &Path,
     profile: &Profile,
-    doorstop: Option<Doorstop>,
+    injection: Option<Injection>,
     steam_exe: Option<PathBuf>,
 ) -> Result<LaunchSpec> {
     let launch = def
@@ -440,10 +498,14 @@ pub(crate) fn build_spec(
     let exe_rel = RelPath::parse(&launch.exe).map_err(|e| CoreError::Invalid(e.to_string()))?;
 
     let mut game_args = launch.args.clone();
-    if let Some(d) = doorstop {
-        let in_runtime = |rel: &str| {
-            native_path(&RelPath::parse(rel).expect("valid path").to_path(runtime_dir))
-        };
+    let in_runtime =
+        |rel: &str| native_path(&RelPath::parse(rel).expect("valid path").to_path(runtime_dir));
+    if injection == Some(Injection::Shimloader) {
+        for (flag, rel) in SHIMLOADER_DIRS {
+            game_args.extend([flag.to_string(), in_runtime(rel)]);
+        }
+    }
+    if let Some(Injection::Doorstop(d)) = injection {
         let (enabled, target_flag) = if d.major == 3 {
             (DOORSTOP3_ENABLED_FLAG, DOORSTOP3_TARGET_FLAG)
         } else {
@@ -507,7 +569,7 @@ mod tests {
              [loader]\nkind = \"bepinex\"\ninject = \"doorstop\"\n");
         let mut p = Profile::new("Default");
         p.launch_args = vec!["-skipintro".into()];
-        let ds = |build, major| Some(Doorstop { build, major });
+        let ds = |build, major| Some(Injection::Doorstop(Doorstop { build, major }));
         let spec = build_spec(&d, Path::new("/game"), Path::new("/rt"), &p, ds(BepInExBuild::V5, 4), None)
             .unwrap();
         assert_eq!(spec.tracking, Tracking::Job);
@@ -560,6 +622,36 @@ mod tests {
             .unwrap();
         assert_eq!(spec.args[4], rt(&["BepInEx", "core", "BepInEx.Unity.Mono.Preloader.dll"]));
         assert_eq!(spec.args.len(), 6, "no runtime paths for Mono");
+    }
+
+    #[test]
+    fn shimloader_gets_its_folders_as_arguments() {
+        let d = def("[launch]\nexe = \"Palworld.exe\"\n\
+             [loader]\nkind = \"shimloader\"\nsource = \"thunderstore\"\ninject = \"args\"\n\
+             [thunderstore]\ncommunity = \"palworld\"\n");
+        let spec = build_spec(
+            &d,
+            Path::new("/game"),
+            Path::new("/rt"),
+            &Profile::new("Default"),
+            Some(Injection::Shimloader),
+            None,
+        )
+        .unwrap();
+        let rt = |parts: &[&str]| native_path(&parts.iter().fold(Path::new("/rt").to_path_buf(), |p, c| p.join(c)));
+        assert_eq!(
+            spec.args,
+            [
+                "--mod-dir",
+                &rt(&["shimloader", "mod"]),
+                "--pak-dir",
+                &rt(&["shimloader", "pak"]),
+                "--cfg-dir",
+                &rt(&["shimloader", "cfg"]),
+                "--overlay-dir",
+                &rt(&["shimloader", "overlay"]),
+            ]
+        );
     }
 
     /// The smallest file `is_64_bit` reads: a PE header offset, then the header's machine.

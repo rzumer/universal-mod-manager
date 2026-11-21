@@ -276,6 +276,7 @@ const handlers = {
       items,
       categories: [...new Set(tsPackages.flatMap((p) => p.categories))].sort(),
       stale: false,
+      loaderName: "BepInEx",
       loaderPackage: "BepInEx-BepInExPack",
       loaderInstalled: !!tsInstalledVersion(game, "BepInEx-BepInExPack"),
       // `?mismatch` previews a pack built for the other architecture.

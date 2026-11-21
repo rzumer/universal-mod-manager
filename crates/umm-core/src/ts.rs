@@ -1,5 +1,6 @@
-//! Thunderstore packages for a game set up as "BepInEx from Thunderstore": search, install
-//! with dependencies, update. Packages are stored as ordinary mods, laid out for the game.
+//! Thunderstore packages for a game set up with its mod loader from Thunderstore (BepInEx or
+//! Shimloader): search, install with dependencies, update. Packages are stored as ordinary
+//! mods, laid out for the game.
 
 use crate::{CoreError, Result, Session};
 use std::cmp::Ordering;
@@ -50,9 +51,11 @@ pub struct TsPage {
     pub categories: Vec<String>,
     /// The package list is an old copy because Thunderstore could not be reached.
     pub stale: bool,
-    /// The community's BepInEx pack, `Owner-Name`.
+    /// The game's mod loader, by name ("BepInEx", "Shimloader").
+    pub loader_name: String,
+    /// The community's package for that loader, `Owner-Name`.
     pub loader_package: Option<String>,
-    /// A BepInEx pack is installed for the game.
+    /// The loader's package is installed for the game.
     pub loader_installed: bool,
     /// The installed pack cannot load in this game (built for the other architecture).
     pub loader_warning: Option<String>,
@@ -118,15 +121,15 @@ pub fn package_mod_id(full_name: &str) -> String {
 }
 
 impl Session {
-    /// The game's community and Thunderstore data; refused unless the game is set up for
-    /// BepInEx from Thunderstore.
+    /// The game's community and Thunderstore data; refused unless the game is set up with
+    /// its mod loader from Thunderstore.
     fn ts_game(&self, id: &str) -> Result<(GameDef, String, Arc<Ecosystem>)> {
         let def = self.def(id)?.def;
         let community = match (&def.loader, def.community()) {
             (Some(l), Some(c)) if l.from_thunderstore() => c.to_string(),
             _ => {
                 return Err(CoreError::Invalid(format!(
-                    "{} is not set up for BepInEx from Thunderstore; change its mod loader first",
+                    "{} is not set up with a mod loader from Thunderstore; change its mod loader first",
                     def.name
                 )))
             }
@@ -200,7 +203,9 @@ impl Session {
     }
 
     pub fn ts_search(&self, id: &str, q: &TsQuery) -> Result<TsPage> {
-        let (_, _, eco) = self.ts_game(id)?;
+        let (def, _, eco) = self.ts_game(id)?;
+        let kind = def.ts_loader().unwrap_or(umm_gamedef::BEPINEX_KIND).to_string();
+        let bepinex = kind == umm_gamedef::BEPINEX_KIND;
         let (packages, stale) = self.ts_packages(id, false)?;
         let installed_pkgs = self.ts_installed(id)?;
         let loader_installed = installed_pkgs.iter().any(|p| p.meta.loader);
@@ -208,19 +213,21 @@ impl Session {
             .into_iter()
             .map(|p| (p.meta.full_name, p.meta.version))
             .collect();
-        // The community's BepInEx pack for this build of the game. An IL2CPP game never gets
-        // the plain Mono pack, a Mono game never an IL2CPP one (game-specific packs like
-        // BepInExPack_AmongUs do not say which they are). Among the rest, BepInEx's own pack
-        // if listed, else the most downloaded.
+        // The community's package for the game's loader. For BepInEx, the pack for this build
+        // of the game: an IL2CPP game never gets the plain Mono pack, a Mono game never an
+        // IL2CPP one (game-specific packs like BepInExPack_AmongUs do not say which they
+        // are). Among the rest, BepInEx's own pack if listed, else the most downloaded.
         let il2cpp = self
-            .install_path(&self.def(id)?.def)?
+            .install_path(&def)?
             .is_some_and(|(p, _)| p.join("GameAssembly.dll").is_file());
         let loader_package = packages
             .iter()
-            .filter(|p| eco.modloader(&p.full_name).is_some_and(|m| m.loader == "bepinex"))
+            .filter(|p| eco.modloader_for(&p.full_name, &kind).is_some_and(|m| m.loader == kind))
             .filter(|p| !p.deprecated)
             .filter(|p| {
-                if il2cpp {
+                if !bepinex {
+                    true
+                } else if il2cpp {
                     !p.full_name.eq_ignore_ascii_case("BepInEx-BepInExPack")
                 } else {
                     !p.full_name.to_lowercase().contains("il2cpp")
@@ -293,6 +300,7 @@ impl Session {
             items,
             categories,
             stale,
+            loader_name: umm_gamedef::loader_name(&kind).to_string(),
             loader_package,
             loader_installed,
             loader_warning: mismatch.as_ref().map(|m| m.message.clone()),
@@ -606,8 +614,8 @@ impl Session {
             }
         }
         let manifest = layout::manifest(zip)?.unwrap_or_default();
-        let loader = eco.modloader(&pkg.full_name);
-        let files = layout::plan(zip, &pkg.full_name, &m.r2.install_rules, loader)?;
+        let loader = eco.modloader_for(&pkg.full_name, m.loader());
+        let files = layout::plan(zip, &pkg.full_name, m.r2, loader)?;
         let staging = game.staging_dir().join(fsutil::unique_suffix());
         let result = (|| -> Result<()> {
             layout::write(&files, &staging)?;

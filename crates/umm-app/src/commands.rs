@@ -367,7 +367,7 @@ pub async fn add_steam_games(
                 Ok(d) => AddedGameDto {
                     app_id,
                     ok: true,
-                    message: format!("Added {} ({})", d.def.name, d.setup.label()),
+                    message: format!("Added {} ({})", d.def.name, d.def.setup_label()),
                     id: Some(d.def.id),
                     name: Some(d.def.name),
                     notes: d.notes,
@@ -435,7 +435,7 @@ pub async fn add_manual_game(
         Ok(AddedGameDto {
             app_id: 0,
             ok: true,
-            message: format!("Added {} ({})", d.def.name, d.setup.label()),
+            message: format!("Added {} ({})", d.def.name, d.def.setup_label()),
             id: Some(d.def.id),
             name: Some(d.def.name),
             notes: d.notes,
@@ -461,6 +461,7 @@ pub async fn ts_search(
             stale: page.stale,
             loader_package: page.loader_package,
             loader_installed: page.loader_installed,
+            loader_name: page.loader_name,
             loader_warning: page.loader_warning,
             loader_suggestion: page.loader_suggestion,
         })

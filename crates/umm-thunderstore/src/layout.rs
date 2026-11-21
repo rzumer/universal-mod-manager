@@ -8,7 +8,7 @@
 //!   extension it has (longest match), else to the default route. `subdir` routes put the
 //!   package's files under `<route>/<Owner-Name>/`.
 
-use crate::ecosystem::{InstallRule, ModloaderPackage, TrackingMethod};
+use crate::ecosystem::{InstallRule, ModloaderPackage, R2modmanGame, TrackingMethod};
 use crate::{io_err, Result, TsError};
 use std::collections::BTreeMap;
 use std::fs;
@@ -109,16 +109,27 @@ pub fn manifest(zip: &[u8]) -> Result<Option<Manifest>> {
 pub fn plan(
     zip: &[u8],
     full_name: &str,
-    rules: &[InstallRule],
+    game: &R2modmanGame,
     loader: Option<&ModloaderPackage>,
 ) -> Result<BTreeMap<String, Vec<u8>>> {
     let files = read_zip(zip)?;
+    let rules = &game.install_rules;
     let mut out = BTreeMap::new();
 
+    if loader.is_some_and(|l| l.loader == umm_gamedef::SHIMLOADER_KIND) {
+        return shimloader_pack(files, full_name, &game.data_folder_name);
+    }
     if let Some(l) = loader {
         let root = format!("{}/", l.root_folder.trim_matches('/').to_lowercase());
         for (path, body) in files {
-            if path.to_lowercase().starts_with(&root) {
+            let at_root = !path.contains('/');
+            if root == "/" && at_root && PACKAGE_FILES.contains(&path.to_lowercase().as_str()) {
+                continue;
+            }
+            // An empty root folder means the whole package.
+            if root == "/" {
+                out.insert(path, body);
+            } else if path.to_lowercase().starts_with(&root) {
                 out.insert(path[root.len()..].to_string(), body);
             }
         }
@@ -158,10 +169,49 @@ pub fn plan(
         }
     };
 
+    // Shimloader games: a folder holding a UE4SS mod (`Scripts/` or `dlls/` inside) keeps its
+    // layout under the mod route, since UE4SS only starts `<mod>/Scripts/main.lua`. Flattened
+    // like other files, its scripts would land beside `enabled.txt` and never run.
+    let ue4ss_route = routes
+        .iter()
+        .find(|r| r.path.eq_ignore_ascii_case(umm_gamedef::SHIMLOADER_MOD_DIR));
+    let ue4ss_roots: Vec<String> = match ue4ss_route {
+        None => Vec::new(),
+        Some(_) => {
+            let mut roots: Vec<String> = files
+                .keys()
+                .filter_map(|p| {
+                    let lower = p.to_lowercase();
+                    let parts: Vec<&str> = lower.split('/').collect();
+                    let i = parts[..parts.len() - 1]
+                        .iter()
+                        .position(|d| *d == "scripts" || *d == "dlls")?;
+                    Some(parts[..i].iter().map(|d| format!("{d}/")).collect())
+                })
+                .collect();
+            roots.sort_by_key(|r| r.len());
+            roots.dedup();
+            roots
+        }
+    };
+
     for (path, body) in files {
         let parts: Vec<&str> = path.split('/').collect();
         if parts.len() == 1 && PACKAGE_FILES.contains(&parts[0].to_lowercase().as_str()) {
             continue;
+        }
+        if let Some(route) = ue4ss_route {
+            let lower = path.to_lowercase();
+            // A folder named like a route (`mod/`, `pak/`) still decides first.
+            let route_named = parts[..parts.len() - 1]
+                .iter()
+                .any(|d| routes.iter().any(|r| r.last == d.to_lowercase()));
+            if let Some(root) = ue4ss_roots.iter().find(|r| lower.starts_with(r.as_str())) {
+                if !route_named {
+                    out.insert(dest(route, &path[root.len()..])?, body);
+                    continue;
+                }
+            }
         }
         // The first folder on the way down that names a route takes the rest of the path.
         let routed = parts[..parts.len() - 1]
@@ -205,6 +255,47 @@ pub fn plan(
     Ok(out)
 }
 
+/// Lays out Shimloader's pack as r2modman does: the proxy DLL at the zip's root, UE4SS and
+/// its settings go next to the game's real exe (`<project>/Binaries/Win64`); UE4SS's own
+/// mods go to Shimloader's mod folder. Everything else in the zip is left out.
+fn shimloader_pack(
+    files: BTreeMap<String, Vec<u8>>,
+    full_name: &str,
+    project: &str,
+) -> Result<BTreeMap<String, Vec<u8>>> {
+    let bad = |m: &str| TsError::Data {
+        what: format!("{full_name} (mod loader)"),
+        message: m.to_string(),
+    };
+    if project.trim_matches('/').is_empty() {
+        return Err(bad("Thunderstore does not say which folder holds this game's exe"));
+    }
+    let bin = umm_gamedef::unreal_binaries_dir(project);
+    let mut out = BTreeMap::new();
+    let (mut proxy, mut ue4ss) = (false, false);
+    for (path, body) in files {
+        let lower = path.to_lowercase();
+        let target = if !lower.contains('/') && lower.ends_with(".dll") {
+            proxy = true;
+            format!("{bin}/{path}")
+        } else if lower == "ue4ss/ue4ss.dll" {
+            ue4ss = true;
+            format!("{bin}/ue4ss.dll")
+        } else if lower == "ue4ss/ue4ss-settings.ini" {
+            format!("{bin}/UE4SS-settings.ini")
+        } else if lower.starts_with("ue4ss/mods/") {
+            format!("shimloader/mod/{}", &path["ue4ss/mods/".len()..])
+        } else {
+            continue;
+        };
+        out.insert(target, body);
+    }
+    if !proxy || !ue4ss {
+        return Err(bad("expected a proxy DLL at the root and UE4SS/ue4ss.dll"));
+    }
+    Ok(out)
+}
+
 /// Writes planned files under `dir`.
 pub fn write(files: &BTreeMap<String, Vec<u8>>, dir: &Path) -> Result<()> {
     for (rel, body) in files {
@@ -234,9 +325,9 @@ pub(crate) mod tests {
         w.finish().unwrap().into_inner()
     }
 
-    fn rules() -> Vec<InstallRule> {
+    fn rules() -> R2modmanGame {
         let eco = Ecosystem::parse(SAMPLE.as_bytes()).unwrap();
-        eco.community("lethal-company").unwrap().r2.install_rules.clone()
+        eco.community("lethal-company").unwrap().r2.clone()
     }
 
     #[test]
@@ -292,6 +383,104 @@ pub(crate) mod tests {
                 "BepInEx/core/BepInEx.Preloader.dll",
                 "doorstop_config.ini",
                 "winhttp.dll"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_shimloader_pack_goes_next_to_the_real_exe() {
+        let zip = zip_of(&[
+            ("manifest.json", "{}"),
+            ("dwmapi.dll", "shim"),
+            ("UE4SS/dwmapi.dll", "ue4ss's own proxy"),
+            ("UE4SS/UE4SS.dll", "ue4ss"),
+            ("UE4SS/UE4SS-settings.ini", "[General]"),
+            ("UE4SS/LICENSE", "mit"),
+            ("UE4SS/Mods/mods.txt", "Keybinds : 1"),
+            ("UE4SS/Mods/Keybinds/Scripts/main.lua", "--"),
+        ]);
+        let mut game = rules();
+        game.data_folder_name = "Pal".into();
+        let pack = ModloaderPackage {
+            package_id: "Thunderstore-unreal_shimloader".into(),
+            root_folder: String::new(),
+            loader: "shimloader".into(),
+        };
+        let out = plan(&zip, "Thunderstore-unreal_shimloader", &game, Some(&pack)).unwrap();
+        let keys: Vec<&str> = out.keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            [
+                "Pal/Binaries/Win64/UE4SS-settings.ini",
+                "Pal/Binaries/Win64/dwmapi.dll",
+                "Pal/Binaries/Win64/ue4ss.dll",
+                "shimloader/mod/Keybinds/Scripts/main.lua",
+                "shimloader/mod/mods.txt",
+            ]
+        );
+        assert_eq!(out["Pal/Binaries/Win64/dwmapi.dll"], b"shim");
+
+        game.data_folder_name.clear();
+        assert!(plan(&zip, "Thunderstore-unreal_shimloader", &game, Some(&pack)).is_err());
+    }
+
+    fn shimloader_game() -> R2modmanGame {
+        let mut game = rules();
+        let route = |r: &str, t: &str| -> InstallRule {
+            serde_json::from_str(&format!(r#"{{"route":"{r}","trackingMethod":"{t}"}}"#)).unwrap()
+        };
+        game.install_rules = vec![
+            InstallRule {
+                is_default_location: true,
+                ..route("shimloader/mod", "subdir")
+            },
+            route("shimloader/pak", "subdir"),
+            route("shimloader/cfg", "none"),
+        ];
+        game
+    }
+
+    #[test]
+    fn ue4ss_mod_folders_keep_their_layout() {
+        // As RVChat ships: the mod's folder, its Scripts/ beneath.
+        let zip = zip_of(&[
+            ("manifest.json", "{}"),
+            ("README.md", "hi"),
+            ("RVChat/config.ini", "c"),
+            ("RVChat/enabled.txt", "1"),
+            ("RVChat/Scripts/main.lua", "m"),
+            ("RVChat/Scripts/rvchat_core.lua", "r"),
+        ]);
+        let out = plan(&zip, "siko-RVChat", &shimloader_game(), None).unwrap();
+        let keys: Vec<&str> = out.keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            [
+                "shimloader/mod/siko-RVChat/Scripts/main.lua",
+                "shimloader/mod/siko-RVChat/Scripts/rvchat_core.lua",
+                "shimloader/mod/siko-RVChat/config.ini",
+                "shimloader/mod/siko-RVChat/enabled.txt",
+            ]
+        );
+
+        // Scripts/ at the zip's root, and folders named like routes, as before.
+        let zip = zip_of(&[
+            ("Scripts/main.lua", "m"),
+            ("enabled.txt", "1"),
+            ("mod/dlls/main.dll", "d"),
+            ("pak/Blue.pak", "p"),
+            ("cfg/a.cfg", "c"),
+        ]);
+        let out = plan(&zip, "Ann-Two", &shimloader_game(), None).unwrap();
+        let keys: Vec<&str> = out.keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            [
+                "shimloader/cfg/a.cfg",
+                "shimloader/mod/Ann-Two/Scripts/main.lua",
+                "shimloader/mod/Ann-Two/dlls/main.dll",
+                "shimloader/mod/Ann-Two/enabled.txt",
+                "shimloader/pak/Ann-Two/Blue.pak",
             ]
         );
     }

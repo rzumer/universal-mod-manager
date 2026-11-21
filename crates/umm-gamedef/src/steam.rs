@@ -7,8 +7,8 @@
 use crate::detect::steam_libraries;
 use crate::vdf::{self, Value};
 use crate::{
-    slug, Detect, GameDef, GameDefError, InstallRule, Launch, LoaderSetup, PathSet,
-    SteamRelaunch, Thunderstore, SCHEMA_VERSION,
+    slug, Community, Detect, GameDef, GameDefError, InstallRule, Launch, LoaderSetup, PathSet,
+    SteamRelaunch, Thunderstore, SCHEMA_VERSION, SHIMLOADER_KIND,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -287,7 +287,7 @@ struct Origin {
 pub fn draft_definition(
     app: &SteamApp,
     setup: LoaderSetup,
-    community: Option<&str>,
+    community: Option<Community>,
 ) -> Result<Draft, GameDefError> {
     draft_from(app, &inspect(app), setup, community)
 }
@@ -296,7 +296,7 @@ pub fn draft_from(
     app: &SteamApp,
     found: &Inspection,
     setup: LoaderSetup,
-    community: Option<&str>,
+    community: Option<Community>,
 ) -> Result<Draft, GameDefError> {
     let origin = Origin {
         id: app_id_slug(app),
@@ -321,7 +321,7 @@ pub fn draft_manual(
     exe: &str,
     found: &Inspection,
     setup: LoaderSetup,
-    community: Option<&str>,
+    community: Option<Community>,
 ) -> Result<Draft, GameDefError> {
     let folder_name = folder
         .file_name()
@@ -346,7 +346,7 @@ fn build(
     found: &Inspection,
     exe: &str,
     setup: LoaderSetup,
-    community: Option<&str>,
+    community: Option<Community>,
 ) -> Result<Draft, GameDefError> {
     let mut notes = Vec::new();
     let mut install = Vec::new();
@@ -364,7 +364,8 @@ fn build(
     match found.engine {
         Engine::UnityMono | Engine::UnityIl2cpp => protect.push("UnityPlayer.dll".into()),
         Engine::Unreal => {
-            if let Some(p) = &found.unreal_project {
+            // Under a mod loader its own rules apply instead.
+            if let Some(p) = found.unreal_project.as_ref().filter(|_| setup == LoaderSetup::Generic) {
                 for ext in ["pak", "utoc", "ucas"] {
                     install.push(rule(&format!("*.{ext}"), &format!("{p}/Content/Paks/~mods/")));
                 }
@@ -377,18 +378,29 @@ fn build(
                 ));
             }
         }
-        Engine::Unknown => notes.push(Note::new(
+        Engine::Unknown if setup == LoaderSetup::Generic => notes.push(Note::new(
             "unknown-engine",
             "Engine not recognised: mod files keep their paths relative to the game folder.",
         )),
+        Engine::Unknown => {}
     }
     install.push(rule("**", ""));
 
     match (setup, found.engine) {
+        (LoaderSetup::Thunderstore, _) if community.is_some_and(|c| c.loader == SHIMLOADER_KIND) => {
+            notes.push(Note::new(
+                "thunderstore",
+                "This game is set up for Shimloader (UE4SS). You can download mods directly \
+                 from the Thunderstore tab.",
+            ))
+        }
         (LoaderSetup::Thunderstore, _) => notes.push(Note::new(
             "thunderstore",
-            "This game is set up for BepInEx. You can download mods directly from the \
-             Thunderstore tab.",
+            format!(
+                "This game is set up for {}. You can download mods directly from the \
+                 Thunderstore tab.",
+                crate::loader_name(community.map_or(crate::BEPINEX_KIND, |c| c.loader))
+            ),
         )),
         (LoaderSetup::Bepinex, Engine::UnityIl2cpp) => notes.push(Note::new(
             "bepinex",
@@ -439,7 +451,7 @@ fn build(
         launch,
         loader: None,
         thunderstore: community.map(|c| Thunderstore {
-            community: c.to_string(),
+            community: c.label.to_string(),
         }),
         install,
         protect: PathSet { paths: protect },
@@ -457,8 +469,8 @@ fn build(
 /// The draft as a `game.toml`, with a header saying where it came from.
 pub fn to_toml(draft: &Draft) -> String {
     let source = match draft.def.detect.steam_app_id {
-        Some(app) => format!("Generated from Steam by UMM ({}, {}; app {app}).", draft.engine.label(), draft.setup.label()),
-        None => format!("Added by UMM ({}, {}).", draft.engine.label(), draft.setup.label()),
+        Some(app) => format!("Generated from Steam by UMM ({}, {}; app {app}).", draft.engine.label(), draft.def.setup_label()),
+        None => format!("Added by UMM ({}, {}).", draft.engine.label(), draft.def.setup_label()),
     };
     let mut header = vec![
         source,
@@ -575,7 +587,8 @@ mod tests {
         let mono_app = apps.iter().find(|a| a.app_id == 1001).unwrap();
         let own = draft_definition(mono_app, LoaderSetup::Bepinex, None).unwrap();
         assert_eq!(own.def.doorstop().unwrap().runtime_dirs, ["BepInEx", "dotnet"]);
-        let ts = draft_definition(mono_app, LoaderSetup::Thunderstore, Some("mono-quest")).unwrap();
+        let quest = Community { label: "mono-quest", loader: "bepinex" };
+        let ts = draft_definition(mono_app, LoaderSetup::Thunderstore, Some(quest)).unwrap();
         assert_eq!(ts.def.community(), Some("mono-quest"));
         assert_eq!(ts.def.setup(), Some(LoaderSetup::Thunderstore));
         assert!(draft_definition(mono_app, LoaderSetup::Thunderstore, None).is_err());

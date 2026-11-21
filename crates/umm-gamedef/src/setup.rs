@@ -3,13 +3,18 @@
 //! A game's own definition file is never rewritten; a setup chosen later in UMM is applied on
 //! top of it each time the definition is loaded.
 
-use crate::{GameDef, GameDefError, Inject, InstallRule, Loader, Thunderstore, THUNDERSTORE_SOURCE};
+use crate::{
+    loader_name, thunderstore_inject, GameDef, GameDefError, Inject, InstallRule, Loader,
+    Thunderstore, BEPINEX_KIND, SHIMLOADER_KIND,
+    THUNDERSTORE_SOURCE,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LoaderSetup {
-    /// BepInEx (5 or 6) through Doorstop, with the pack and mods installed from Thunderstore.
+    /// The game's mod loader on Thunderstore (BepInEx through Doorstop, or Shimloader), with
+    /// the loader and the mods installed from Thunderstore.
     Thunderstore,
     /// BepInEx (5 or 6) through Doorstop, with a pack the user imports as the mod `bepinex`.
     Bepinex,
@@ -21,13 +26,25 @@ pub enum LoaderSetup {
 pub const BEPINEX_PACK_MOD: &str = "bepinex";
 
 impl LoaderSetup {
-    pub fn label(self) -> &'static str {
+    /// The setup's name. `ts_loader` is the Thunderstore loader kind it uses or would use;
+    /// the Thunderstore setup is named after it ("Shimloader from Thunderstore").
+    pub fn label(self, ts_loader: Option<&str>) -> String {
         match self {
-            LoaderSetup::Thunderstore => "BepInEx from Thunderstore",
-            LoaderSetup::Bepinex => "BepInEx with your own pack",
-            LoaderSetup::Generic => "Generic (no mod loader)",
+            LoaderSetup::Thunderstore => format!(
+                "{} from Thunderstore",
+                loader_name(ts_loader.unwrap_or(BEPINEX_KIND))
+            ),
+            LoaderSetup::Bepinex => "BepInEx with your own pack".into(),
+            LoaderSetup::Generic => "Generic (no mod loader)".into(),
         }
     }
+}
+
+/// A Thunderstore community and the mod loader its games use there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Community<'a> {
+    pub label: &'a str,
+    pub loader: &'a str,
 }
 
 fn rule(m: &str, t: &str) -> InstallRule {
@@ -49,7 +66,21 @@ pub fn bepinex_rules() -> Vec<InstallRule> {
     ]
 }
 
+/// Install rules for Shimloader mods imported from files rather than Thunderstore: paks go
+/// to the pak folder, anything else to the mod folder, where UE4SS wants one folder per mod.
+pub fn shimloader_rules() -> Vec<InstallRule> {
+    vec![
+        rule("shimloader/**", "shimloader/"),
+        rule("*.pak", "shimloader/pak/{mod}/"),
+        rule("*.utoc", "shimloader/pak/{mod}/"),
+        rule("*.ucas", "shimloader/pak/{mod}/"),
+        rule("**", "shimloader/mod/"),
+    ]
+}
+
 const BEPINEX_CONFIG: &str = "BepInEx/config/**";
+const SHIMLOADER_CONFIG: &str = "shimloader/cfg/**";
+const LOADER_CONFIGS: &[&str] = &[BEPINEX_CONFIG, SHIMLOADER_CONFIG];
 
 impl GameDef {
     /// The setup this definition describes. `None`: a loader none of the setups covers (an
@@ -58,7 +89,7 @@ impl GameDef {
         match &self.loader {
             None => Some(LoaderSetup::Generic),
             Some(l) if l.from_thunderstore() => Some(LoaderSetup::Thunderstore),
-            Some(l) if l.kind == crate::BEPINEX_KIND && l.inject == Inject::Doorstop => {
+            Some(l) if l.kind == BEPINEX_KIND && l.inject == Inject::Doorstop => {
                 Some(LoaderSetup::Bepinex)
             }
             Some(_) => None,
@@ -70,51 +101,91 @@ impl GameDef {
         self.thunderstore.as_ref().map(|t| t.community.as_str())
     }
 
+    /// The loader kind, when the loader comes from Thunderstore.
+    pub fn ts_loader(&self) -> Option<&str> {
+        self.loader
+            .as_ref()
+            .filter(|l| l.from_thunderstore())
+            .map(|l| l.kind.as_str())
+    }
+
+    /// The name of the setup in effect, or of the loader when no setup describes it.
+    pub fn setup_label(&self) -> String {
+        match (self.setup(), &self.loader) {
+            (Some(s), _) => s.label(self.ts_loader()),
+            (None, Some(l)) => loader_name(&l.kind).to_string(),
+            (None, None) => LoaderSetup::Generic.label(None),
+        }
+    }
+
     /// This definition with `setup` applied. Applying the setup it already has changes
     /// nothing, so its own install rules (Unreal's pak rules, say) are kept. `community` is
-    /// needed for [`LoaderSetup::Thunderstore`] unless the definition already names one.
+    /// needed for [`LoaderSetup::Thunderstore`] unless the definition already uses it.
     pub fn with_setup(
         &self,
         setup: LoaderSetup,
-        community: Option<&str>,
+        community: Option<Community>,
     ) -> Result<GameDef, GameDefError> {
-        let same_community = community.is_none_or(|c| self.community() == Some(c));
+        let same_community = community.is_none_or(|c| {
+            self.community() == Some(c.label) && self.ts_loader() == Some(c.loader)
+        });
         if self.setup() == Some(setup) && same_community {
             return Ok(self.clone());
         }
         let mut d = self.clone();
-        match setup {
-            LoaderSetup::Generic => {
-                d.loader = None;
-                d.install = vec![rule("**", "")];
-                d.writable.paths.retain(|p| p != BEPINEX_CONFIG);
-            }
-            LoaderSetup::Bepinex | LoaderSetup::Thunderstore => {
-                let source = if setup == LoaderSetup::Thunderstore {
-                    let community = community
-                        .or(self.community())
-                        .ok_or_else(|| {
-                            GameDefError::Unsupported(format!(
-                                "{} is not on Thunderstore, so it cannot use BepInEx from Thunderstore",
-                                self.name
-                            ))
-                        })?
-                        .to_string();
-                    d.thunderstore = Some(Thunderstore { community });
-                    THUNDERSTORE_SOURCE.to_string()
-                } else {
-                    format!("mod:{BEPINEX_PACK_MOD}")
-                };
-                d.loader = Some(Loader {
-                    kind: crate::BEPINEX_KIND.into(),
-                    source: Some(source),
+        d.writable.paths.retain(|p| !LOADER_CONFIGS.contains(&p.as_str()));
+        let (loader, rules, config) = match setup {
+            LoaderSetup::Generic => (None, vec![rule("**", "")], None),
+            LoaderSetup::Bepinex => (
+                Some(Loader {
+                    kind: BEPINEX_KIND.into(),
+                    source: Some(format!("mod:{BEPINEX_PACK_MOD}")),
                     inject: Inject::Doorstop,
+                }),
+                bepinex_rules(),
+                Some(BEPINEX_CONFIG),
+            ),
+            LoaderSetup::Thunderstore => {
+                let current = self.community().zip(self.ts_loader());
+                let (label, kind) = community
+                    .map(|c| (c.label, c.loader))
+                    .or(current)
+                    .ok_or_else(|| {
+                        GameDefError::Unsupported(format!(
+                            "{} is not on Thunderstore, so it cannot use a mod loader from there",
+                            self.name
+                        ))
+                    })?;
+                let inject = thunderstore_inject(kind).ok_or_else(|| {
+                    GameDefError::Unsupported(format!(
+                        "{} uses {} on Thunderstore, which UMM does not support yet",
+                        self.name,
+                        loader_name(kind)
+                    ))
+                })?;
+                d.thunderstore = Some(Thunderstore {
+                    community: label.to_string(),
                 });
-                d.install = bepinex_rules();
-                if !d.writable.paths.iter().any(|p| p == BEPINEX_CONFIG) {
-                    d.writable.paths.push(BEPINEX_CONFIG.into());
-                }
+                let (rules, config) = if kind == SHIMLOADER_KIND {
+                    (shimloader_rules(), SHIMLOADER_CONFIG)
+                } else {
+                    (bepinex_rules(), BEPINEX_CONFIG)
+                };
+                (
+                    Some(Loader {
+                        kind: kind.to_string(),
+                        source: Some(THUNDERSTORE_SOURCE.into()),
+                        inject,
+                    }),
+                    rules,
+                    Some(config),
+                )
             }
+        };
+        d.loader = loader;
+        d.install = rules;
+        if let Some(c) = config {
+            d.writable.paths.push(c.into());
         }
         d.validate()?;
         Ok(d)
@@ -124,7 +195,7 @@ impl GameDef {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::RelPath;
+    use crate::{RelPath, RuntimeLoader};
     use std::path::Path;
 
     const UNREAL: &str = r#"
@@ -140,6 +211,11 @@ target = "Trip/Content/Paks/~mods/"
 match = "**"
 target = ""
 "#;
+
+    const BEP: Community = Community {
+        label: "trip",
+        loader: "bepinex",
+    };
 
     fn def() -> GameDef {
         GameDef::parse(UNREAL, Path::new("t.toml")).unwrap()
@@ -158,8 +234,9 @@ target = ""
         let d = def();
         assert!(d.with_setup(LoaderSetup::Thunderstore, None).is_err());
 
-        let ts = d.with_setup(LoaderSetup::Thunderstore, Some("trip")).unwrap();
+        let ts = d.with_setup(LoaderSetup::Thunderstore, Some(BEP)).unwrap();
         assert_eq!(ts.setup(), Some(LoaderSetup::Thunderstore));
+        assert_eq!(ts.setup_label(), "BepInEx from Thunderstore");
         assert_eq!(ts.community(), Some("trip"));
         assert!(ts.doorstop().is_some());
         assert!(ts.loader.as_ref().unwrap().source_mod().is_none());
@@ -181,6 +258,45 @@ target = ""
         assert!(back.loader.is_none());
         assert_eq!(back.install.len(), 1);
         assert!(back.writable.paths.is_empty());
+    }
+
+    #[test]
+    fn shimloader_from_thunderstore() {
+        let shim = Community {
+            label: "trip",
+            loader: "shimloader",
+        };
+        let ts = def().with_setup(LoaderSetup::Thunderstore, Some(shim)).unwrap();
+        assert_eq!(ts.setup(), Some(LoaderSetup::Thunderstore));
+        assert_eq!(ts.setup_label(), "Shimloader from Thunderstore");
+        assert_eq!(ts.runtime_loader(), Some(RuntimeLoader::Shimloader));
+        assert!(ts.doorstop().is_none());
+        let c = ts.compile().unwrap();
+        let map = |p: &str| {
+            c.map_mod_file("m", &RelPath::parse(p).unwrap())
+                .unwrap()
+                .unwrap()
+                .as_str()
+                .to_string()
+        };
+        assert_eq!(map("Blue.pak"), "shimloader/pak/m/Blue.pak");
+        assert_eq!(map("MyMod/Scripts/main.lua"), "shimloader/mod/MyMod/Scripts/main.lua");
+        assert_eq!(map("shimloader/cfg/Engine.ini"), "shimloader/cfg/Engine.ini");
+        assert!(c.is_writable(&RelPath::parse("shimloader/cfg/Engine.ini").unwrap()));
+
+        // The same community with BepInEx changes the loader and its config folder.
+        let bep = ts.with_setup(LoaderSetup::Thunderstore, Some(BEP)).unwrap();
+        assert_eq!(bep.ts_loader(), Some("bepinex"));
+        assert_eq!(bep.writable.paths, [BEPINEX_CONFIG]);
+
+        let other = Community {
+            label: "trip",
+            loader: "northstar",
+        };
+        let err = def()
+            .with_setup(LoaderSetup::Thunderstore, Some(other))
+            .unwrap_err();
+        assert!(err.to_string().contains("northstar"), "{err}");
     }
 
     #[test]

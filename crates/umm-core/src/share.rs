@@ -73,13 +73,16 @@ impl Session {
                 let Ok(rel) = RelPath::from_path(rel) else { continue };
                 let path = rel.as_str();
                 let lower = path.to_lowercase();
-                let in_config = lower.starts_with("bepinex/config/");
-                // As r2modman: all of BepInEx/config, other config-type files, but not
-                // plugin manifests, the .NET runtime or UMM's own bookkeeping.
-                let plugin_manifest =
-                    lower.starts_with("bepinex/plugins/") && lower.ends_with("/manifest.json");
-                let excluded =
-                    plugin_manifest || lower.starts_with("dotnet/") || lower.starts_with(".umm");
+                let in_config = ["bepinex/config/", "shimloader/cfg/"]
+                    .iter()
+                    .any(|d| lower.starts_with(d));
+                // As r2modman: all of the loader's config folder, other config-type files,
+                // but not package manifests, the .NET runtime or UMM's own bookkeeping.
+                let plugin_manifest = (lower.starts_with("bepinex/plugins/")
+                    || lower.starts_with("shimloader/"))
+                    && lower.ends_with("/manifest.json");
+                let excluded = plugin_manifest
+                    || ["dotnet/", ".umm"].iter().any(|d| lower.starts_with(d));
                 let wanted = in_config || (profile::is_config_file(path) && !excluded);
                 if wanted {
                     let body = fs::read(entry.path()).ctx(|| format!("reading {}", entry.path().display()))?;
@@ -202,14 +205,20 @@ impl Session {
         }
         umm_store::save_profile(&game, &p)?;
 
-        // Configs go in the runtime folder, where BepInEx reads them; the game folder only
+        // Configs go in the runtime folder, where the loader reads them; the game folder only
         // ever gets what a deployment puts there.
         progress("Copying configs");
         let rt = game.runtime_dir(&name);
+        let dirs = self
+            .def(id)?
+            .def
+            .runtime_loader()
+            .map_or(&[][..], |rl| rl.runtime_dirs());
         let mut skipped = export.skipped.clone();
         let mut copied = 0;
         for (path, body) in &export.files {
-            if !path.to_lowercase().starts_with("bepinex/") {
+            let first = path.split('/').next().unwrap_or_default();
+            if !dirs.iter().any(|d| first.eq_ignore_ascii_case(d)) {
                 skipped.push(path.clone());
                 continue;
             }

@@ -336,7 +336,7 @@ impl Session {
         } else {
             manifest.name.clone()
         };
-        let files = umm_thunderstore::layout::plan(&bytes, &name, &m.r2.install_rules, None)?;
+        let files = umm_thunderstore::layout::plan(&bytes, &name, m.r2, None)?;
         Ok(Some((files, manifest)))
     }
 

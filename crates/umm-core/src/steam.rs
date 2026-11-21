@@ -3,8 +3,44 @@
 use crate::{CoreError, Result, Session};
 use umm_gamedef::steam::{draft_from, inspect, installed_games, to_toml, Inspection};
 pub use umm_gamedef::steam::{Draft, Engine, Note, SteamApp};
-use umm_gamedef::LoaderSetup;
+use umm_gamedef::{Community, LoaderSetup, BEPINEX_KIND};
+use umm_thunderstore::ecosystem::SteamMatch;
 use umm_thunderstore::Ecosystem;
+
+/// What Thunderstore says about a game, as far as UMM can use it.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TsFit {
+    /// The community, when UMM supports its mod loader.
+    pub community: Option<String>,
+    /// That mod loader's kind (`bepinex`, `shimloader`).
+    pub loader: Option<String>,
+    /// The community's mod loader when UMM does not support it.
+    pub other_loader: Option<String>,
+}
+
+impl TsFit {
+    pub fn of(m: Option<SteamMatch>) -> Self {
+        match m {
+            Some(m) if m.is_supported() => TsFit {
+                community: Some(m.community().to_string()),
+                loader: Some(m.loader().to_string()),
+                other_loader: None,
+            },
+            Some(m) => TsFit {
+                other_loader: Some(m.loader().to_string()),
+                ..Default::default()
+            },
+            None => TsFit::default(),
+        }
+    }
+
+    pub fn as_community(&self) -> Option<Community<'_>> {
+        Some(Community {
+            label: self.community.as_deref()?,
+            loader: self.loader.as_deref()?,
+        })
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct SteamCandidate {
@@ -12,9 +48,11 @@ pub struct SteamCandidate {
     pub engine: Engine,
     /// Id of the game definition that already covers this app, if any.
     pub defined_as: Option<String>,
-    /// The game's Thunderstore community, when Thunderstore lists it as a BepInEx game.
+    /// The game's Thunderstore community, when UMM supports its mod loader there.
     pub community: Option<String>,
-    /// Thunderstore's mod loader for the game when it is not BepInEx.
+    /// That community's mod loader kind (`bepinex`, `shimloader`).
+    pub ts_loader: Option<String>,
+    /// Thunderstore's mod loader for the game when UMM does not support it.
     pub other_loader: Option<String>,
     /// The setup Add from Steam picks unless told otherwise.
     pub default_setup: LoaderSetup,
@@ -29,16 +67,17 @@ pub struct SteamList {
     pub thunderstore_error: Option<String>,
 }
 
-/// The setups a game can be added with, the default first. Thunderstore BepInEx games get it
-/// by default (BepInEx 5 or 6, Mono or IL2CPP); everything else starts generic.
-pub(crate) fn setups_for(engine: Engine, on_thunderstore: bool) -> Vec<LoaderSetup> {
+/// The setups a game can be added with, the default first. Games whose Thunderstore loader
+/// UMM supports (`ts_loader`) get it by default; everything else starts generic. BepInEx
+/// with your own pack suits Unity games and Thunderstore's BepInEx games.
+pub(crate) fn setups_for(engine: Engine, ts_loader: Option<&str>) -> Vec<LoaderSetup> {
     let unity = matches!(engine, Engine::UnityMono | Engine::UnityIl2cpp);
-    let mut setups = vec![if on_thunderstore {
+    let mut setups = vec![if ts_loader.is_some() {
         LoaderSetup::Thunderstore
     } else {
         LoaderSetup::Generic
     }];
-    if unity || on_thunderstore {
+    if ts_loader.map_or(unity, |k| k == BEPINEX_KIND) {
         setups.push(LoaderSetup::Bepinex);
     }
     if !setups.contains(&LoaderSetup::Generic) {
@@ -53,21 +92,16 @@ fn candidate(
     eco: Option<&Ecosystem>,
     defined_as: Option<String>,
 ) -> SteamCandidate {
-    let ts = eco.and_then(|e| e.by_steam_app(app.app_id));
-    let community = ts
-        .filter(|m| m.is_bepinex())
-        .map(|m| m.community().to_string());
-    let other_loader = ts
-        .filter(|m| !m.is_bepinex())
-        .map(|m| m.loader().to_string());
-    let setups = setups_for(found.engine, community.is_some());
+    let fit = TsFit::of(eco.and_then(|e| e.by_steam_app(app.app_id)));
+    let setups = setups_for(found.engine, fit.loader.as_deref());
     let default_setup = setups[0];
     SteamCandidate {
         engine: found.engine,
         app,
         defined_as,
-        community,
-        other_loader,
+        community: fit.community,
+        ts_loader: fit.loader,
+        other_loader: fit.other_loader,
         default_setup,
         setups,
     }
@@ -133,10 +167,15 @@ impl Session {
             return Err(CoreError::Invalid(format!(
                 "{} cannot be set up as {}",
                 app.name,
-                setup.label()
+                setup.label(c.ts_loader.as_deref())
             )));
         }
-        let mut draft = draft_from(app, &found, setup, c.community.as_deref())?;
+        let fit = TsFit {
+            community: c.community.clone(),
+            loader: c.ts_loader.clone(),
+            other_loader: None,
+        };
+        let mut draft = draft_from(app, &found, setup, fit.as_community())?;
         if let Some(l) = &c.other_loader {
             draft.notes.push(Note::new(
                 "thunderstore-other-loader",

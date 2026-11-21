@@ -21,9 +21,9 @@ pub struct GameDto {
     pub loader: Option<String>,
     pub inject: Option<String>,
     /// Label of the mod loader setup in effect.
-    pub setup: &'static str,
+    pub setup: String,
     pub community: Option<String>,
-    /// Set up for BepInEx from Thunderstore, so the Thunderstore tab applies.
+    /// Set up with its mod loader from Thunderstore, so the Thunderstore tab applies.
     pub thunderstore: bool,
 }
 
@@ -31,11 +31,10 @@ impl GameDto {
     pub fn new(s: GameStatus, running: bool) -> Self {
         let loader = s.def.loader.as_ref();
         GameDto {
-            setup: s
-                .def
-                .setup()
-                .map(LoaderSetup::label)
-                .unwrap_or("Loader from the game definition"),
+            setup: match s.def.setup() {
+                Some(_) => s.def.setup_label(),
+                None => "Loader from the game definition".into(),
+            },
             community: s.def.community().map(str::to_string),
             thunderstore: loader.is_some_and(|l| l.from_thunderstore()),
             install: s.install.map(|p| p.display().to_string()),
@@ -313,15 +312,16 @@ pub struct StartupDto {
 #[serde(rename_all = "camelCase")]
 pub struct SetupOption {
     pub value: LoaderSetup,
-    pub label: &'static str,
+    pub label: String,
 }
 
-fn options(setups: &[LoaderSetup]) -> Vec<SetupOption> {
+/// `ts_loader`: the Thunderstore loader kind the Thunderstore setup would use.
+fn options(setups: &[LoaderSetup], ts_loader: Option<&str>) -> Vec<SetupOption> {
     setups
         .iter()
         .map(|&value| SetupOption {
             value,
-            label: value.label(),
+            label: value.label(ts_loader),
         })
         .collect()
 }
@@ -350,7 +350,7 @@ impl From<umm_core::SteamCandidate> for SteamGameDto {
             defined_as: c.defined_as,
             community: c.community,
             other_loader: c.other_loader,
-            setups: options(&c.setups),
+            setups: options(&c.setups, c.ts_loader.as_deref()),
         }
     }
 }
@@ -394,7 +394,7 @@ impl From<umm_core::FolderInfo> for FolderInfoDto {
             exes: f.exes,
             community: f.community,
             other_loader: f.other_loader,
-            setups: options(&f.setups),
+            setups: options(&f.setups, f.ts_loader.as_deref()),
             steam_app_id: f.steam_app.as_ref().map(|s| s.0),
             steam_name: f.steam_app.map(|s| s.1),
         }
@@ -406,7 +406,7 @@ impl From<umm_core::FolderInfo> for FolderInfoDto {
 pub struct LoaderChoiceDto {
     /// `None`: the definition's own loader, which no setup describes.
     pub current: Option<LoaderSetup>,
-    pub current_label: &'static str,
+    pub current_label: String,
     pub available: Vec<SetupOption>,
     pub community: Option<String>,
     pub other_loader: Option<String>,
@@ -418,9 +418,9 @@ impl From<LoaderChoice> for LoaderChoiceDto {
             current: c.current,
             current_label: c
                 .current
-                .map(LoaderSetup::label)
-                .unwrap_or("Set by hand in game.toml"),
-            available: options(&c.available),
+                .map(|s| s.label(c.ts_loader.as_deref()))
+                .unwrap_or_else(|| "Set by hand in game.toml".into()),
+            available: options(&c.available, c.ts_loader.as_deref()),
             community: c.community,
             other_loader: c.other_loader,
         }
@@ -527,6 +527,8 @@ pub struct TsPageDto {
     pub items: Vec<TsPackageDto>,
     pub categories: Vec<String>,
     pub stale: bool,
+    /// The game's mod loader, by name ("BepInEx", "Shimloader").
+    pub loader_name: String,
     pub loader_package: Option<String>,
     pub loader_installed: bool,
     /// The installed BepInEx pack cannot load in this game, and why.

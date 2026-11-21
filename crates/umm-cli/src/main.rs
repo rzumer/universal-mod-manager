@@ -287,7 +287,7 @@ enum Cmd {
     /// Add game definitions for games installed through Steam
     #[command(subcommand)]
     Steam(SteamCmd),
-    /// Thunderstore packages, for games set up for BepInEx from Thunderstore
+    /// Thunderstore packages, for games set up with a mod loader from Thunderstore
     #[command(subcommand)]
     Ts(TsCmd),
 }
@@ -372,8 +372,9 @@ impl SetupArg {
     }
 }
 
-fn setup_label(s: Option<LoaderSetup>) -> &'static str {
-    s.map(LoaderSetup::label).unwrap_or("loader from the definition")
+fn setup_label(s: Option<LoaderSetup>, ts_loader: Option<&str>) -> String {
+    s.map(|s| s.label(ts_loader))
+        .unwrap_or_else(|| "loader from the definition".into())
 }
 
 #[derive(Subcommand)]
@@ -393,7 +394,7 @@ enum GameCmd {
         #[arg(long, value_enum)]
         loader: Option<SetupArg>,
     },
-    /// Show or change the mod loader setup (the definition file is not changed)
+    /// Show or change the mod loader setup (rewrites the loader sections of game.toml)
     Loader {
         game: String,
         #[arg(value_enum)]
@@ -525,7 +526,7 @@ fn run(cli: Cli) -> Result<()> {
                 "added `{}` ({}, {}) -> {}",
                 d.def.id,
                 d.engine.label(),
-                d.setup.label(),
+                d.def.setup_label(),
                 s.data().game(&d.def.id).def_path().display()
             );
             for n in d.notes {
@@ -540,14 +541,15 @@ fn run(cli: Cli) -> Result<()> {
                 },
                 None => s.loader_choice(&game)?,
             };
-            println!("{game}: {}", setup_label(c.current));
+            let ts = c.ts_loader.as_deref();
+            println!("{game}: {}", setup_label(c.current, ts));
             if let Some(cm) = &c.community {
                 println!("  Thunderstore community: {cm}");
             }
             if let Some(l) = &c.other_loader {
                 println!("  on Thunderstore it uses {l}, which UMM does not support yet");
             }
-            let others: Vec<&str> = c.available.iter().map(|a| a.label()).collect();
+            let others: Vec<String> = c.available.iter().map(|a| a.label(ts)).collect();
             println!("  available: {}", others.join(", "));
         }
         Cmd::Game(GameCmd::DeleteData { game, yes }) => {
@@ -680,7 +682,7 @@ fn run(cli: Cli) -> Result<()> {
             for g in list.games {
                 let state = match &g.defined_as {
                     Some(id) => format!("added as `{id}`"),
-                    None => format!("would be: {}", g.default_setup.label()),
+                    None => format!("would be: {}", g.default_setup.label(g.ts_loader.as_deref())),
                 };
                 println!(
                     "{:>8}  {:<40} {:<16} {state}",
@@ -717,7 +719,7 @@ fn run(cli: Cli) -> Result<()> {
                             "added `{}` ({}, {}) -> {}",
                             d.def.id,
                             d.engine.label(),
-                            d.setup.label(),
+                            d.def.setup_label(),
                             s.data().game(&d.def.id).def_path().display()
                         );
                         for n in d.notes {

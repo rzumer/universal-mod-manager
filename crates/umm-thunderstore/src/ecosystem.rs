@@ -55,6 +55,9 @@ pub struct R2modmanGame {
     pub package_loader: String,
     #[serde(default)]
     pub install_rules: Vec<InstallRule>,
+    /// The game's data folder: for Unreal games, the project folder (`Pal` for Palworld).
+    #[serde(default)]
+    pub data_folder_name: String,
     #[serde(default)]
     pub exe_names: Vec<String>,
     #[serde(default)]
@@ -119,6 +122,16 @@ impl SteamMatch<'_> {
     }
     pub fn is_bepinex(&self) -> bool {
         self.r2.package_loader == "bepinex"
+    }
+    /// UMM can set the game up with its Thunderstore mod loader.
+    pub fn is_supported(&self) -> bool {
+        umm_gamedef::thunderstore_inject(self.loader()).is_some()
+    }
+    pub fn as_community(&self) -> umm_gamedef::Community<'_> {
+        umm_gamedef::Community {
+            label: self.community(),
+            loader: self.loader(),
+        }
     }
 }
 
@@ -192,6 +205,17 @@ impl Ecosystem {
         self.modloader_packages
             .iter()
             .find(|m| m.package_id.eq_ignore_ascii_case(full_name))
+    }
+
+    /// The mod-loader package entry for `Owner-Name` as a game with `loader` uses it: a
+    /// package listed for several loaders (MelonLoader is) has one entry for each.
+    pub fn modloader_for(&self, full_name: &str, loader: &str) -> Option<&ModloaderPackage> {
+        let mut entries = self
+            .modloader_packages
+            .iter()
+            .filter(|m| m.package_id.eq_ignore_ascii_case(full_name));
+        let first = entries.clone().next();
+        entries.find(|m| m.loader == loader).or(first)
     }
 }
 

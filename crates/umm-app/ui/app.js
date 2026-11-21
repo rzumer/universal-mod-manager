@@ -626,9 +626,13 @@ function filesTab() {
   if (S.plan === "loading" || S.plan === null)
     return h("section", { class: "panel" }, h("div", { class: "loading" }, h("span", { class: "spinner" }), "Building the plan…"));
   const p = S.plan;
+  const runtimeDirs = {
+    bepinex: "BepInEx/",
+    shimloader: "shimloader/",
+  }[S.details.game.loader];
   const runtimeNote =
-    S.details.game.inject === "doorstop"
-      ? h("p", { class: "muted" }, "Files under BepInEx/ go to this profile's runtime folder, not the game folder.")
+    runtimeDirs && ["doorstop", "args"].includes(S.details.game.inject)
+      ? h("p", { class: "muted" }, `Files under ${runtimeDirs} go to this profile's runtime folder, not the game folder.`)
       : null;
   return h(
     "section",
@@ -917,8 +921,8 @@ function tsTab(d) {
       h(
         "div",
         { class: "ts-banner" },
-        h("span", {}, "BepInEx is not installed yet. It comes with the first mod you install, or install it now."),
-        h("button", { class: "primary small", disabled: locked, onclick: () => tsInstall([p.loaderPackage]) }, "Install BepInEx"),
+        h("span", {}, `${p.loaderName} is not installed yet. It comes with the first mod you install, or install it now.`),
+        h("button", { class: "primary small", disabled: locked, onclick: () => tsInstall([p.loaderPackage]) }, `Install ${p.loaderName}`),
       ),
     );
   if (p?.updates?.length)
@@ -1049,7 +1053,7 @@ async function shareProfile() {
   const body = [
     h("p", {}, `${e.mods} mod${e.mods === 1 ? "" : "s"} and ${e.files.length} config file${e.files.length === 1 ? "" : "s"} (${fmtBytes(e.size)}).`),
     e.leftOut.length > 0 && h("p", { class: "muted" }, `Left out, because they are not from Thunderstore: ${e.leftOut.join(", ")}.`),
-    e.files.length === 0 && h("p", { class: "muted" }, "No config files yet: BepInEx and the mods write them the first time the game runs with this profile."),
+    e.files.length === 0 && h("p", { class: "muted" }, "No config files yet: the mod loader and the mods write them the first time the game runs with this profile."),
     h("p", { class: "muted" }, "Save as file writes an .r2z file on this computer. Nothing is uploaded."),
     h("p", { class: "muted" }, "Get a code uploads the profile, configs included, to Thunderstore. Anyone with the code can download it, and Thunderstore may delete it after a while."),
   ];
@@ -1168,7 +1172,7 @@ async function handleInstallLink(url) {
   if (!l.games.length) {
     await modal({
       title: `Install ${what}?`,
-      body: h("p", {}, "None of your games set up for BepInEx from Thunderstore has this package. Add the game from Steam, or set its mod loader to BepInEx from Thunderstore."),
+      body: h("p", {}, "None of your games that get mods from Thunderstore has this package. Add the game from Steam, or set its mod loader to the one from Thunderstore in the Actions tab."),
       actions: [{ label: "OK", value: true, class: "primary", focus: true }],
     });
     return;
@@ -1202,8 +1206,8 @@ async function loadLoaderChoice() {
 }
 
 const SETUP_HELP = {
-  thunderstore: "Mods and the BepInEx pack come from Thunderstore, laid out the way r2modman does.",
-  bepinex: "BepInEx 5 through Doorstop, with a pack you import yourself as the mod “bepinex”.",
+  thunderstore: "Mods and the mod loader come from Thunderstore, laid out the way r2modman does.",
+  bepinex: "BepInEx 5 or 6 through Doorstop, with a pack you import yourself as the mod “bepinex”.",
   generic: "No mod loader: mod files are copied into the game folder as they are.",
 };
 
