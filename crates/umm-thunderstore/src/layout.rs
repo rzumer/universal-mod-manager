@@ -99,10 +99,12 @@ pub fn manifest(zip: &[u8]) -> Result<Option<Manifest>> {
     // Some manifests start with a byte-order mark.
     let text = String::from_utf8_lossy(body);
     let text = text.trim_start_matches('\u{feff}');
-    serde_json::from_str(text).map(Some).map_err(|e| TsError::Data {
-        what: "manifest.json".into(),
-        message: e.to_string(),
-    })
+    serde_json::from_str(text)
+        .map(Some)
+        .map_err(|e| TsError::Data {
+            what: "manifest.json".into(),
+            message: e.to_string(),
+        })
 }
 
 /// The package's own files at the zip's root (`manifest.json`, `icon.png`, `README.md`,
@@ -322,7 +324,10 @@ fn melonloader_pack(
             out.insert(path, body);
         }
     }
-    if !out.keys().any(|k| k.to_lowercase().starts_with("melonloader/")) {
+    if !out
+        .keys()
+        .any(|k| k.to_lowercase().starts_with("melonloader/"))
+    {
         return Err(bad("no `MelonLoader` folder in the package".into()));
     }
     Ok(out)
@@ -356,7 +361,10 @@ fn recursive_melonloader_mod(
 
 /// Lays out the Lovely package as r2modman does: its proxy DLL at the zip's root goes to the
 /// game folder's root, its `lovely/` folder to `mods/lovely/`. The rest is left out.
-fn lovely_pack(files: BTreeMap<String, Vec<u8>>, full_name: &str) -> Result<BTreeMap<String, Vec<u8>>> {
+fn lovely_pack(
+    files: BTreeMap<String, Vec<u8>>,
+    full_name: &str,
+) -> Result<BTreeMap<String, Vec<u8>>> {
     let mut out = BTreeMap::new();
     for (path, body) in files {
         let lower = path.to_lowercase();
@@ -377,7 +385,10 @@ fn lovely_pack(files: BTreeMap<String, Vec<u8>>, full_name: &str) -> Result<BTre
 
 /// Lays out a mod for a Lovely game as r2modman does: the whole package, its own files
 /// included, in `mods/<Owner-Name>/` (Lovely needs each mod in its own folder).
-fn lovely_mod(files: BTreeMap<String, Vec<u8>>, full_name: &str) -> Result<BTreeMap<String, Vec<u8>>> {
+fn lovely_mod(
+    files: BTreeMap<String, Vec<u8>>,
+    full_name: &str,
+) -> Result<BTreeMap<String, Vec<u8>>> {
     let out: BTreeMap<String, Vec<u8>> = files
         .into_iter()
         .map(|(path, body)| (format!("mods/{full_name}/{path}"), body))
@@ -404,7 +415,9 @@ fn shimloader_pack(
         message: m.to_string(),
     };
     if project.trim_matches('/').is_empty() {
-        return Err(bad("Thunderstore does not say which folder holds this game's exe"));
+        return Err(bad(
+            "Thunderstore does not say which folder holds this game's exe",
+        ));
     }
     let bin = umm_gamedef::unreal_binaries_dir(project);
     let mut out = BTreeMap::new();
@@ -469,7 +482,10 @@ pub(crate) mod tests {
     #[test]
     fn plugin_packages_follow_the_routes() {
         let zip = zip_of(&[
-            ("manifest.json", r#"{"name":"MoreThings","version_number":"1.0.0","dependencies":["BepInEx-BepInExPack-5.4.2100"]}"#),
+            (
+                "manifest.json",
+                r#"{"name":"MoreThings","version_number":"1.0.0","dependencies":["BepInEx-BepInExPack-5.4.2100"]}"#,
+            ),
             ("README.md", "hi"),
             ("icon.png", "png"),
             ("MoreThings.dll", "a"),
@@ -625,7 +641,10 @@ pub(crate) mod tests {
     fn melonloader_packages_and_mods() {
         let pack = |version: &str| {
             zip_of(&[
-                ("manifest.json", &format!(r#"{{"name":"MelonLoader","version_number":"{version}"}}"#)),
+                (
+                    "manifest.json",
+                    &format!(r#"{{"name":"MelonLoader","version_number":"{version}"}}"#),
+                ),
                 ("README.md", "r"),
                 ("version.dll", "p"),
                 ("NOTICE.txt", "n"),
@@ -648,20 +667,51 @@ pub(crate) mod tests {
                 {"route": "UserData", "trackingMethod": "state"}]"#,
         )
         .unwrap();
-        let out = plan(&pack("0.6.1"), "LavaGang-MelonLoader", &bonelab, Some(&entry("melonloader"))).unwrap();
-        assert_eq!(keys(&out), ["MelonLoader/net6/MelonLoader.dll", "NOTICE.txt", "version.dll"]);
+        let out = plan(
+            &pack("0.6.1"),
+            "LavaGang-MelonLoader",
+            &bonelab,
+            Some(&entry("melonloader")),
+        )
+        .unwrap();
+        assert_eq!(
+            keys(&out),
+            [
+                "MelonLoader/net6/MelonLoader.dll",
+                "NOTICE.txt",
+                "version.dll"
+            ]
+        );
         let zip = zip_of(&[("A.dll", "a"), ("Z.lib.dll", "z"), ("UserData/a.cfg", "c")]);
         let out = plan(&zip, "Ann-A", &bonelab, None).unwrap();
-        assert_eq!(keys(&out), ["Mods/A.dll", "UserData/a.cfg", "UserLibs/Z.lib.dll"]);
+        assert_eq!(
+            keys(&out),
+            ["Mods/A.dll", "UserData/a.cfg", "UserLibs/Z.lib.dll"]
+        );
 
         // As Schedule I: only MelonLoader/ and the proxy, from MelonLoader 0.7 on.
         let mut schedule = rules();
         schedule.package_loader = "recursive-melonloader".into();
         schedule.install_rules.clear();
         let recursive = entry("recursive-melonloader");
-        let out = plan(&pack("0.7.3"), "LavaGang-MelonLoader", &schedule, Some(&recursive)).unwrap();
-        assert_eq!(keys(&out), ["MelonLoader/net6/MelonLoader.dll", "version.dll"]);
-        let err = plan(&pack("0.6.6"), "LavaGang-MelonLoader", &schedule, Some(&recursive)).unwrap_err();
+        let out = plan(
+            &pack("0.7.3"),
+            "LavaGang-MelonLoader",
+            &schedule,
+            Some(&recursive),
+        )
+        .unwrap();
+        assert_eq!(
+            keys(&out),
+            ["MelonLoader/net6/MelonLoader.dll", "version.dll"]
+        );
+        let err = plan(
+            &pack("0.6.6"),
+            "LavaGang-MelonLoader",
+            &schedule,
+            Some(&recursive),
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("0.7.0 or later"), "{err}");
     }
 
@@ -687,7 +737,11 @@ pub(crate) mod tests {
         let empty = zip_of(&[("manifest.json", "{}"), ("lovely/config.toml", "c")]);
         assert!(plan(&empty, "Thunderstore-lovely", &balatro, Some(&entry)).is_err());
 
-        let zip = zip_of(&[("manifest.json", "{}"), ("lovely.toml", "l"), ("src/core.lua", "s")]);
+        let zip = zip_of(&[
+            ("manifest.json", "{}"),
+            ("lovely.toml", "l"),
+            ("src/core.lua", "s"),
+        ]);
         let out = plan(&zip, "Steamodded-smods", &balatro, None).unwrap();
         assert_eq!(
             keys(&out),

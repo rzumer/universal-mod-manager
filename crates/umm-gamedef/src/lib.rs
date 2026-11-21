@@ -172,7 +172,9 @@ pub enum GameDefError {
     Target(String, RelPathError),
     #[error("loader source must look like `mod:<id>`, or be `thunderstore` with a [thunderstore] table; got `{0}`")]
     LoaderSource(String),
-    #[error("{path} says `id = \"{id}\"` but is in the folder `{folder}`; the folder name is the id")]
+    #[error(
+        "{path} says `id = \"{id}\"` but is in the folder `{folder}`; the folder name is the id"
+    )]
     IdMismatch {
         path: PathBuf,
         id: String,
@@ -243,7 +245,11 @@ pub const BEPINEX_KIND: &str = "bepinex";
 pub fn doorstop_loader(kind: &str) -> Option<DoorstopLoader> {
     (kind == BEPINEX_KIND).then_some(DoorstopLoader {
         runtime_dirs: &["BepInEx", "dotnet"],
-        builds: &[BepInExBuild::V5, BepInExBuild::V6Mono, BepInExBuild::V6Il2cpp],
+        builds: &[
+            BepInExBuild::V5,
+            BepInExBuild::V6Mono,
+            BepInExBuild::V6Il2cpp,
+        ],
     })
 }
 

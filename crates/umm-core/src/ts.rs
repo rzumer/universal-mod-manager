@@ -112,7 +112,9 @@ const MOD_MANAGERS: &[&str] = &["ebkr-r2modman", "Kesomannen-GaleModManager"];
 /// r2modman or Gale. Only these two, by name: categories and descriptions cannot tell mod
 /// managers from mods reliably (real mods and libraries are tagged "Tools" too).
 pub fn is_mod_manager(p: &Package) -> bool {
-    MOD_MANAGERS.iter().any(|m| m.eq_ignore_ascii_case(&p.full_name))
+    MOD_MANAGERS
+        .iter()
+        .any(|m| m.eq_ignore_ascii_case(&p.full_name))
 }
 
 /// Mod id for a package: its `Owner-Name`, as a slug.
@@ -127,12 +129,10 @@ impl Session {
         let def = self.def(id)?.def;
         let community = match (&def.loader, def.community()) {
             (Some(l), Some(c)) if l.from_thunderstore() => c.to_string(),
-            _ => {
-                return Err(CoreError::Invalid(format!(
-                    "{} is not set up with a mod loader from Thunderstore; change its mod loader first",
-                    def.name
-                )))
-            }
+            _ => return Err(CoreError::Invalid(format!(
+                "{} is not set up with a mod loader from Thunderstore; change its mod loader first",
+                def.name
+            ))),
         };
         let eco = self.ecosystem(false)?;
         if eco.community(&community).is_none() {
@@ -186,10 +186,8 @@ impl Session {
             .mods(id)?
             .into_iter()
             .filter_map(|m| {
-                m.thunderstore.map(|meta| InstalledPackage {
-                    mod_id: m.id,
-                    meta,
-                })
+                m.thunderstore
+                    .map(|meta| InstalledPackage { mod_id: m.id, meta })
             })
             .collect())
     }
@@ -204,7 +202,10 @@ impl Session {
 
     pub fn ts_search(&self, id: &str, q: &TsQuery) -> Result<TsPage> {
         let (def, _, eco) = self.ts_game(id)?;
-        let kind = def.ts_loader().unwrap_or(umm_gamedef::BEPINEX_KIND).to_string();
+        let kind = def
+            .ts_loader()
+            .unwrap_or(umm_gamedef::BEPINEX_KIND)
+            .to_string();
         let bepinex = kind == umm_gamedef::BEPINEX_KIND;
         let (packages, stale) = self.ts_packages(id, false)?;
         let installed_pkgs = self.ts_installed(id)?;
@@ -222,7 +223,10 @@ impl Session {
             .is_some_and(|(p, _)| p.join("GameAssembly.dll").is_file());
         let loader_package = packages
             .iter()
-            .filter(|p| eco.modloader_for(&p.full_name, &kind).is_some_and(|m| m.loader == kind))
+            .filter(|p| {
+                eco.modloader_for(&p.full_name, &kind)
+                    .is_some_and(|m| m.loader == kind)
+            })
             .filter(|p| !p.deprecated)
             .filter(|p| {
                 if !bepinex {
@@ -265,7 +269,9 @@ impl Session {
             })
             .collect();
         match q.sort {
-            TsSort::Rating => hits.sort_by(|a, b| b.pinned.cmp(&a.pinned).then(b.rating.cmp(&a.rating))),
+            TsSort::Rating => {
+                hits.sort_by(|a, b| b.pinned.cmp(&a.pinned).then(b.rating.cmp(&a.rating)))
+            }
             TsSort::Downloads => hits.sort_by(|a, b| b.downloads.cmp(&a.downloads)),
             TsSort::Updated => hits.sort_by(|a, b| b.updated.cmp(&a.updated)),
             TsSort::Name => hits.sort_by_key(|p| p.name.to_lowercase()),
@@ -371,11 +377,14 @@ impl Session {
         }
         if let Some(v) = &version {
             if found.package.version(v).is_none() {
-                found.package.versions.push(umm_thunderstore::index::PackageVersion {
-                    version: v.clone(),
-                    dependencies: Vec::new(),
-                    size: 0,
-                });
+                found
+                    .package
+                    .versions
+                    .push(umm_thunderstore::index::PackageVersion {
+                        version: v.clone(),
+                        dependencies: Vec::new(),
+                        size: 0,
+                    });
             }
         }
         let wanted = [(found.package.full_name.clone(), version)];
@@ -414,7 +423,10 @@ impl Session {
             .iter()
             .map(|p| {
                 let m = &p.meta;
-                (m.full_name.to_lowercase(), (m.version.clone(), m.dependencies.clone()))
+                (
+                    m.full_name.to_lowercase(),
+                    (m.version.clone(), m.dependencies.clone()),
+                )
             })
             .collect();
 
@@ -455,7 +467,9 @@ impl Session {
         let raised = std::cell::RefCell::new(Vec::<(String, String, String)>::new());
         let raise = |dep: String| -> String {
             let Some(min) = min_loader else { return dep };
-            let Some((name, version)) = split_dependency(&dep) else { return dep };
+            let Some((name, version)) = split_dependency(&dep) else {
+                return dep;
+            };
             if !is_loader(name) || compare_versions(version, min) != Ordering::Less {
                 return dep;
             }
@@ -482,31 +496,36 @@ impl Session {
         let mut zips: HashMap<(String, String), Vec<u8>> = HashMap::new();
         let mut net_error: Option<CoreError> = None;
         let plan = {
-            let mut deps_of = |pkg: &Package, version: &str| -> std::result::Result<Vec<String>, String> {
-                if let Some((have, deps)) = recorded.get(&pkg.full_name.to_lowercase()) {
-                    if compare_versions(have, version) != Ordering::Less {
-                        return Ok(deps
-                            .iter()
-                            .filter(|d| !other_loader(d))
-                            .cloned()
-                            .map(&raise)
-                            .collect());
+            let mut deps_of =
+                |pkg: &Package, version: &str| -> std::result::Result<Vec<String>, String> {
+                    if let Some((have, deps)) = recorded.get(&pkg.full_name.to_lowercase()) {
+                        if compare_versions(have, version) != Ordering::Less {
+                            return Ok(deps
+                                .iter()
+                                .filter(|d| !other_loader(d))
+                                .cloned()
+                                .map(&raise)
+                                .collect());
+                        }
                     }
-                }
-                let key = (pkg.full_name.clone(), version.to_string());
-                if !zips.contains_key(&key) {
-                    progress(&format!("Downloading {} {}", pkg.name, version));
-                    let bytes = self.http().get(&pkg.download_url(version)).map_err(|e| {
-                        let msg = e.to_string();
-                        net_error = Some(e.into());
-                        msg
-                    })?;
-                    zips.insert(key.clone(), bytes);
-                }
-                let manifest = layout::manifest(&zips[&key]).map_err(|e| e.to_string())?;
-                let deps = manifest.map(|m| m.dependencies).unwrap_or_default();
-                Ok(deps.into_iter().filter(|d| !other_loader(d)).map(&raise).collect())
-            };
+                    let key = (pkg.full_name.clone(), version.to_string());
+                    if !zips.contains_key(&key) {
+                        progress(&format!("Downloading {} {}", pkg.name, version));
+                        let bytes = self.http().get(&pkg.download_url(version)).map_err(|e| {
+                            let msg = e.to_string();
+                            net_error = Some(e.into());
+                            msg
+                        })?;
+                        zips.insert(key.clone(), bytes);
+                    }
+                    let manifest = layout::manifest(&zips[&key]).map_err(|e| e.to_string())?;
+                    let deps = manifest.map(|m| m.dependencies).unwrap_or_default();
+                    Ok(deps
+                        .into_iter()
+                        .filter(|d| !other_loader(d))
+                        .map(&raise)
+                        .collect())
+                };
             resolve::resolve(packages, &installed, wanted, &mut deps_of)
         };
         let plan = match (plan, net_error) {
@@ -533,9 +552,11 @@ impl Session {
             };
             progress(&format!("Installing {} {}", pkg.name, step.version));
             self.store_package(id, &community, m, &eco, pkg, &step.version, &zip)?;
-            report
-                .installed
-                .push((step.full_name.clone(), step.version.clone(), step.replaces.clone()));
+            report.installed.push((
+                step.full_name.clone(),
+                step.version.clone(),
+                step.replaces.clone(),
+            ));
         }
 
         for (name, named, used) in raised.into_inner() {
@@ -553,7 +574,11 @@ impl Session {
                 .iter()
                 .filter(|o| o.meta.loader && !o.meta.full_name.eq_ignore_ascii_case(chosen))
             {
-                if let Some(e) = p.mods.iter_mut().find(|e| e.id == other.mod_id && e.enabled) {
+                if let Some(e) = p
+                    .mods
+                    .iter_mut()
+                    .find(|e| e.id == other.mod_id && e.enabled)
+                {
                     e.enabled = false;
                     changed = true;
                     report.notes.push(format!(

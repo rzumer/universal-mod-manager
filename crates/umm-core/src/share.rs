@@ -69,8 +69,12 @@ impl Session {
                 if !entry.file_type().is_file() {
                     continue;
                 }
-                let Ok(rel) = entry.path().strip_prefix(&rt) else { continue };
-                let Ok(rel) = RelPath::from_path(rel) else { continue };
+                let Ok(rel) = entry.path().strip_prefix(&rt) else {
+                    continue;
+                };
+                let Ok(rel) = RelPath::from_path(rel) else {
+                    continue;
+                };
                 let path = rel.as_str();
                 let lower = path.to_lowercase();
                 let in_config = ["bepinex/config/", "shimloader/cfg/", "userdata/"]
@@ -84,10 +88,13 @@ impl Session {
                     && lower.ends_with("/manifest.json");
                 // MelonLoader/ holds the loader and what it generates, not settings.
                 let excluded = plugin_manifest
-                    || ["dotnet/", "melonloader/", ".umm"].iter().any(|d| lower.starts_with(d));
+                    || ["dotnet/", "melonloader/", ".umm"]
+                        .iter()
+                        .any(|d| lower.starts_with(d));
                 let wanted = in_config || (profile::is_config_file(path) && !excluded);
                 if wanted {
-                    let body = fs::read(entry.path()).ctx(|| format!("reading {}", entry.path().display()))?;
+                    let body = fs::read(entry.path())
+                        .ctx(|| format!("reading {}", entry.path().display()))?;
                     files.insert(path.to_string(), body);
                 }
             }

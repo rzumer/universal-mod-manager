@@ -54,7 +54,9 @@ impl<'a> Walk<'a, '_> {
         }
         self.stack.push(key.clone());
         for dep in (self.deps_of)(pkg, &version)? {
-            match split_dependency(&dep).and_then(|(n, v)| (self.find)(n).map(|p| (p, v.to_string()))) {
+            match split_dependency(&dep)
+                .and_then(|(n, v)| (self.find)(n).map(|p| (p, v.to_string())))
+            {
                 Some((p, v)) => {
                     // A version Thunderstore no longer has: take the latest instead.
                     let v = if p.version(&v).is_some() {
@@ -103,7 +105,8 @@ pub fn resolve(
     let mut explicit: Vec<String> = Vec::new();
 
     for (name, version) in wanted {
-        let pkg = find(name).ok_or_else(|| format!("{name} is not on Thunderstore for this game"))?;
+        let pkg =
+            find(name).ok_or_else(|| format!("{name} is not on Thunderstore for this game"))?;
         let version = match version {
             Some(v) => {
                 pkg.version(v)
@@ -159,7 +162,10 @@ pub fn resolve(
 
 /// Packages whose installed version is older than the latest on Thunderstore:
 /// `(Owner-Name, installed, latest)`.
-pub fn updates(packages: &[Package], installed: &HashMap<String, String>) -> Vec<(String, String, String)> {
+pub fn updates(
+    packages: &[Package],
+    installed: &HashMap<String, String>,
+) -> Vec<(String, String, String)> {
     let mut out: Vec<(String, String, String)> = packages
         .iter()
         .filter_map(|p| {
@@ -210,11 +216,24 @@ mod tests {
 
     fn index() -> Vec<Package> {
         vec![
-            pkg("BepInEx-BepInExPack", &[("5.4.2305", &[]), ("5.4.2100", &[])]),
-            pkg("Lib-Core", &[("2.0.0", &["BepInEx-BepInExPack-5.4.2100"]), ("1.0.0", &[])]),
+            pkg(
+                "BepInEx-BepInExPack",
+                &[("5.4.2305", &[]), ("5.4.2100", &[])],
+            ),
+            pkg(
+                "Lib-Core",
+                &[("2.0.0", &["BepInEx-BepInExPack-5.4.2100"]), ("1.0.0", &[])],
+            ),
             pkg(
                 "Ann-Mod",
-                &[("1.1.0", &["Lib-Core-2.0.0", "BepInEx-BepInExPack-5.4.2305", "Gone-Pkg-1.0.0"])],
+                &[(
+                    "1.1.0",
+                    &[
+                        "Lib-Core-2.0.0",
+                        "BepInEx-BepInExPack-5.4.2305",
+                        "Gone-Pkg-1.0.0",
+                    ],
+                )],
             ),
             pkg("Bob-Other", &[("3.0.0", &["Lib-Core-1.0.0"])]),
         ]
@@ -222,7 +241,9 @@ mod tests {
 
     /// Dependencies as the test index spells them (real lists come from manifests).
     fn from_list(p: &Package, v: &str) -> Result<Vec<String>, String> {
-        Ok(p.version(v).map(|x| x.dependencies.clone()).unwrap_or_default())
+        Ok(p.version(v)
+            .map(|x| x.dependencies.clone())
+            .unwrap_or_default())
     }
 
     fn names(r: &Resolution) -> Vec<String> {
@@ -234,10 +255,20 @@ mod tests {
 
     #[test]
     fn dependencies_first_highest_version_wins() {
-        let r = resolve(&index(), &HashMap::new(), &[("Ann-Mod".into(), None)], &mut from_list).unwrap();
+        let r = resolve(
+            &index(),
+            &HashMap::new(),
+            &[("Ann-Mod".into(), None)],
+            &mut from_list,
+        )
+        .unwrap();
         assert_eq!(
             names(&r),
-            ["BepInEx-BepInExPack@5.4.2305", "Lib-Core@2.0.0", "Ann-Mod@1.1.0"]
+            [
+                "BepInEx-BepInExPack@5.4.2305",
+                "Lib-Core@2.0.0",
+                "Ann-Mod@1.1.0"
+            ]
         );
         assert_eq!(r.missing, ["Gone-Pkg-1.0.0"]);
     }
@@ -248,15 +279,31 @@ mod tests {
             ("BepInEx-BepInExPack".to_string(), "5.4.2305".to_string()),
             ("Lib-Core".to_string(), "2.0.0".to_string()),
         ]);
-        let r = resolve(&index(), &installed, &[("Bob-Other".into(), None)], &mut from_list).unwrap();
-        assert_eq!(names(&r), ["Bob-Other@3.0.0"], "Lib-Core 2.0.0 satisfies 1.0.0");
+        let r = resolve(
+            &index(),
+            &installed,
+            &[("Bob-Other".into(), None)],
+            &mut from_list,
+        )
+        .unwrap();
+        assert_eq!(
+            names(&r),
+            ["Bob-Other@3.0.0"],
+            "Lib-Core 2.0.0 satisfies 1.0.0"
+        );
         assert_eq!(r.all, ["Lib-Core", "Bob-Other"]);
 
         let old = HashMap::from([("Lib-Core".to_string(), "1.0.0".to_string())]);
         let r = resolve(&index(), &old, &[("Ann-Mod".into(), None)], &mut from_list).unwrap();
         let core = r.steps.iter().find(|s| s.full_name == "Lib-Core").unwrap();
         assert_eq!(core.replaces.as_deref(), Some("1.0.0"));
-        assert!(resolve(&index(), &old, &[("Nope-Nope".into(), None)], &mut from_list).is_err());
+        assert!(resolve(
+            &index(),
+            &old,
+            &[("Nope-Nope".into(), None)],
+            &mut from_list
+        )
+        .is_err());
     }
 
     #[test]

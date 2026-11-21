@@ -18,7 +18,11 @@ pub enum Freshness {
 
 pub fn age(path: &Path) -> Option<Duration> {
     let modified = fs::metadata(path).ok()?.modified().ok()?;
-    Some(SystemTime::now().duration_since(modified).unwrap_or_default())
+    Some(
+        SystemTime::now()
+            .duration_since(modified)
+            .unwrap_or_default(),
+    )
 }
 
 /// Returns the bytes at `path`, refreshing them with `fetch` when missing, older than

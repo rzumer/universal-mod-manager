@@ -306,7 +306,9 @@ pub async fn open_package_page(
             umm_core::CoreError::Invalid(format!("{} has no Thunderstore community", def.name))
         })?;
         let plain = |t: &str, extra: char| {
-            !t.is_empty() && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == extra)
+            !t.is_empty()
+                && t.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == extra)
         };
         let (owner, name) = full_name.split_once('-').unwrap_or_default();
         if !plain(community, '-') || !plain(owner, '_') || !plain(name, '_') {
@@ -363,24 +365,26 @@ pub async fn add_steam_games(
     blocking(&state, move |s| {
         Ok(picks
             .into_iter()
-            .map(|SteamPick { app_id, setup }| match s.add_steam_game(app_id, setup) {
-                Ok(d) => AddedGameDto {
-                    app_id,
-                    ok: true,
-                    message: format!("Added {} ({})", d.def.name, d.def.setup_label()),
-                    id: Some(d.def.id),
-                    name: Some(d.def.name),
-                    notes: d.notes,
+            .map(
+                |SteamPick { app_id, setup }| match s.add_steam_game(app_id, setup) {
+                    Ok(d) => AddedGameDto {
+                        app_id,
+                        ok: true,
+                        message: format!("Added {} ({})", d.def.name, d.def.setup_label()),
+                        id: Some(d.def.id),
+                        name: Some(d.def.name),
+                        notes: d.notes,
+                    },
+                    Err(e) => AddedGameDto {
+                        app_id,
+                        ok: false,
+                        id: None,
+                        name: None,
+                        message: e.to_string(),
+                        notes: Vec::new(),
+                    },
                 },
-                Err(e) => AddedGameDto {
-                    app_id,
-                    ok: false,
-                    id: None,
-                    name: None,
-                    message: e.to_string(),
-                    notes: Vec::new(),
-                },
-            })
+            )
             .collect())
     })
     .await
@@ -417,8 +421,13 @@ pub async fn pick_game_folder<R: Runtime>(
     })
     .await
     .map_err(|e| e.to_string())?;
-    let Some(folder) = folder else { return Ok(None) };
-    blocking(&state, move |s| Ok(Some(s.inspect_game_folder(&folder)?.into()))).await
+    let Some(folder) = folder else {
+        return Ok(None);
+    };
+    blocking(&state, move |s| {
+        Ok(Some(s.inspect_game_folder(&folder)?.into()))
+    })
+    .await
 }
 
 /// Adds a game from the "Add game manually" form.
@@ -506,7 +515,8 @@ pub async fn ts_install<R: Runtime>(
             })
             .collect();
         let mut progress = progress_to(app, game.clone());
-        Ok(s.ts_install(&game, &wanted, &profile, &mut progress)?.into())
+        Ok(s.ts_install(&game, &wanted, &profile, &mut progress)?
+            .into())
     })
     .await
 }
@@ -529,7 +539,10 @@ pub async fn ts_install_unlisted<R: Runtime>(
 ) -> Res<TsReportDto> {
     blocking(&state, move |s| {
         let mut progress = progress_to(app, game.clone());
-        Ok(s.ts_install_unlisted(&game, &name, version, &profile, &mut progress)?.into())
+        Ok(
+            s.ts_install_unlisted(&game, &name, version, &profile, &mut progress)?
+                .into(),
+        )
     })
     .await
 }
@@ -545,7 +558,8 @@ pub async fn ts_update<R: Runtime>(
 ) -> Res<TsReportDto> {
     blocking(&state, move |s| {
         let mut progress = progress_to(app, game.clone());
-        Ok(s.ts_update(&game, &packages, &profile, &mut progress)?.into())
+        Ok(s.ts_update(&game, &packages, &profile, &mut progress)?
+            .into())
     })
     .await
 }
@@ -613,7 +627,8 @@ pub async fn profile_export_file<R: Runtime>(
         let Some(path) = picked.and_then(|p| p.into_path().ok()) else {
             return Ok(None);
         };
-        std::fs::write(&path, &export.r2z).map_err(|e| format!("writing {}: {e}", path.display()))?;
+        std::fs::write(&path, &export.r2z)
+            .map_err(|e| format!("writing {}: {e}", path.display()))?;
         Ok(Some(path.display().to_string()))
     })
     .await
@@ -656,7 +671,9 @@ pub async fn profile_import_file<R: Runtime>(
     let Some(path) = path else { return Ok(None) };
     blocking(&state, move |s| {
         let mut progress = progress_to(app, game.clone());
-        Ok(Some(s.profile_import_file(&game, &path, &mut progress)?.into()))
+        Ok(Some(
+            s.profile_import_file(&game, &path, &mut progress)?.into(),
+        ))
     })
     .await
 }
@@ -716,8 +733,9 @@ pub fn take_pending_link(state: State<'_, AppState>) -> Option<String> {
 #[tauri::command]
 pub async fn resolve_link(state: State<'_, AppState>, url: String) -> Res<LinkDto> {
     blocking(&state, move |s| {
-        let link = umm_core::parse_link(&url)
-            .ok_or_else(|| umm_core::CoreError::Invalid(format!("not a Thunderstore install link: {url}")))?;
+        let link = umm_core::parse_link(&url).ok_or_else(|| {
+            umm_core::CoreError::Invalid(format!("not a Thunderstore install link: {url}"))
+        })?;
         let games = s
             .link_games(&link)?
             .into_iter()

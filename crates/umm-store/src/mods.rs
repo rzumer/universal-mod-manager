@@ -99,8 +99,7 @@ fn stage_package_files(new_dir: &Path, opts: &ImportOptions) -> Result<()> {
         .package_files
         .iter()
         .filter(|(n, _)| {
-            !n.contains(['/', '\\'])
-                && umm_gamedef::RelPath::parse(n).is_ok_and(|r| r.depth() == 1)
+            !n.contains(['/', '\\']) && umm_gamedef::RelPath::parse(n).is_ok_and(|r| r.depth() == 1)
         })
         .collect();
     if files.is_empty() {

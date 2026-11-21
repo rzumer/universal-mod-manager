@@ -79,12 +79,19 @@ pub fn build_plan(
             Err(e) => return Err(e.into()),
         };
         let files_root = game.mod_files_dir(id);
-        if meta.thunderstore.is_some() && !def.def.loader.as_ref().is_some_and(|l| l.from_thunderstore()) {
+        if meta.thunderstore.is_some()
+            && !def
+                .def
+                .loader
+                .as_ref()
+                .is_some_and(|l| l.from_thunderstore())
+        {
             // Laid out for BepInEx from Thunderstore; meaningless in any other setup.
             skipped.push(Skipped {
                 owner: id.clone(),
                 file: "(all files)".into(),
-                reason: "installed from Thunderstore; needs the BepInEx from Thunderstore setup".into(),
+                reason: "installed from Thunderstore; needs the BepInEx from Thunderstore setup"
+                    .into(),
             });
             continue;
         }

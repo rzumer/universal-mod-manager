@@ -6,14 +6,17 @@ use std::path::{Path, PathBuf};
 use toml_edit::{value, DocumentMut, Item};
 
 fn parse(text: &str, origin: &Path) -> Result<DocumentMut, GameDefError> {
-    text.parse::<DocumentMut>().map_err(|e| GameDefError::Unsupported(format!(
-        "{} cannot be edited: {e}",
-        origin.display()
-    )))
+    text.parse::<DocumentMut>().map_err(|e| {
+        GameDefError::Unsupported(format!("{} cannot be edited: {e}", origin.display()))
+    })
 }
 
 /// Sets `[detect] path`, or removes it with `None`.
-pub fn set_install_path(text: &str, origin: &Path, path: Option<&Path>) -> Result<String, GameDefError> {
+pub fn set_install_path(
+    text: &str,
+    origin: &Path,
+    path: Option<&Path>,
+) -> Result<String, GameDefError> {
     let mut doc = parse(text, origin)?;
     match path {
         Some(p) => {
@@ -90,7 +93,10 @@ mod tests {
         assert!(t.contains("# My notes about this game"));
         assert!(t.contains("# the real name"));
         let def = GameDef::parse_game(&t, p, "trip").unwrap();
-        assert_eq!(def.detect.path.as_deref(), Some(Path::new(r"D:\Games\Trip")));
+        assert_eq!(
+            def.detect.path.as_deref(),
+            Some(Path::new(r"D:\Games\Trip"))
+        );
         assert_eq!(def.detect.steam_app_id, Some(5));
 
         let own = def.with_setup(LoaderSetup::Bepinex, None).unwrap();
@@ -108,7 +114,11 @@ mod tests {
         assert!(!t3.contains("[loader]"));
 
         let t4 = set_install_path(&t3, p, None).unwrap();
-        assert!(GameDef::parse_game(&t4, p, "trip").unwrap().detect.path.is_none());
+        assert!(GameDef::parse_game(&t4, p, "trip")
+            .unwrap()
+            .detect
+            .path
+            .is_none());
     }
 
     #[test]

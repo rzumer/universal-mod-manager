@@ -212,12 +212,10 @@ fn appid_file_is_present_only_while_playing() {
     let fx = setup("appid", "", &[]);
     // Add the Steam settings to the definition.
     let p = fx.session.data().game(GAME).def_path();
-    let def = read(&p).replace(
-        "[launch]\n",
-        "[launch]\nsteam_relaunch = \"appid_file\"\n",
-    )
-    // set_install_path added a [detect] table; the app id goes in it.
-    .replace("[detect]\n", "[detect]\nsteam_app_id = 480\n");
+    let def = read(&p)
+        .replace("[launch]\n", "[launch]\nsteam_relaunch = \"appid_file\"\n")
+        // set_install_path added a [detect] table; the app id goes in it.
+        .replace("[detect]\n", "[detect]\nsteam_app_id = 480\n");
     fs::write(&p, def).unwrap();
 
     launch(&fx);

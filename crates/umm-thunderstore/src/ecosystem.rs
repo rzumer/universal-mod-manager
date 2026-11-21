@@ -222,7 +222,10 @@ impl Ecosystem {
 /// The community's package index URL.
 pub fn package_index_url(m: &SteamMatch) -> String {
     m.r2.package_index.clone().unwrap_or_else(|| {
-        format!("{BASE_URL}/c/{}/api/v1/package-listing-index/", m.community())
+        format!(
+            "{BASE_URL}/c/{}/api/v1/package-listing-index/",
+            m.community()
+        )
     })
 }
 
@@ -296,7 +299,10 @@ pub(crate) mod tests {
 
         let bl = eco.by_steam_app(1592190).unwrap();
         assert_eq!(bl.loader(), "melonloader");
-        assert!(eco.by_steam_app(5).is_none(), "no r2modman entry: not moddable here");
+        assert!(
+            eco.by_steam_app(5).is_none(),
+            "no r2modman entry: not moddable here"
+        );
         assert!(eco.by_steam_app(42).is_none());
 
         assert_eq!(

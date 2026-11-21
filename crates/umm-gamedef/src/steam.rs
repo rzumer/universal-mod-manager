@@ -228,7 +228,10 @@ pub fn inspect_folder(root: &Path) -> Inspection {
         let stem = &n[..n.len() - 4];
         root.join(format!("{stem}_Data")).is_dir()
     });
-    if let Some(exe) = unity_exe.filter(|_| exists_ci(root, "UnityPlayer.dll")).cloned() {
+    if let Some(exe) = unity_exe
+        .filter(|_| exists_ci(root, "UnityPlayer.dll"))
+        .cloned()
+    {
         let engine = if exists_ci(root, "GameAssembly.dll") {
             Engine::UnityIl2cpp
         } else {
@@ -365,9 +368,16 @@ fn build(
         Engine::UnityMono | Engine::UnityIl2cpp => protect.push("UnityPlayer.dll".into()),
         Engine::Unreal => {
             // Under a mod loader its own rules apply instead.
-            if let Some(p) = found.unreal_project.as_ref().filter(|_| setup == LoaderSetup::Generic) {
+            if let Some(p) = found
+                .unreal_project
+                .as_ref()
+                .filter(|_| setup == LoaderSetup::Generic)
+            {
                 for ext in ["pak", "utoc", "ucas"] {
-                    install.push(rule(&format!("*.{ext}"), &format!("{p}/Content/Paks/~mods/")));
+                    install.push(rule(
+                        &format!("*.{ext}"),
+                        &format!("{p}/Content/Paks/~mods/"),
+                    ));
                 }
                 notes.push(Note::new(
                     "unreal",
@@ -387,7 +397,9 @@ fn build(
     install.push(rule("**", ""));
 
     match (setup, found.engine) {
-        (LoaderSetup::Thunderstore, _) if community.is_some_and(|c| c.loader == SHIMLOADER_KIND) => {
+        (LoaderSetup::Thunderstore, _)
+            if community.is_some_and(|c| c.loader == SHIMLOADER_KIND) =>
+        {
             notes.push(Note::new(
                 "thunderstore",
                 "This game is set up for Shimloader (UE4SS). You can download mods directly \
@@ -469,8 +481,16 @@ fn build(
 /// The draft as a `game.toml`, with a header saying where it came from.
 pub fn to_toml(draft: &Draft) -> String {
     let source = match draft.def.detect.steam_app_id {
-        Some(app) => format!("Generated from Steam by UMM ({}, {}; app {app}).", draft.engine.label(), draft.def.setup_label()),
-        None => format!("Added by UMM ({}, {}).", draft.engine.label(), draft.def.setup_label()),
+        Some(app) => format!(
+            "Generated from Steam by UMM ({}, {}; app {app}).",
+            draft.engine.label(),
+            draft.def.setup_label()
+        ),
+        None => format!(
+            "Added by UMM ({}, {}).",
+            draft.engine.label(),
+            draft.def.setup_label()
+        ),
     };
     let mut header = vec![
         source,
@@ -586,8 +606,14 @@ mod tests {
 
         let mono_app = apps.iter().find(|a| a.app_id == 1001).unwrap();
         let own = draft_definition(mono_app, LoaderSetup::Bepinex, None).unwrap();
-        assert_eq!(own.def.doorstop().unwrap().runtime_dirs, ["BepInEx", "dotnet"]);
-        let quest = Community { label: "mono-quest", loader: "bepinex" };
+        assert_eq!(
+            own.def.doorstop().unwrap().runtime_dirs,
+            ["BepInEx", "dotnet"]
+        );
+        let quest = Community {
+            label: "mono-quest",
+            loader: "bepinex",
+        };
         let ts = draft_definition(mono_app, LoaderSetup::Thunderstore, Some(quest)).unwrap();
         assert_eq!(ts.def.community(), Some("mono-quest"));
         assert_eq!(ts.def.setup(), Some(LoaderSetup::Thunderstore));
@@ -626,9 +652,18 @@ mod tests {
             install_dir: dir.into(),
             path: PathBuf::new(),
         };
-        assert_eq!(app_id_slug(&app("Mono Quest: Deluxe", "MQ")), "mono-quest-deluxe");
-        assert_eq!(app_id_slug(&app("おわかれのほし", "Owakare")), "おわかれのほし");
-        assert_eq!(app_id_slug(&app("みんなで空気読み。2", "x")), "みんなで空気読み-2");
+        assert_eq!(
+            app_id_slug(&app("Mono Quest: Deluxe", "MQ")),
+            "mono-quest-deluxe"
+        );
+        assert_eq!(
+            app_id_slug(&app("おわかれのほし", "Owakare")),
+            "おわかれのほし"
+        );
+        assert_eq!(
+            app_id_slug(&app("みんなで空気読み。2", "x")),
+            "みんなで空気読み-2"
+        );
         assert_eq!(app_id_slug(&app("Ünïcode Game 2", "x")), "ünïcode-game-2");
         assert_eq!(app_id_slug(&app("!!!", "Folder Name")), "folder-name");
         assert_eq!(app_id_slug(&app("!!!", "???")), "steam-77");

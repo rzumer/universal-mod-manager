@@ -56,7 +56,10 @@ fn zip_of(files: &[(&str, &str)]) -> Vec<u8> {
 
 fn fake() -> Arc<FakeHttp> {
     let pack = zip_of(&[
-        ("manifest.json", r#"{"name":"MelonLoader","version_number":"0.7.3","dependencies":[]}"#),
+        (
+            "manifest.json",
+            r#"{"name":"MelonLoader","version_number":"0.7.3","dependencies":[]}"#,
+        ),
         ("README.md", "readme"),
         ("icon.png", "png"),
         ("version.dll", "proxy"),
@@ -65,7 +68,10 @@ fn fake() -> Arc<FakeHttp> {
         ("MelonLoader/Documentation/LICENSE.md", "license"),
     ]);
     let seeds = zip_of(&[
-        ("manifest.json", r#"{"name":"Seeds","version_number":"1.0.0","dependencies":["LavaGang-MelonLoader-0.7.3"]}"#),
+        (
+            "manifest.json",
+            r#"{"name":"Seeds","version_number":"1.0.0","dependencies":["LavaGang-MelonLoader-0.7.3"]}"#,
+        ),
         ("icon.png", "png"),
         ("Seeds.dll", "seeds"),
         ("Assets/seeds.bundle", "bundle"),
@@ -119,8 +125,12 @@ fn melonloader_games_run_mods_from_the_runtime_folder() {
 
     let c = s.loader_choice("melon-quest").unwrap();
     assert_eq!(c.ts_loader.as_deref(), Some("recursive-melonloader"));
-    assert_eq!(c.available, [LoaderSetup::Thunderstore, LoaderSetup::Generic]);
-    s.set_loader("melon-quest", LoaderSetup::Thunderstore).unwrap();
+    assert_eq!(
+        c.available,
+        [LoaderSetup::Thunderstore, LoaderSetup::Generic]
+    );
+    s.set_loader("melon-quest", LoaderSetup::Thunderstore)
+        .unwrap();
     let def = s.game_def("melon-quest").unwrap();
     assert_eq!(def.loader.as_ref().unwrap().kind, "recursive-melonloader");
     assert_eq!(def.setup_label(), "MelonLoader from Thunderstore");
@@ -130,17 +140,28 @@ fn melonloader_games_run_mods_from_the_runtime_folder() {
     assert_eq!(page.loader_name, "MelonLoader");
     assert_eq!(page.loader_package.as_deref(), Some("LavaGang-MelonLoader"));
 
-    let err = s.deploy("melon-quest", DEFAULT_PROFILE, &mut Faults::none()).unwrap_err();
+    let err = s
+        .deploy("melon-quest", DEFAULT_PROFILE, &mut Faults::none())
+        .unwrap_err();
     assert!(err.to_string().contains("no MelonLoader"), "{err}");
 
-    s.ts_install("melon-quest", &[("Ann-Seeds".into(), None)], DEFAULT_PROFILE, &mut |_| {})
-        .unwrap();
+    s.ts_install(
+        "melon-quest",
+        &[("Ann-Seeds".into(), None)],
+        DEFAULT_PROFILE,
+        &mut |_| {},
+    )
+    .unwrap();
     let page = s.ts_search("melon-quest", &TsQuery::default()).unwrap();
     assert!(page.loader_installed);
 
-    s.deploy("melon-quest", DEFAULT_PROFILE, &mut Faults::none()).unwrap();
+    s.deploy("melon-quest", DEFAULT_PROFILE, &mut Faults::none())
+        .unwrap();
     // Only the proxy goes into the game folder.
-    assert_eq!(fs::read_to_string(root.join("version.dll")).unwrap(), "proxy");
+    assert_eq!(
+        fs::read_to_string(root.join("version.dll")).unwrap(),
+        "proxy"
+    );
     for d in ["MelonLoader", "Mods", "UserData"] {
         assert!(!root.join(d).exists(), "{d}");
     }
@@ -171,14 +192,32 @@ fn melonloader_games_run_mods_from_the_runtime_folder() {
 fn a_mod_naming_an_old_melonloader_gets_a_newer_one() {
     let tmp = tempfile::tempdir().unwrap();
     let s = game(&tmp.path().join("data"), &tmp.path().join("game"));
-    s.set_loader("melon-quest", LoaderSetup::Thunderstore).unwrap();
+    s.set_loader("melon-quest", LoaderSetup::Thunderstore)
+        .unwrap();
 
     // MelonLoader 0.6.6 cannot load mods from their own folders, so 0.7.3 comes instead.
     let r = s
-        .ts_install("melon-quest", &[("Bob-Sled".into(), None)], DEFAULT_PROFILE, &mut |_| {})
+        .ts_install(
+            "melon-quest",
+            &[("Bob-Sled".into(), None)],
+            DEFAULT_PROFILE,
+            &mut |_| {},
+        )
         .unwrap();
-    let installed: Vec<(&str, &str)> = r.installed.iter().map(|(n, v, _)| (n.as_str(), v.as_str())).collect();
-    assert!(installed.contains(&("LavaGang-MelonLoader", "0.7.3")), "{installed:?}");
-    assert!(r.notes.iter().any(|n| n.contains("0.7.3 instead of 0.6.6")), "{:?}", r.notes);
-    s.deploy("melon-quest", DEFAULT_PROFILE, &mut Faults::none()).unwrap();
+    let installed: Vec<(&str, &str)> = r
+        .installed
+        .iter()
+        .map(|(n, v, _)| (n.as_str(), v.as_str()))
+        .collect();
+    assert!(
+        installed.contains(&("LavaGang-MelonLoader", "0.7.3")),
+        "{installed:?}"
+    );
+    assert!(
+        r.notes.iter().any(|n| n.contains("0.7.3 instead of 0.6.6")),
+        "{:?}",
+        r.notes
+    );
+    s.deploy("melon-quest", DEFAULT_PROFILE, &mut Faults::none())
+        .unwrap();
 }

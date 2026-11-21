@@ -26,9 +26,12 @@ pub fn parse_link(url: &str) -> Option<InstallLink> {
     let rest = url.trim().strip_prefix("ror2mm://")?;
     let parts: Vec<&str> = rest.split('/').filter(|p| !p.is_empty()).collect();
     // Thunderstore names use letters, digits and `_`; versions digits and dots.
-    let name_ok = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    let name_ok =
+        |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
     let version_ok = |s: &str| {
-        s.split('.').count() == 3 && s.split('.').all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+        s.split('.').count() == 3
+            && s.split('.')
+                .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
     };
     match parts.as_slice() {
         ["v1", "install", host, owner, name, rest @ ..]
@@ -40,7 +43,10 @@ pub fn parse_link(url: &str) -> Option<InstallLink> {
             Some(InstallLink {
                 owner: owner.to_string(),
                 name: name.to_string(),
-                version: rest.first().filter(|v| version_ok(v)).map(|v| v.to_string()),
+                version: rest
+                    .first()
+                    .filter(|v| version_ok(v))
+                    .map(|v| v.to_string()),
             })
         }
         _ => None,
@@ -63,7 +69,9 @@ impl SchemeRegistry for WindowsRegistry {
     fn command(&self) -> Option<String> {
         use winreg::{enums::HKEY_CURRENT_USER, RegKey};
         RegKey::predef(HKEY_CURRENT_USER)
-            .open_subkey(format!(r"Software\Classes\{LINK_SCHEME}\shell\open\command"))
+            .open_subkey(format!(
+                r"Software\Classes\{LINK_SCHEME}\shell\open\command"
+            ))
             .ok()?
             .get_value::<String, _>("")
             .ok()
@@ -140,7 +148,9 @@ impl Session {
         exe: &Path,
         on: bool,
     ) -> Result<LinkHandler> {
-        let io = |e: std::io::Error| crate::CoreError::Invalid(format!("updating the link handler: {e}"));
+        let io = |e: std::io::Error| {
+            crate::CoreError::Invalid(format!("updating the link handler: {e}"))
+        };
         if on {
             reg.register(&our_command(exe)).map_err(io)?;
         } else if reg.command().is_some_and(|c| is_ours(&c, exe)) {
@@ -155,7 +165,12 @@ impl Session {
         let full = link.full_name();
         let mut out = Vec::new();
         for st in self.status()? {
-            if !st.def.loader.as_ref().is_some_and(|l| l.from_thunderstore()) {
+            if !st
+                .def
+                .loader
+                .as_ref()
+                .is_some_and(|l| l.from_thunderstore())
+            {
                 continue;
             }
             if let Ok((pkgs, _)) = self.ts_packages(&st.def.id, false) {
@@ -231,7 +246,13 @@ mod tests {
 
         // Off removes UMM's registration; nothing is restored.
         let h = s.set_link_handler(&reg, exe, false).unwrap();
-        assert_eq!(h, LinkHandler { ours: false, other: None });
+        assert_eq!(
+            h,
+            LinkHandler {
+                ours: false,
+                other: None
+            }
+        );
         assert!(reg.command().is_none());
     }
 }

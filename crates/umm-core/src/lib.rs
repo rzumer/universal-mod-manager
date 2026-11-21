@@ -2,24 +2,27 @@
 
 mod doctor;
 mod launch;
-mod runtime;
-mod setup;
-mod steam;
 mod link;
 mod manual;
+mod runtime;
+mod setup;
 mod share;
+mod steam;
 mod ts;
 
 pub use doctor::{Finding, Level};
 pub use launch::{LaunchEvent, LaunchOutcome};
-pub use runtime::SyncReport;
+pub use link::{
+    parse_link, system_registry, InstallLink, LinkHandler, SchemeRegistry, LINK_SCHEME,
+};
 pub use manual::FolderInfo;
+pub use runtime::SyncReport;
 pub use setup::LoaderChoice;
-pub use link::{parse_link, system_registry, InstallLink, LinkHandler, SchemeRegistry, LINK_SCHEME};
 pub use share::{ProfileExport, ProfileImport};
-pub use ts::{package_mod_id, InstalledPackage, TsInstallReport, TsItem, TsLookup, TsPage, TsQuery, TsSort};
-pub use umm_thunderstore::index::Package;
 pub use steam::{Draft, Engine, Note, SteamApp, SteamCandidate, SteamList};
+pub use ts::{
+    package_mod_id, InstalledPackage, TsInstallReport, TsItem, TsLookup, TsPage, TsQuery, TsSort,
+};
 pub use umm_deploy::{
     Conflict, DeployError, Faults, Journal, Method as DeployMethod, Op as DeployOp, Plan,
     RevertReport, Skipped,
@@ -29,6 +32,7 @@ pub use umm_launch::catch_interrupts;
 pub use umm_store::{
     DataDir, GameDir, ImportOptions, ModMeta, Profile, ProfileEntry, StoreError, DEFAULT_PROFILE,
 };
+pub use umm_thunderstore::index::Package;
 
 pub use umm_gamedef::LoaderSetup;
 pub use umm_thunderstore::{Ecosystem, Http, TsError, UreqHttp};

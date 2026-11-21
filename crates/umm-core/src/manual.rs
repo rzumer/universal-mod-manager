@@ -3,7 +3,9 @@
 use crate::steam::{setups_for, TsFit};
 use crate::{CoreError, Result, Session};
 use std::path::{Path, PathBuf};
-use umm_gamedef::steam::{draft_manual, inspect_folder, installed_games, to_toml, Draft, Engine, Note};
+use umm_gamedef::steam::{
+    draft_manual, inspect_folder, installed_games, to_toml, Draft, Engine, Note,
+};
 use umm_gamedef::LoaderSetup;
 
 /// What UMM found in a folder, to fill in the "Add game manually" form.

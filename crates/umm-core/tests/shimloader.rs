@@ -54,7 +54,10 @@ fn zip_of(files: &[(&str, &str)]) -> Vec<u8> {
 
 fn fake() -> Arc<FakeHttp> {
     let pack = zip_of(&[
-        ("manifest.json", r#"{"name":"unreal_shimloader","version_number":"1.1.7","dependencies":[]}"#),
+        (
+            "manifest.json",
+            r#"{"name":"unreal_shimloader","version_number":"1.1.7","dependencies":[]}"#,
+        ),
         ("dwmapi.dll", "shim"),
         ("UE4SS/dwmapi.dll", "ue4ss's own proxy"),
         ("UE4SS/UE4SS.dll", "ue4ss"),
@@ -63,7 +66,10 @@ fn fake() -> Arc<FakeHttp> {
         ("UE4SS/Mods/Keybinds/Scripts/main.lua", "-- keys"),
     ]);
     let glow = zip_of(&[
-        ("manifest.json", r#"{"name":"Glow","version_number":"1.0.0","dependencies":["Thunderstore-unreal_shimloader-1.1.7"]}"#),
+        (
+            "manifest.json",
+            r#"{"name":"Glow","version_number":"1.0.0","dependencies":["Thunderstore-unreal_shimloader-1.1.7"]}"#,
+        ),
         ("icon.png", "png"),
         ("mod/Scripts/main.lua", "-- glow"),
         ("pak/Glow_P.pak", "pak"),
@@ -78,7 +84,10 @@ fn fake() -> Arc<FakeHttp> {
                 "https://thunderstore.io/package/download/Thunderstore/unreal_shimloader/1.1.7/",
                 pack,
             )
-            .with("https://thunderstore.io/package/download/Ann/Glow/1.0.0/", glow),
+            .with(
+                "https://thunderstore.io/package/download/Ann/Glow/1.0.0/",
+                glow,
+            ),
     )
 }
 
@@ -87,7 +96,11 @@ fn game(data: &Path, root: &Path) -> Session {
     let s = Session::open_with(Some(data.to_path_buf()), fake()).unwrap();
     fs::create_dir_all(root.join("Trip/Binaries/Win64")).unwrap();
     fs::write(root.join("Trip.exe"), "bootstrap").unwrap();
-    fs::write(root.join("Trip/Binaries/Win64/Trip-Win64-Shipping.exe"), "game").unwrap();
+    fs::write(
+        root.join("Trip/Binaries/Win64/Trip-Win64-Shipping.exe"),
+        "game",
+    )
+    .unwrap();
     let p = s.data().game("trip").def_path();
     fs::create_dir_all(p.parent().unwrap()).unwrap();
     fs::write(
@@ -112,36 +125,61 @@ fn shimloader_games_run_mods_from_the_runtime_folder() {
     // Thunderstore's loader for the game is offered; BepInEx is not.
     let c = s.loader_choice("trip").unwrap();
     assert_eq!(c.ts_loader.as_deref(), Some("shimloader"));
-    assert_eq!(c.available, [LoaderSetup::Thunderstore, LoaderSetup::Generic]);
+    assert_eq!(
+        c.available,
+        [LoaderSetup::Thunderstore, LoaderSetup::Generic]
+    );
     s.set_loader("trip", LoaderSetup::Thunderstore).unwrap();
     let def = s.game_def("trip").unwrap();
     let loader = def.loader.as_ref().unwrap();
-    assert_eq!((loader.kind.as_str(), def.community()), ("shimloader", Some("trip")));
+    assert_eq!(
+        (loader.kind.as_str(), def.community()),
+        ("shimloader", Some("trip"))
+    );
     assert_eq!(def.setup_label(), "Shimloader from Thunderstore");
 
     let page = s.ts_search("trip", &TsQuery::default()).unwrap();
     assert_eq!(page.loader_name, "Shimloader");
-    assert_eq!(page.loader_package.as_deref(), Some("Thunderstore-unreal_shimloader"));
+    assert_eq!(
+        page.loader_package.as_deref(),
+        Some("Thunderstore-unreal_shimloader")
+    );
     assert!(!page.loader_installed);
 
-    let err = s.deploy("trip", DEFAULT_PROFILE, &mut Faults::none()).unwrap_err();
+    let err = s
+        .deploy("trip", DEFAULT_PROFILE, &mut Faults::none())
+        .unwrap_err();
     assert!(err.to_string().contains("no Shimloader"), "{err}");
 
     // The mod brings Shimloader with it.
-    s.ts_install("trip", &[("Ann-Glow".into(), None)], DEFAULT_PROFILE, &mut |_| {})
-        .unwrap();
+    s.ts_install(
+        "trip",
+        &[("Ann-Glow".into(), None)],
+        DEFAULT_PROFILE,
+        &mut |_| {},
+    )
+    .unwrap();
 
-    s.deploy("trip", DEFAULT_PROFILE, &mut Faults::none()).unwrap();
+    s.deploy("trip", DEFAULT_PROFILE, &mut Faults::none())
+        .unwrap();
     let bin = root.join("Trip/Binaries/Win64");
     // Only Shimloader, UE4SS and its settings go next to the real exe, plus steam_appid.txt
     // there and at the root so the game does not restart through Steam without its arguments.
-    for f in ["dwmapi.dll", "ue4ss.dll", "UE4SS-settings.ini", "steam_appid.txt"] {
+    for f in [
+        "dwmapi.dll",
+        "ue4ss.dll",
+        "UE4SS-settings.ini",
+        "steam_appid.txt",
+    ] {
         assert!(bin.join(f).is_file(), "{f}");
     }
     assert_eq!(fs::read_to_string(bin.join("dwmapi.dll")).unwrap(), "shim");
     assert!(root.join("steam_appid.txt").is_file());
     assert!(!root.join("shimloader").exists());
-    assert!(!root.join("Trip/Content").exists(), "the generic pak rule is gone");
+    assert!(
+        !root.join("Trip/Content").exists(),
+        "the generic pak rule is gone"
+    );
 
     // Mods, paks and configs go to the profile's runtime folder.
     let rt = s.game_dir("trip").runtime_dir(DEFAULT_PROFILE);
@@ -154,7 +192,10 @@ fn shimloader_games_run_mods_from_the_runtime_folder() {
     ] {
         assert!(rt.join(f).is_file(), "{f}");
     }
-    assert!(rt.join("shimloader/overlay").is_dir(), "every folder Shimloader is given exists");
+    assert!(
+        rt.join("shimloader/overlay").is_dir(),
+        "every folder Shimloader is given exists"
+    );
 
     // The package's icon and manifest are kept beside the mod, and deployed nowhere.
     let package = s.game_dir("trip").mod_package_dir("ann-glow");
@@ -162,7 +203,12 @@ fn shimloader_games_run_mods_from_the_runtime_folder() {
     assert!(!rt.join("shimloader/mod/Ann-Glow/icon.png").exists());
 
     s.revert("trip", false, &mut Faults::none()).unwrap();
-    for f in ["dwmapi.dll", "ue4ss.dll", "UE4SS-settings.ini", "steam_appid.txt"] {
+    for f in [
+        "dwmapi.dll",
+        "ue4ss.dll",
+        "UE4SS-settings.ini",
+        "steam_appid.txt",
+    ] {
         assert!(!bin.join(f).exists(), "{f} reverted");
     }
     assert!(bin.join("Trip-Win64-Shipping.exe").is_file());

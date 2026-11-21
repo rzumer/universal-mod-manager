@@ -58,7 +58,9 @@ fn ts(s: &Session, cmd: TsCmd) -> Result<()> {
                 },
             )?;
             if page.stale {
-                eprintln!("note: Thunderstore could not be reached; this is an older copy of the list");
+                eprintln!(
+                    "note: Thunderstore could not be reached; this is an older copy of the list"
+                );
             }
             for i in &page.items {
                 let p = &i.package;
@@ -682,7 +684,10 @@ fn run(cli: Cli) -> Result<()> {
             for g in list.games {
                 let state = match &g.defined_as {
                     Some(id) => format!("added as `{id}`"),
-                    None => format!("would be: {}", g.default_setup.label(g.ts_loader.as_deref())),
+                    None => format!(
+                        "would be: {}",
+                        g.default_setup.label(g.ts_loader.as_deref())
+                    ),
                 };
                 println!(
                     "{:>8}  {:<40} {:<16} {state}",
@@ -796,14 +801,18 @@ fn profile_cmd(s: &Session, cmd: ProfileCmd) -> Result<()> {
         } => {
             let e = s.profile_export(&game, &profile)?;
             if !e.left_out.is_empty() {
-                eprintln!("not included (not from Thunderstore): {}", e.left_out.join(", "));
+                eprintln!(
+                    "not included (not from Thunderstore): {}",
+                    e.left_out.join(", ")
+                );
             }
             println!("{} package(s), {} config file(s)", e.mods, e.files.len());
             if code {
                 println!("code: {}", s.profile_export_code(&game, &profile)?);
             } else {
                 let path = file.unwrap_or_else(|| PathBuf::from(format!("{profile}.r2z")));
-                std::fs::write(&path, &e.r2z).with_context(|| format!("writing {}", path.display()))?;
+                std::fs::write(&path, &e.r2z)
+                    .with_context(|| format!("writing {}", path.display()))?;
                 println!("saved {}", path.display());
             }
         }

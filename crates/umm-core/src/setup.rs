@@ -98,7 +98,9 @@ impl Session {
                 ),
             }));
         }
-        let community = fit.as_community().filter(|_| setup == LoaderSetup::Thunderstore);
+        let community = fit
+            .as_community()
+            .filter(|_| setup == LoaderSetup::Thunderstore);
         let new = def.with_setup(setup, community)?;
         self.edit_game_file(id, |text, origin| {
             umm_gamedef::edit::set_setup(text, origin, &new)

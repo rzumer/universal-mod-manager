@@ -111,8 +111,12 @@ const BEPINEX_CONFIG: &str = "BepInEx/config/**";
 const SHIMLOADER_CONFIG: &str = "shimloader/cfg/**";
 const MELONLOADER_CONFIG: &str = "UserData/**";
 const LOVELY_CONFIG: &str = "mods/lovely/**";
-const LOADER_CONFIGS: &[&str] =
-    &[BEPINEX_CONFIG, SHIMLOADER_CONFIG, MELONLOADER_CONFIG, LOVELY_CONFIG];
+const LOADER_CONFIGS: &[&str] = &[
+    BEPINEX_CONFIG,
+    SHIMLOADER_CONFIG,
+    MELONLOADER_CONFIG,
+    LOVELY_CONFIG,
+];
 
 impl GameDef {
     /// The setup this definition describes. `None`: a loader none of the setups covers (an
@@ -165,7 +169,9 @@ impl GameDef {
             return Ok(self.clone());
         }
         let mut d = self.clone();
-        d.writable.paths.retain(|p| !LOADER_CONFIGS.contains(&p.as_str()));
+        d.writable
+            .paths
+            .retain(|p| !LOADER_CONFIGS.contains(&p.as_str()));
         let (loader, rules, config) = match setup {
             LoaderSetup::Generic => (None, vec![rule("**", "")], None),
             LoaderSetup::Bepinex => (
@@ -305,7 +311,9 @@ target = ""
             label: "trip",
             loader: "shimloader",
         };
-        let ts = def().with_setup(LoaderSetup::Thunderstore, Some(shim)).unwrap();
+        let ts = def()
+            .with_setup(LoaderSetup::Thunderstore, Some(shim))
+            .unwrap();
         assert_eq!(ts.setup(), Some(LoaderSetup::Thunderstore));
         assert_eq!(ts.setup_label(), "Shimloader from Thunderstore");
         assert_eq!(ts.runtime_loader(), Some(RuntimeLoader::Shimloader));
@@ -319,8 +327,14 @@ target = ""
                 .to_string()
         };
         assert_eq!(map("Blue.pak"), "shimloader/pak/m/Blue.pak");
-        assert_eq!(map("MyMod/Scripts/main.lua"), "shimloader/mod/MyMod/Scripts/main.lua");
-        assert_eq!(map("shimloader/cfg/Engine.ini"), "shimloader/cfg/Engine.ini");
+        assert_eq!(
+            map("MyMod/Scripts/main.lua"),
+            "shimloader/mod/MyMod/Scripts/main.lua"
+        );
+        assert_eq!(
+            map("shimloader/cfg/Engine.ini"),
+            "shimloader/cfg/Engine.ini"
+        );
         assert!(c.is_writable(&RelPath::parse("shimloader/cfg/Engine.ini").unwrap()));
 
         // The same community with BepInEx changes the loader and its config folder.
@@ -348,7 +362,9 @@ target = ""
                 label: "trip",
                 loader,
             };
-            let ts = def().with_setup(LoaderSetup::Thunderstore, Some(c)).unwrap();
+            let ts = def()
+                .with_setup(LoaderSetup::Thunderstore, Some(c))
+                .unwrap();
             assert_eq!(ts.setup_label(), "MelonLoader from Thunderstore");
             assert_eq!(ts.runtime_loader(), Some(RuntimeLoader::MelonLoader));
             let c = ts.compile().unwrap();
@@ -371,7 +387,9 @@ target = ""
             label: "balatro",
             loader: "lovely",
         };
-        let ts = def().with_setup(LoaderSetup::Thunderstore, Some(c)).unwrap();
+        let ts = def()
+            .with_setup(LoaderSetup::Thunderstore, Some(c))
+            .unwrap();
         assert_eq!(ts.setup_label(), "Lovely from Thunderstore");
         assert_eq!(ts.runtime_loader(), Some(RuntimeLoader::Lovely));
         let c = ts.compile().unwrap();

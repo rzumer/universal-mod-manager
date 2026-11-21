@@ -49,14 +49,20 @@ fn zip_of(files: &[(&str, &str)]) -> Vec<u8> {
 
 fn fake() -> Arc<FakeHttp> {
     let pack = zip_of(&[
-        ("manifest.json", r#"{"name":"lovely","version_number":"0.10.0","dependencies":[]}"#),
+        (
+            "manifest.json",
+            r#"{"name":"lovely","version_number":"0.10.0","dependencies":[]}"#,
+        ),
         ("README.md", "readme"),
         ("icon.png", "png"),
         ("winmm.dll", "proxy"),
         ("lovely/config.toml", "[workspace]"),
     ]);
     let smods = zip_of(&[
-        ("manifest.json", r#"{"name":"smods","version_number":"1.0.0","dependencies":["Thunderstore-lovely-0.10.0"]}"#),
+        (
+            "manifest.json",
+            r#"{"name":"smods","version_number":"1.0.0","dependencies":["Thunderstore-lovely-0.10.0"]}"#,
+        ),
         ("icon.png", "png"),
         ("lovely.toml", "[manifest]"),
         ("src/core.lua", "-- core"),
@@ -70,7 +76,10 @@ fn fake() -> Arc<FakeHttp> {
                 "https://thunderstore.io/package/download/Thunderstore/lovely/0.10.0/",
                 pack,
             )
-            .with("https://thunderstore.io/package/download/Steamodded/smods/1.0.0/", smods),
+            .with(
+                "https://thunderstore.io/package/download/Steamodded/smods/1.0.0/",
+                smods,
+            ),
     )
 }
 
@@ -93,20 +102,34 @@ fn lovely_games_run_mods_from_the_runtime_folder() {
 
     let c = s.loader_choice("jokers").unwrap();
     assert_eq!(c.ts_loader.as_deref(), Some("lovely"));
-    assert_eq!(c.available, [LoaderSetup::Thunderstore, LoaderSetup::Generic]);
+    assert_eq!(
+        c.available,
+        [LoaderSetup::Thunderstore, LoaderSetup::Generic]
+    );
     s.set_loader("jokers", LoaderSetup::Thunderstore).unwrap();
-    assert_eq!(s.game_def("jokers").unwrap().setup_label(), "Lovely from Thunderstore");
+    assert_eq!(
+        s.game_def("jokers").unwrap().setup_label(),
+        "Lovely from Thunderstore"
+    );
 
     let page = s.ts_search("jokers", &TsQuery::default()).unwrap();
     assert_eq!(page.loader_name, "Lovely");
     assert_eq!(page.loader_package.as_deref(), Some("Thunderstore-lovely"));
 
-    let err = s.deploy("jokers", DEFAULT_PROFILE, &mut Faults::none()).unwrap_err();
+    let err = s
+        .deploy("jokers", DEFAULT_PROFILE, &mut Faults::none())
+        .unwrap_err();
     assert!(err.to_string().contains("no Lovely"), "{err}");
 
-    s.ts_install("jokers", &[("Steamodded-smods".into(), None)], DEFAULT_PROFILE, &mut |_| {})
+    s.ts_install(
+        "jokers",
+        &[("Steamodded-smods".into(), None)],
+        DEFAULT_PROFILE,
+        &mut |_| {},
+    )
+    .unwrap();
+    s.deploy("jokers", DEFAULT_PROFILE, &mut Faults::none())
         .unwrap();
-    s.deploy("jokers", DEFAULT_PROFILE, &mut Faults::none()).unwrap();
 
     // Only the proxy goes into the game folder; Lovely's folder and the mods to the runtime one.
     assert_eq!(fs::read_to_string(root.join("winmm.dll")).unwrap(), "proxy");

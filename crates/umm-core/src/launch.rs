@@ -7,11 +7,11 @@ use umm_deploy::{
     apply, build_plan, prepare, Faults, GameLock, Journal, PlannedFile, RevertReport,
 };
 use umm_gamedef::{
-    detect::steam_roots, loader_name, BepInExBuild, BEPINEX_KIND, DoorstopLoader, GameDef, RelPath, RuntimeLoader,
-    SteamRelaunch, CORECLR_PATH, CORLIB_DIR, DOORSTOP3_ENABLED_FLAG, DOORSTOP3_TARGET_FLAG,
-    DOORSTOP_CORECLR_FLAG, DOORSTOP_CORLIB_FLAG, DOORSTOP_ENABLED_FLAG, DOORSTOP_TARGET_FLAG,
-    LOVELY_DIR, LOVELY_MOD_DIR_FLAG, LOVELY_PROXIES, MELONLOADER_BASEDIR_FLAG,
-    MELONLOADER_GENERATED, MELONLOADER_REGENERATE_FLAG, SHIMLOADER_DIRS,
+    detect::steam_roots, loader_name, BepInExBuild, DoorstopLoader, GameDef, RelPath,
+    RuntimeLoader, SteamRelaunch, BEPINEX_KIND, CORECLR_PATH, CORLIB_DIR, DOORSTOP3_ENABLED_FLAG,
+    DOORSTOP3_TARGET_FLAG, DOORSTOP_CORECLR_FLAG, DOORSTOP_CORLIB_FLAG, DOORSTOP_ENABLED_FLAG,
+    DOORSTOP_TARGET_FLAG, LOVELY_DIR, LOVELY_MOD_DIR_FLAG, LOVELY_PROXIES,
+    MELONLOADER_BASEDIR_FLAG, MELONLOADER_GENERATED, MELONLOADER_REGENERATE_FLAG, SHIMLOADER_DIRS,
 };
 use umm_launch::{LaunchSpec, Tracking};
 use umm_store::fsutil::{hash_file, write_atomic, IoCtx};
@@ -49,7 +49,10 @@ pub struct LaunchOutcome {
 }
 
 /// Splits planned files into those that live in the runtime folder and those for the game.
-fn split_runtime(files: Vec<PlannedFile>, rl: &RuntimeLoader) -> (Vec<PlannedFile>, Vec<PlannedFile>) {
+fn split_runtime(
+    files: Vec<PlannedFile>,
+    rl: &RuntimeLoader,
+) -> (Vec<PlannedFile>, Vec<PlannedFile>) {
     let dirs = rl.runtime_dirs();
     files.into_iter().partition(|f| {
         f.target
@@ -104,7 +107,11 @@ impl Session {
         let rl = def.def.runtime_loader();
         let (injection, shim_bin) = match rl {
             Some(RuntimeLoader::Doorstop(ds)) => (
-                Some(Injection::Doorstop(check_bepinex(&def.def, &plan.files, &ds)?)),
+                Some(Injection::Doorstop(check_bepinex(
+                    &def.def,
+                    &plan.files,
+                    &ds,
+                )?)),
                 None,
             ),
             Some(RuntimeLoader::Shimloader) => (
@@ -152,9 +159,12 @@ impl Session {
         let mut injection = injection;
         if let Some(Injection::MelonLoader { regenerate }) = &mut injection {
             let dir = game.runtime_dir(&profile.name);
-            *regenerate = !MELONLOADER_GENERATED
-                .iter()
-                .any(|rel| RelPath::parse(rel).expect("valid path").to_path(&dir).is_file());
+            *regenerate = !MELONLOADER_GENERATED.iter().any(|rel| {
+                RelPath::parse(rel)
+                    .expect("valid path")
+                    .to_path(&dir)
+                    .is_file()
+            });
         }
 
         if let (Some(launch), Some(app_id)) = (&def.def.launch, def.def.detect.steam_app_id) {
@@ -328,14 +338,22 @@ impl Session {
                 continue;
             }
             for file in m.files.keys() {
-                if !DOORSTOP_PROXIES.iter().any(|p| file.eq_ignore_ascii_case(p)) {
+                if !DOORSTOP_PROXIES
+                    .iter()
+                    .any(|p| file.eq_ignore_ascii_case(p))
+                {
                     continue;
                 }
-                let path = RelPath::parse(file).ok()?.to_path(&game.mod_files_dir(&m.id));
+                let path = RelPath::parse(file)
+                    .ok()?
+                    .to_path(&game.mod_files_dir(&m.id));
                 if is_64_bit(&path).is_some_and(|p| p != game_64) {
                     let bits = |b: bool| if b { "64-bit" } else { "32-bit" };
                     let current = m.thunderstore.as_ref().map(|t| t.full_name.as_str());
-                    let kind = def.loader.as_ref().map_or(BEPINEX_KIND, |l| l.kind.as_str());
+                    let kind = def
+                        .loader
+                        .as_ref()
+                        .map_or(BEPINEX_KIND, |l| l.kind.as_str());
                     let (name, what) = if kind == BEPINEX_KIND {
                         ("BepInEx", "BepInEx pack")
                     } else {
@@ -373,7 +391,10 @@ fn check_proxy_architecture(files: &[PlannedFile], game_exe: &Path, game: &str) 
     };
     for f in files {
         let name = f.target.as_str();
-        if !DOORSTOP_PROXIES.iter().any(|p| name.eq_ignore_ascii_case(p)) {
+        if !DOORSTOP_PROXIES
+            .iter()
+            .any(|p| name.eq_ignore_ascii_case(p))
+        {
             continue;
         }
         if let Some(proxy_64) = is_64_bit(&f.source) {
@@ -398,7 +419,9 @@ pub(crate) enum Injection {
     Doorstop(Doorstop),
     Shimloader,
     /// `regenerate`: the runtime folder has no generated game assemblies yet.
-    MelonLoader { regenerate: bool },
+    MelonLoader {
+        regenerate: bool,
+    },
     Lovely,
 }
 
@@ -406,7 +429,9 @@ pub(crate) enum Injection {
 fn check_lovely(files: &[PlannedFile]) -> Result<()> {
     let found = files.iter().any(|f| {
         f.target.depth() == 1
-            && LOVELY_PROXIES.iter().any(|p| f.target.as_str().eq_ignore_ascii_case(p))
+            && LOVELY_PROXIES
+                .iter()
+                .any(|p| f.target.as_str().eq_ignore_ascii_case(p))
     });
     if found {
         Ok(())
@@ -420,8 +445,12 @@ fn check_lovely(files: &[PlannedFile]) -> Result<()> {
 /// Errors when the profile has no MelonLoader (its `MelonLoader.dll`, under `MelonLoader/`).
 fn check_melonloader(files: &[PlannedFile]) -> Result<()> {
     let found = files.iter().any(|f| {
-        f.target.first().is_some_and(|c| c.eq_ignore_ascii_case("MelonLoader"))
-            && f.target.file_name().is_some_and(|n| n.eq_ignore_ascii_case("MelonLoader.dll"))
+        f.target
+            .first()
+            .is_some_and(|c| c.eq_ignore_ascii_case("MelonLoader"))
+            && f.target
+                .file_name()
+                .is_some_and(|n| n.eq_ignore_ascii_case("MelonLoader.dll"))
     });
     if found {
         Ok(())
@@ -457,8 +486,17 @@ pub(crate) struct Doorstop {
 /// Finds which BepInEx build the profile carries (by the assembly Doorstop would load) and
 /// its Doorstop version. Errors when there is none, or when the pack cannot work.
 fn check_bepinex(def: &GameDef, files: &[PlannedFile], ds: &DoorstopLoader) -> Result<Doorstop> {
-    let find = |p: &str| files.iter().find(|f| f.target.as_str().eq_ignore_ascii_case(p));
-    let Some(build) = ds.builds.iter().copied().find(|b| find(b.target()).is_some()) else {
+    let find = |p: &str| {
+        files
+            .iter()
+            .find(|f| f.target.as_str().eq_ignore_ascii_case(p))
+    };
+    let Some(build) = ds
+        .builds
+        .iter()
+        .copied()
+        .find(|b| find(b.target()).is_some())
+    else {
         let how = if def.loader.as_ref().is_some_and(|l| l.from_thunderstore()) {
             "install the BepInEx pack from the Thunderstore tab (it also comes with any mod that needs it)"
         } else {
@@ -551,8 +589,13 @@ pub(crate) fn build_spec(
     let exe_rel = RelPath::parse(&launch.exe).map_err(|e| CoreError::Invalid(e.to_string()))?;
 
     let mut game_args = launch.args.clone();
-    let in_runtime =
-        |rel: &str| native_path(&RelPath::parse(rel).expect("valid path").to_path(runtime_dir));
+    let in_runtime = |rel: &str| {
+        native_path(
+            &RelPath::parse(rel)
+                .expect("valid path")
+                .to_path(runtime_dir),
+        )
+    };
     if injection == Some(Injection::Shimloader) {
         for (flag, rel) in SHIMLOADER_DIRS {
             game_args.extend([flag.to_string(), in_runtime(rel)]);
@@ -562,7 +605,10 @@ pub(crate) fn build_spec(
         game_args.extend([LOVELY_MOD_DIR_FLAG.to_string(), in_runtime(LOVELY_DIR)]);
     }
     if let Some(Injection::MelonLoader { regenerate }) = injection {
-        game_args.extend([MELONLOADER_BASEDIR_FLAG.to_string(), native_path(runtime_dir)]);
+        game_args.extend([
+            MELONLOADER_BASEDIR_FLAG.to_string(),
+            native_path(runtime_dir),
+        ]);
         if regenerate {
             game_args.push(MELONLOADER_REGENERATE_FLAG.to_string());
         }
@@ -632,8 +678,15 @@ mod tests {
         let mut p = Profile::new("Default");
         p.launch_args = vec!["-skipintro".into()];
         let ds = |build, major| Some(Injection::Doorstop(Doorstop { build, major }));
-        let spec = build_spec(&d, Path::new("/game"), Path::new("/rt"), &p, ds(BepInExBuild::V5, 4), None)
-            .unwrap();
+        let spec = build_spec(
+            &d,
+            Path::new("/game"),
+            Path::new("/rt"),
+            &p,
+            ds(BepInExBuild::V5, 4),
+            None,
+        )
+        .unwrap();
         assert_eq!(spec.tracking, Tracking::Job);
         assert_eq!(
             spec.program,
@@ -656,15 +709,35 @@ mod tests {
         );
 
         // Older BepInEx 5 packs ship Doorstop 3, which spells its flags differently.
-        let spec = build_spec(&d, Path::new("/game"), Path::new("/rt"), &p, ds(BepInExBuild::V5, 3), None)
-            .unwrap();
+        let spec = build_spec(
+            &d,
+            Path::new("/game"),
+            Path::new("/rt"),
+            &p,
+            ds(BepInExBuild::V5, 3),
+            None,
+        )
+        .unwrap();
         assert_eq!(spec.args[1], "--doorstop-enable");
         assert_eq!(spec.args[3], "--doorstop-target");
 
         // BepInEx 6 for IL2CPP loads its own assembly and the pack's .NET runtime.
-        let spec = build_spec(&d, Path::new("/game"), Path::new("/rt"), &p, ds(BepInExBuild::V6Il2cpp, 4), None)
-            .unwrap();
-        let rt = |parts: &[&str]| native_path(&parts.iter().fold(Path::new("/rt").to_path_buf(), |p, c| p.join(c)));
+        let spec = build_spec(
+            &d,
+            Path::new("/game"),
+            Path::new("/rt"),
+            &p,
+            ds(BepInExBuild::V6Il2cpp, 4),
+            None,
+        )
+        .unwrap();
+        let rt = |parts: &[&str]| {
+            native_path(
+                &parts
+                    .iter()
+                    .fold(Path::new("/rt").to_path_buf(), |p, c| p.join(c)),
+            )
+        };
         assert_eq!(
             spec.args,
             [
@@ -680,9 +753,19 @@ mod tests {
                 "-skipintro"
             ]
         );
-        let spec = build_spec(&d, Path::new("/game"), Path::new("/rt"), &p, ds(BepInExBuild::V6Mono, 4), None)
-            .unwrap();
-        assert_eq!(spec.args[4], rt(&["BepInEx", "core", "BepInEx.Unity.Mono.Preloader.dll"]));
+        let spec = build_spec(
+            &d,
+            Path::new("/game"),
+            Path::new("/rt"),
+            &p,
+            ds(BepInExBuild::V6Mono, 4),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            spec.args[4],
+            rt(&["BepInEx", "core", "BepInEx.Unity.Mono.Preloader.dll"])
+        );
         assert_eq!(spec.args.len(), 6, "no runtime paths for Mono");
     }
 
@@ -700,7 +783,13 @@ mod tests {
             None,
         )
         .unwrap();
-        let rt = |parts: &[&str]| native_path(&parts.iter().fold(Path::new("/rt").to_path_buf(), |p, c| p.join(c)));
+        let rt = |parts: &[&str]| {
+            native_path(
+                &parts
+                    .iter()
+                    .fold(Path::new("/rt").to_path_buf(), |p, c| p.join(c)),
+            )
+        };
         assert_eq!(
             spec.args,
             [
@@ -730,7 +819,13 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(spec.args, ["--mod-dir", native_path(&Path::new("/rt").join("mods")).as_str()]);
+        assert_eq!(
+            spec.args,
+            [
+                "--mod-dir",
+                native_path(&Path::new("/rt").join("mods")).as_str()
+            ]
+        );
     }
 
     #[test]
@@ -751,7 +846,14 @@ mod tests {
             .args
         };
         let rt = native_path(Path::new("/rt"));
-        assert_eq!(spec(true), ["--melonloader.basedir", rt.as_str(), "--melonloader.agfregenerate"]);
+        assert_eq!(
+            spec(true),
+            [
+                "--melonloader.basedir",
+                rt.as_str(),
+                "--melonloader.agfregenerate"
+            ]
+        );
         assert_eq!(spec(false), ["--melonloader.basedir", rt.as_str()]);
     }
 
@@ -780,7 +882,11 @@ mod tests {
         };
         let x86 = planned(fake_pe(tmp.path(), "proxy32.dll", 0x14c));
         let err = check_proxy_architecture(&[x86], &game, "Among Us").unwrap_err();
-        assert!(err.to_string().contains("is 32-bit, but Among Us is 64-bit"), "{err}");
+        assert!(
+            err.to_string()
+                .contains("is 32-bit, but Among Us is 64-bit"),
+            "{err}"
+        );
         let x64 = planned(fake_pe(tmp.path(), "proxy64.dll", 0x8664));
         assert!(check_proxy_architecture(&[x64], &game, "Among Us").is_ok());
         // A file UMM cannot read as an executable is not a reason to refuse.

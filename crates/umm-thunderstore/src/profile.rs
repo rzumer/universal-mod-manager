@@ -21,9 +21,9 @@ pub const MAX_CODE_SIZE: usize = 20_000_000;
 pub const CONFIG_EXTENSIONS: &[&str] = &[".cfg", ".txt", ".json", ".yml", ".yaml", ".ini"];
 /// Never written from an import, whatever the export holds.
 const BLOCKED_EXTENSIONS: &[&str] = &[
-    ".dll", ".exe", ".scr", ".com", ".pif", ".bat", ".cmd", ".ps1", ".vbs", ".vbe", ".js",
-    ".jse", ".wsf", ".wsh", ".hta", ".msi", ".msix", ".sys", ".drv", ".cpl", ".ocx", ".lnk",
-    ".reg", ".inf",
+    ".dll", ".exe", ".scr", ".com", ".pif", ".bat", ".cmd", ".ps1", ".vbs", ".vbe", ".js", ".jse",
+    ".wsf", ".wsh", ".hta", ".msi", ".msix", ".sys", ".drv", ".cpl", ".ocx", ".lnk", ".reg",
+    ".inf",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,7 +112,8 @@ pub fn build_r2z(export: &Export) -> Result<Vec<u8>> {
     let opts = zip::write::SimpleFileOptions::default();
     let zerr = |e: zip::result::ZipError| bad("profile export", e);
     w.start_file("export.r2x", opts).map_err(zerr)?;
-    w.write_all(yaml.as_bytes()).map_err(|e| bad("profile export", e))?;
+    w.write_all(yaml.as_bytes())
+        .map_err(|e| bad("profile export", e))?;
     for (path, body) in &export.files {
         let name = match path.strip_prefix("BepInEx/config/") {
             Some(rest) => format!("config/{rest}"),
@@ -136,7 +137,8 @@ pub fn read_r2z(bytes: &[u8]) -> Result<Export> {
         }
         let name = f.name().replace('\\', "/");
         let mut body = Vec::new();
-        f.read_to_end(&mut body).map_err(|e| bad("profile export", e))?;
+        f.read_to_end(&mut body)
+            .map_err(|e| bad("profile export", e))?;
         let lower = name.to_lowercase();
         if lower == "export.r2x" {
             let text = String::from_utf8_lossy(&body);
@@ -168,7 +170,10 @@ pub fn read_r2z(bytes: &[u8]) -> Result<Export> {
         .into_iter()
         .map(|m| ExportMod {
             name: m.name,
-            version: format!("{}.{}.{}", m.version.major, m.version.minor, m.version.patch),
+            version: format!(
+                "{}.{}.{}",
+                m.version.major, m.version.minor, m.version.patch
+            ),
             enabled: m.enabled,
         })
         .collect();
@@ -204,7 +209,9 @@ pub fn upload(http: &dyn Http, r2z: &[u8]) -> Result<String> {
 pub fn download(http: &dyn Http, code: &str) -> Result<Vec<u8>> {
     let code = code.trim();
     if code.is_empty() || !code.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
-        return Err(TsError::Invalid(format!("`{code}` does not look like a profile code")));
+        return Err(TsError::Invalid(format!(
+            "`{code}` does not look like a profile code"
+        )));
     }
     let resp = http.get(&format!(
         "{BASE_URL}/api/experimental/legacyprofile/get/{code}/"
@@ -240,8 +247,14 @@ mod tests {
                 },
             ],
             files: BTreeMap::from([
-                ("BepInEx/config/lanterns.cfg".to_string(), b"bright=true".to_vec()),
-                ("BepInEx/plugins/Ann-Lantern_Tweaks/colors.json".to_string(), b"{}".to_vec()),
+                (
+                    "BepInEx/config/lanterns.cfg".to_string(),
+                    b"bright=true".to_vec(),
+                ),
+                (
+                    "BepInEx/plugins/Ann-Lantern_Tweaks/colors.json".to_string(),
+                    b"{}".to_vec(),
+                ),
             ]),
             skipped: vec![],
         }
@@ -258,7 +271,10 @@ mod tests {
         // The YAML is laid out as r2modman writes it.
         let mut z = zip::ZipArchive::new(Cursor::new(zip)).unwrap();
         let mut yaml = String::new();
-        z.by_name("export.r2x").unwrap().read_to_string(&mut yaml).unwrap();
+        z.by_name("export.r2x")
+            .unwrap()
+            .read_to_string(&mut yaml)
+            .unwrap();
         assert!(yaml.contains("profileName: Default"), "{yaml}");
         assert!(yaml.contains("major: 5"), "{yaml}");
         assert!(z.by_name("config/lanterns.cfg").is_ok());
@@ -274,7 +290,8 @@ mod tests {
             ("evil.dll", "x"),
             ("../escape.cfg", "x"),
         ] {
-            w.start_file(n, zip::write::SimpleFileOptions::default()).unwrap();
+            w.start_file(n, zip::write::SimpleFileOptions::default())
+                .unwrap();
             w.write_all(b.as_bytes()).unwrap();
         }
         let e = read_r2z(&w.finish().unwrap().into_inner()).unwrap();

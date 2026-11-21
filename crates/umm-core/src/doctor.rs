@@ -145,10 +145,7 @@ pub(crate) fn run(s: &Session, id: &str) -> Result<Vec<Finding>> {
             if !mods.iter().any(|x| x.id == m.id) {
                 out.push(f(
                     Level::Warn,
-                    format!(
-                        "profile `{name}` lists `{}`, which is not installed",
-                        m.id
-                    ),
+                    format!("profile `{name}` lists `{}`, which is not installed", m.id),
                 ));
             }
         }

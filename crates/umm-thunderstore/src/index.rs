@@ -293,7 +293,9 @@ pub fn fetch_package(http: &dyn Http, full_name: &str) -> Result<FetchedPackage>
             "`{full_name}` is not a package name (Owner-Name)"
         )));
     }
-    let body = http.get(&format!("{BASE_URL}/api/experimental/package/{owner}/{name}/"))?;
+    let body = http.get(&format!(
+        "{BASE_URL}/api/experimental/package/{owner}/{name}/"
+    ))?;
     let p: ApiPackage = json(&body, "package")?;
     let first = p.community_listings.first();
     Ok(FetchedPackage {
