@@ -298,6 +298,14 @@ pub const MELONLOADER_GENERATED: &[&str] = &[
     "MelonLoader/Il2CppAssemblies/Assembly-CSharp.dll",
 ];
 
+/// Loader kind for Lovely, the LÖVE injector Balatro mods use.
+pub const LOVELY_KIND: &str = "lovely";
+/// Lovely's mod folder in the runtime folder, and the flag pointing it there.
+pub const LOVELY_DIR: &str = "mods";
+pub const LOVELY_MOD_DIR_FLAG: &str = "--mod-dir";
+/// Lovely's proxy DLLs: `version.dll` up to 0.9, `winmm.dll` from 0.10.
+pub const LOVELY_PROXIES: &[&str] = &["version.dll", "winmm.dll"];
+
 /// A loader that is pointed at a per-profile runtime folder outside the game, so that only
 /// its proxy goes into the game folder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -308,6 +316,8 @@ pub enum RuntimeLoader {
     Shimloader,
     /// MelonLoader, given its base folder as a launch argument.
     MelonLoader,
+    /// Lovely, given its mod folder as a launch argument.
+    Lovely,
 }
 
 impl RuntimeLoader {
@@ -317,6 +327,7 @@ impl RuntimeLoader {
             RuntimeLoader::Doorstop(d) => d.runtime_dirs,
             RuntimeLoader::Shimloader => &[SHIMLOADER_DIR],
             RuntimeLoader::MelonLoader => MELONLOADER_DIRS,
+            RuntimeLoader::Lovely => &[LOVELY_DIR],
         }
     }
 }
@@ -327,6 +338,7 @@ pub fn thunderstore_inject(kind: &str) -> Option<Inject> {
         BEPINEX_KIND => Some(Inject::Doorstop),
         SHIMLOADER_KIND => Some(Inject::Args),
         k if is_melonloader(k) => Some(Inject::Args),
+        LOVELY_KIND => Some(Inject::Args),
         _ => None,
     }
 }
@@ -337,6 +349,7 @@ pub fn loader_name(kind: &str) -> &str {
         BEPINEX_KIND => "BepInEx",
         SHIMLOADER_KIND => "Shimloader",
         k if is_melonloader(k) => "MelonLoader",
+        LOVELY_KIND => "Lovely",
         other => other,
     }
 }
@@ -359,6 +372,7 @@ impl GameDef {
         match l.inject {
             Inject::Args if l.kind == SHIMLOADER_KIND => Some(RuntimeLoader::Shimloader),
             Inject::Args if is_melonloader(&l.kind) => Some(RuntimeLoader::MelonLoader),
+            Inject::Args if l.kind == LOVELY_KIND => Some(RuntimeLoader::Lovely),
             _ => None,
         }
     }
@@ -498,10 +512,12 @@ impl GameDef {
                     )))
                 }
                 Inject::Args
-                    if loader.kind == SHIMLOADER_KIND || is_melonloader(&loader.kind) => {}
+                    if loader.kind == SHIMLOADER_KIND
+                        || loader.kind == LOVELY_KIND
+                        || is_melonloader(&loader.kind) => {}
                 Inject::Args => {
                     return Err(GameDefError::Unsupported(format!(
-                        "loader kind `{}` cannot be injected with arguments (supported: shimloader, melonloader, recursive-melonloader); use inject = \"files\"",
+                        "loader kind `{}` cannot be injected with arguments (supported: shimloader, melonloader, recursive-melonloader, lovely); use inject = \"files\"",
                         loader.kind
                     )))
                 }

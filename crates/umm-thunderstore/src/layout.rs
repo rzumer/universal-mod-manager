@@ -135,6 +135,12 @@ pub fn plan(
     if game.package_loader == umm_gamedef::RECURSIVE_MELONLOADER_KIND && loader.is_none() {
         return recursive_melonloader_mod(files, full_name);
     }
+    if loader.is_some_and(|l| l.loader == umm_gamedef::LOVELY_KIND) {
+        return lovely_pack(files, full_name);
+    }
+    if game.package_loader == umm_gamedef::LOVELY_KIND && loader.is_none() {
+        return lovely_mod(files, full_name);
+    }
     if let Some(l) = loader {
         let root = format!("{}/", l.root_folder.trim_matches('/').to_lowercase());
         for (path, body) in files {
@@ -339,6 +345,43 @@ fn recursive_melonloader_mod(
         };
         out.insert(target, body);
     }
+    if out.is_empty() {
+        return Err(TsError::Data {
+            what: full_name.into(),
+            message: "the package has no files to install".into(),
+        });
+    }
+    Ok(out)
+}
+
+/// Lays out the Lovely package as r2modman does: its proxy DLL at the zip's root goes to the
+/// game folder's root, its `lovely/` folder to `mods/lovely/`. The rest is left out.
+fn lovely_pack(files: BTreeMap<String, Vec<u8>>, full_name: &str) -> Result<BTreeMap<String, Vec<u8>>> {
+    let mut out = BTreeMap::new();
+    for (path, body) in files {
+        let lower = path.to_lowercase();
+        if umm_gamedef::LOVELY_PROXIES.contains(&lower.as_str()) {
+            out.insert(path, body);
+        } else if lower.starts_with("lovely/") {
+            out.insert(format!("mods/{path}"), body);
+        }
+    }
+    if !out.keys().any(|k| !k.contains('/')) {
+        return Err(TsError::Data {
+            what: format!("{full_name} (mod loader)"),
+            message: "no version.dll or winmm.dll at the package's root".into(),
+        });
+    }
+    Ok(out)
+}
+
+/// Lays out a mod for a Lovely game as r2modman does: the whole package, its own files
+/// included, in `mods/<Owner-Name>/` (Lovely needs each mod in its own folder).
+fn lovely_mod(files: BTreeMap<String, Vec<u8>>, full_name: &str) -> Result<BTreeMap<String, Vec<u8>>> {
+    let out: BTreeMap<String, Vec<u8>> = files
+        .into_iter()
+        .map(|(path, body)| (format!("mods/{full_name}/{path}"), body))
+        .collect();
     if out.is_empty() {
         return Err(TsError::Data {
             what: full_name.into(),
@@ -620,6 +663,40 @@ pub(crate) mod tests {
         assert_eq!(keys(&out), ["MelonLoader/net6/MelonLoader.dll", "version.dll"]);
         let err = plan(&pack("0.6.6"), "LavaGang-MelonLoader", &schedule, Some(&recursive)).unwrap_err();
         assert!(err.to_string().contains("0.7.0 or later"), "{err}");
+    }
+
+    #[test]
+    fn lovely_packages_and_mods() {
+        let mut balatro = rules();
+        balatro.package_loader = "lovely".into();
+        balatro.install_rules.clear();
+        let entry = ModloaderPackage {
+            package_id: "Thunderstore-lovely".into(),
+            root_folder: String::new(),
+            loader: "lovely".into(),
+        };
+        let keys = |m: &BTreeMap<String, Vec<u8>>| m.keys().cloned().collect::<Vec<_>>();
+        let pack = zip_of(&[
+            ("manifest.json", "{}"),
+            ("README.md", "r"),
+            ("winmm.dll", "p"),
+            ("lovely/config.toml", "c"),
+        ]);
+        let out = plan(&pack, "Thunderstore-lovely", &balatro, Some(&entry)).unwrap();
+        assert_eq!(keys(&out), ["mods/lovely/config.toml", "winmm.dll"]);
+        let empty = zip_of(&[("manifest.json", "{}"), ("lovely/config.toml", "c")]);
+        assert!(plan(&empty, "Thunderstore-lovely", &balatro, Some(&entry)).is_err());
+
+        let zip = zip_of(&[("manifest.json", "{}"), ("lovely.toml", "l"), ("src/core.lua", "s")]);
+        let out = plan(&zip, "Steamodded-smods", &balatro, None).unwrap();
+        assert_eq!(
+            keys(&out),
+            [
+                "mods/Steamodded-smods/lovely.toml",
+                "mods/Steamodded-smods/manifest.json",
+                "mods/Steamodded-smods/src/core.lua",
+            ]
+        );
     }
 
     #[test]

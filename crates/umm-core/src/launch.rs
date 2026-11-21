@@ -10,8 +10,8 @@ use umm_gamedef::{
     detect::steam_roots, loader_name, BepInExBuild, BEPINEX_KIND, DoorstopLoader, GameDef, RelPath, RuntimeLoader,
     SteamRelaunch, CORECLR_PATH, CORLIB_DIR, DOORSTOP3_ENABLED_FLAG, DOORSTOP3_TARGET_FLAG,
     DOORSTOP_CORECLR_FLAG, DOORSTOP_CORLIB_FLAG, DOORSTOP_ENABLED_FLAG, DOORSTOP_TARGET_FLAG,
-    MELONLOADER_BASEDIR_FLAG, MELONLOADER_GENERATED, MELONLOADER_REGENERATE_FLAG,
-    SHIMLOADER_DIRS,
+    LOVELY_DIR, LOVELY_MOD_DIR_FLAG, LOVELY_PROXIES, MELONLOADER_BASEDIR_FLAG,
+    MELONLOADER_GENERATED, MELONLOADER_REGENERATE_FLAG, SHIMLOADER_DIRS,
 };
 use umm_launch::{LaunchSpec, Tracking};
 use umm_store::fsutil::{hash_file, write_atomic, IoCtx};
@@ -111,6 +111,10 @@ impl Session {
                 Some(Injection::Shimloader),
                 Some(check_shimloader(&plan.files)?),
             ),
+            Some(RuntimeLoader::Lovely) => {
+                check_lovely(&plan.files)?;
+                (Some(Injection::Lovely), None)
+            }
             Some(RuntimeLoader::MelonLoader) => {
                 check_melonloader(&plan.files)?;
                 // Whether assemblies need generating is known once the folder is synced.
@@ -120,7 +124,7 @@ impl Session {
         };
         let proxied = matches!(
             injection,
-            Some(Injection::Doorstop(_) | Injection::MelonLoader { .. })
+            Some(Injection::Doorstop(_) | Injection::MelonLoader { .. } | Injection::Lovely)
         );
         if let (true, Some(launch)) = (proxied, &def.def.launch) {
             if let Ok(exe) = RelPath::parse(&launch.exe) {
@@ -395,6 +399,22 @@ pub(crate) enum Injection {
     Shimloader,
     /// `regenerate`: the runtime folder has no generated game assemblies yet.
     MelonLoader { regenerate: bool },
+    Lovely,
+}
+
+/// Errors when the profile has no Lovely (its proxy DLL at the game folder's root).
+fn check_lovely(files: &[PlannedFile]) -> Result<()> {
+    let found = files.iter().any(|f| {
+        f.target.depth() == 1
+            && LOVELY_PROXIES.iter().any(|p| f.target.as_str().eq_ignore_ascii_case(p))
+    });
+    if found {
+        Ok(())
+    } else {
+        Err(CoreError::Invalid(
+            "the profile has no Lovely; install it from the Thunderstore tab (it also comes with any mod that needs it)".into(),
+        ))
+    }
 }
 
 /// Errors when the profile has no MelonLoader (its `MelonLoader.dll`, under `MelonLoader/`).
@@ -537,6 +557,9 @@ pub(crate) fn build_spec(
         for (flag, rel) in SHIMLOADER_DIRS {
             game_args.extend([flag.to_string(), in_runtime(rel)]);
         }
+    }
+    if injection == Some(Injection::Lovely) {
+        game_args.extend([LOVELY_MOD_DIR_FLAG.to_string(), in_runtime(LOVELY_DIR)]);
     }
     if let Some(Injection::MelonLoader { regenerate }) = injection {
         game_args.extend([MELONLOADER_BASEDIR_FLAG.to_string(), native_path(runtime_dir)]);
@@ -691,6 +714,23 @@ mod tests {
                 &rt(&["shimloader", "overlay"]),
             ]
         );
+    }
+
+    #[test]
+    fn lovely_gets_its_mod_folder() {
+        let d = def("[launch]\nexe = \"Balatro.exe\"\n\
+             [loader]\nkind = \"lovely\"\nsource = \"thunderstore\"\ninject = \"args\"\n\
+             [thunderstore]\ncommunity = \"balatro\"\n");
+        let spec = build_spec(
+            &d,
+            Path::new("/game"),
+            Path::new("/rt"),
+            &Profile::new("Default"),
+            Some(Injection::Lovely),
+            None,
+        )
+        .unwrap();
+        assert_eq!(spec.args, ["--mod-dir", native_path(&Path::new("/rt").join("mods")).as_str()]);
     }
 
     #[test]

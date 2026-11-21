@@ -5,7 +5,7 @@
 
 use crate::{
     loader_name, thunderstore_inject, GameDef, GameDefError, Inject, InstallRule, Loader,
-    Thunderstore, BEPINEX_KIND, RECURSIVE_MELONLOADER_KIND, SHIMLOADER_KIND,
+    Thunderstore, BEPINEX_KIND, LOVELY_KIND, RECURSIVE_MELONLOADER_KIND, SHIMLOADER_KIND,
     THUNDERSTORE_SOURCE,
 };
 use serde::{Deserialize, Serialize};
@@ -94,10 +94,25 @@ pub fn melonloader_rules(recursive: bool) -> Vec<InstallRule> {
     ]
 }
 
+/// Install rules for Lovely mods imported from files rather than Thunderstore: Lovely's own
+/// proxy stays at the game folder's root, its `lovely/` folder goes to `mods/lovely/`, and
+/// anything else is a mod in its own folder under `mods/` (Lovely requires that).
+pub fn lovely_rules() -> Vec<InstallRule> {
+    vec![
+        rule("version.dll", ""),
+        rule("winmm.dll", ""),
+        rule("lovely/**", "mods/lovely/"),
+        rule("mods/**", "mods/"),
+        rule("**", "mods/{mod}/"),
+    ]
+}
+
 const BEPINEX_CONFIG: &str = "BepInEx/config/**";
 const SHIMLOADER_CONFIG: &str = "shimloader/cfg/**";
 const MELONLOADER_CONFIG: &str = "UserData/**";
-const LOADER_CONFIGS: &[&str] = &[BEPINEX_CONFIG, SHIMLOADER_CONFIG, MELONLOADER_CONFIG];
+const LOVELY_CONFIG: &str = "mods/lovely/**";
+const LOADER_CONFIGS: &[&str] =
+    &[BEPINEX_CONFIG, SHIMLOADER_CONFIG, MELONLOADER_CONFIG, LOVELY_CONFIG];
 
 impl GameDef {
     /// The setup this definition describes. `None`: a loader none of the setups covers (an
@@ -185,6 +200,8 @@ impl GameDef {
                 });
                 let (rules, config) = if kind == SHIMLOADER_KIND {
                     (shimloader_rules(), SHIMLOADER_CONFIG)
+                } else if kind == LOVELY_KIND {
+                    (lovely_rules(), LOVELY_CONFIG)
                 } else if crate::is_melonloader(kind) {
                     (
                         melonloader_rules(kind == RECURSIVE_MELONLOADER_KIND),
@@ -346,6 +363,29 @@ target = ""
             assert_eq!(map("UserData/a.cfg"), "UserData/a.cfg");
             assert!(c.is_writable(&RelPath::parse("UserData/MelonPreferences.cfg").unwrap()));
         }
+    }
+
+    #[test]
+    fn lovely_from_thunderstore() {
+        let c = Community {
+            label: "balatro",
+            loader: "lovely",
+        };
+        let ts = def().with_setup(LoaderSetup::Thunderstore, Some(c)).unwrap();
+        assert_eq!(ts.setup_label(), "Lovely from Thunderstore");
+        assert_eq!(ts.runtime_loader(), Some(RuntimeLoader::Lovely));
+        let c = ts.compile().unwrap();
+        let map = |p: &str| {
+            c.map_mod_file("m", &RelPath::parse(p).unwrap())
+                .unwrap()
+                .unwrap()
+                .as_str()
+                .to_string()
+        };
+        assert_eq!(map("winmm.dll"), "winmm.dll");
+        assert_eq!(map("lovely/config.toml"), "mods/lovely/config.toml");
+        assert_eq!(map("lovely.toml"), "mods/m/lovely.toml");
+        assert_eq!(map("src/main.lua"), "mods/m/src/main.lua");
     }
 
     #[test]
