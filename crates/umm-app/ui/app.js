@@ -447,7 +447,6 @@ function tabs() {
 
 // ----- Mods tab -----
 
-let dragFrom = null;
 
 function modsTab(d) {
   const playing = S.session.phase !== "idle" && S.session.game === S.gameId;
@@ -466,32 +465,56 @@ function modsTab(d) {
 
   const rows = entries.map((e, i) => {
     const m = byId[e.id];
+    // Reordering uses pointer events, not HTML drag and drop: the app's native file drop
+    // (drop an archive on the window to import it) turns HTML drag and drop off in WebView2.
+    const grip = h("span", { class: `grip ${playing ? "off" : ""}`, title: playing ? "" : "Drag to reorder" }, icon("grip"));
+    if (!playing) {
+      grip.addEventListener("pointerdown", (ev) => {
+        if (ev.button !== 0) return;
+        ev.preventDefault();
+        grip.setPointerCapture(ev.pointerId);
+        const list = row.parentElement;
+        row.classList.add("dragging");
+        let target = i;
+        // The position the row would end up at: before the first row whose middle is below
+        // the pointer, counted without the row being dragged.
+        const over = (y) => {
+          const rows = [...list.children];
+          const before = rows.findIndex((r) => {
+            const b = r.getBoundingClientRect();
+            return y < b.top + b.height / 2;
+          });
+          if (before === -1) return rows.length - 1;
+          return before > i ? before - 1 : before;
+        };
+        const mark = () => {
+          // Moving up, the row lands above the target row; moving down, below it.
+          for (const [k, r] of [...list.children].entries()) {
+            r.classList.toggle("drop-target", k === target && target < i);
+            r.classList.toggle("drop-after", k === target && target > i);
+          }
+        };
+        const onMove = (mv) => {
+          target = over(mv.clientY);
+          mark();
+        };
+        const onUp = () => {
+          grip.removeEventListener("pointermove", onMove);
+          grip.removeEventListener("pointerup", onUp);
+          grip.removeEventListener("pointercancel", onUp);
+          row.classList.remove("dragging");
+          for (const r of list.children) r.classList.remove("drop-target", "drop-after");
+          if (target !== i) move(i, target);
+        };
+        grip.addEventListener("pointermove", onMove);
+        grip.addEventListener("pointerup", onUp);
+        grip.addEventListener("pointercancel", onUp);
+      });
+    }
     const row = h(
       "li",
-      {
-        class: `mod-row ${e.enabled ? "" : "disabled"} ${m ? "" : "missing"}`,
-        draggable: !playing,
-        ondragstart: (ev) => {
-          dragFrom = i;
-          ev.dataTransfer.effectAllowed = "move";
-          row.classList.add("dragging");
-        },
-        ondragend: () => row.classList.remove("dragging"),
-        ondragover: (ev) => {
-          if (dragFrom === null) return;
-          ev.preventDefault();
-          row.classList.add("drop-target");
-        },
-        ondragleave: () => row.classList.remove("drop-target"),
-        ondrop: (ev) => {
-          ev.preventDefault();
-          row.classList.remove("drop-target");
-          const from = dragFrom;
-          dragFrom = null;
-          if (from !== null) move(from, i);
-        },
-      },
-      h("span", { class: "grip", title: "Drag to reorder" }, icon("grip")),
+      { class: `mod-row ${e.enabled ? "" : "disabled"} ${m ? "" : "missing"}` },
+      grip,
       h("span", { class: "order" }, i + 1),
       h(
         "label",
