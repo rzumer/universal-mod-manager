@@ -220,6 +220,7 @@ const handlers = {
     delete profiles[game];
   },
   open_folder: () => {},
+  open_package_page: () => {},
   quit_anyway: () => {},
   steam_games: () => ({
     thunderstoreError: null,

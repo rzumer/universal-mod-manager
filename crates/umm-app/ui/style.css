@@ -348,6 +348,10 @@ p.small { font-size: 12px; margin-top: 4px; }
 .ts-main { flex: 1; min-width: 0; }
 .ts-title { display: flex; align-items: baseline; gap: 2px; flex-wrap: wrap; }
 .ts-title .chip { margin-left: 6px; }
+button.ts-name { padding: 0; font-weight: 600; color: var(--text); display: inline-flex; align-items: center; gap: 4px; }
+button.ts-name svg { width: 12px; height: 12px; fill: var(--muted); opacity: 0; }
+button.ts-name:hover { color: var(--accent); text-decoration: underline; }
+button.ts-name:hover svg, button.ts-name:focus-visible svg { opacity: 1; fill: var(--accent); }
 .ts-desc { font-size: 13px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ts-meta { font-size: 12px; margin-top: 2px; }
 .ts-row > button, .ts-row > .chip { flex: none; }

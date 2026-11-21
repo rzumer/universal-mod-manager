@@ -31,6 +31,7 @@ macro_rules! umm_handlers {
             commands::doctor,
             commands::delete_game_data,
             commands::open_folder,
+            commands::open_package_page,
             commands::quit_anyway,
             commands::steam_games,
             commands::add_steam_games,

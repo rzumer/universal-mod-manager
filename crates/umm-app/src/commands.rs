@@ -291,6 +291,48 @@ pub fn open_folder(path: String) -> Res<()> {
         .map_err(|e| e.to_string())
 }
 
+/// Opens a package's page on thunderstore.io in the default browser. The address is built
+/// here from the game's community and the package's `Owner-Name`, both checked, so the
+/// webview cannot open anything else.
+#[tauri::command]
+pub async fn open_package_page(
+    state: State<'_, AppState>,
+    game: String,
+    full_name: String,
+) -> Res<()> {
+    let url = blocking(&state, move |s| {
+        let def = s.def(&game)?.def;
+        let community = def.community().ok_or_else(|| {
+            umm_core::CoreError::Invalid(format!("{} has no Thunderstore community", def.name))
+        })?;
+        let plain = |t: &str, extra: char| {
+            !t.is_empty() && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == extra)
+        };
+        let (owner, name) = full_name.split_once('-').unwrap_or_default();
+        if !plain(community, '-') || !plain(owner, '_') || !plain(name, '_') {
+            return Err(umm_core::CoreError::Invalid(format!(
+                "`{full_name}` is not a Thunderstore package name"
+            )));
+        }
+        Ok(format!(
+            "https://thunderstore.io/c/{community}/p/{owner}/{name}/"
+        ))
+    })
+    .await?;
+    let program = if cfg!(windows) {
+        "explorer"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(program)
+        .arg(&url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 /// Closes the app even though a game is running; its mods are reverted on the next start.
 #[tauri::command]
 pub fn quit_anyway<R: Runtime>(app: AppHandle<R>, state: State<'_, AppState>) {

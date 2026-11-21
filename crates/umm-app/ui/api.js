@@ -43,6 +43,7 @@ export const api = {
   doctor: (game) => backend.invoke("doctor", { game }),
   deleteGameData: (game) => backend.invoke("delete_game_data", { game }),
   openFolder: (path) => backend.invoke("open_folder", { path }),
+  openPackagePage: (game, fullName) => backend.invoke("open_package_page", { game, fullName }),
   quitAnyway: () => backend.invoke("quit_anyway"),
   steamGames: () => backend.invoke("steam_games"),
   // picks: [{ appId, setup }] where setup is "thunderstore" | "bepinex" | "generic" | null

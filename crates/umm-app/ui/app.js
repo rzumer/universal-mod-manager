@@ -46,6 +46,7 @@ function fmtTime(d = new Date()) {
 }
 
 const ICONS = {
+  external: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9 2h5v5h-1.5V4.6L7.6 9.5 6.5 8.4l4.9-4.9H9zM3 4h4v1.5H4.5v6h6V9H12v4H3z"/></svg>',
   grip: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="5.5" cy="4" r="1.2"/><circle cx="10.5" cy="4" r="1.2"/><circle cx="5.5" cy="8" r="1.2"/><circle cx="10.5" cy="8" r="1.2"/><circle cx="5.5" cy="12" r="1.2"/><circle cx="10.5" cy="12" r="1.2"/></svg>',
   up: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 4l-4.5 5h9z"/></svg>',
   down: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 12l4.5-5h-9z"/></svg>',
@@ -964,7 +965,16 @@ function tsTab(d) {
             h(
               "div",
               { class: "ts-title" },
-              h("strong", {}, it.name.replaceAll("_", " ")),
+              h(
+                "button",
+                {
+                  class: "link ts-name",
+                  title: "Open its page on thunderstore.io",
+                  onclick: () => attempt(() => api.openPackagePage(g.id, it.fullName)),
+                },
+                it.name.replaceAll("_", " "),
+                icon("external"),
+              ),
               h("span", { class: "muted" }, ` by ${it.owner}`),
               it.latest && h("span", { class: "muted" }, ` · ${it.latest}`),
               it.deprecated && h("span", { class: "chip warn" }, "Deprecated"),
