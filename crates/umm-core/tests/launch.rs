@@ -148,7 +148,7 @@ fn waits_for_the_whole_process_tree_then_reverts() {
 fn doorstop_keeps_the_loader_tree_out_of_the_game_folder() {
     let fx = setup(
         "doorstop",
-        "[loader]\nkind = \"bepinex5\"\nsource = \"mod:bepinex\"\ninject = \"doorstop\"\n",
+        "[loader]\nkind = \"bepinex\"\nsource = \"mod:bepinex\"\ninject = \"doorstop\"\n",
         &[],
     );
     let pack = fx.base.join("src/bepinex");

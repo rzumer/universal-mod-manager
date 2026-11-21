@@ -15,7 +15,7 @@ steam_relaunch = "appid_file"
 process_names = ["ExampleGame.exe"]
 
 [loader]
-kind = "bepinex5"
+kind = "bepinex"
 source = "mod:bepinex-pack"       # import the BepInEx pack with `--id bepinex-pack`
 inject = "doorstop"               # only winhttp.dll + doorstop_config.ini go in the game folder;
                                   # the BepInEx tree lives in UMM's per-profile runtime folder

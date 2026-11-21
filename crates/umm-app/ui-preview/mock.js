@@ -15,7 +15,7 @@ const games = {
     deployed: false,
     running: false,
     canLaunch: true,
-    loader: "bepinex5",
+    loader: "bepinex",
     setup: "BepInEx from Thunderstore",
     community: "example-game",
     inject: "doorstop",
@@ -238,7 +238,7 @@ const handlers = {
       const g = handlers.steam_games().games.find((x) => x.appId === appId);
       const id = g.name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
       const label = SETUP_LABELS[setup];
-      games[id] = { id, name: g.name, install: g.path, foundVia: "steam", deployed: false, running: false, canLaunch: true, loader: setup === "generic" ? null : "bepinex5", inject: setup === "generic" ? null : "doorstop", setup: label, community: g.community };
+      games[id] = { id, name: g.name, install: g.path, foundVia: "steam", deployed: false, running: false, canLaunch: true, loader: setup === "generic" ? null : "bepinex", inject: setup === "generic" ? null : "doorstop", setup: label, community: g.community };
       loaders[id] = { defined: setup, override: null, community: g.community, otherLoader: g.otherLoader };
       mods[id] = [];
       profiles[id] = { Default: { name: "Default", mods: [] } };
@@ -354,7 +354,7 @@ const handlers = {
     const l = loaders[game];
     l.defined = setup;
     games[game].setup = SETUP_LABELS[setup];
-    games[game].loader = setup === "generic" ? null : "bepinex5";
+    games[game].loader = setup === "generic" ? null : "bepinex";
     games[game].thunderstore = setup === "thunderstore";
     return loaderChoice(game);
   },
@@ -373,7 +373,7 @@ const handlers = {
     if (!name) throw "give the game a name";
     const id = name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
     if (games[id]) throw `a game named \`${id}\` already exists`;
-    games[id] = { id, name, install: folder, foundVia: "manual", deployed: false, running: false, canLaunch: !!exe, loader: setup === "generic" ? null : "bepinex5", inject: null, setup: SETUP_LABELS[setup], community: "lantern-keepers", thunderstore: setup === "thunderstore" };
+    games[id] = { id, name, install: folder, foundVia: "manual", deployed: false, running: false, canLaunch: !!exe, loader: setup === "generic" ? null : "bepinex", inject: null, setup: SETUP_LABELS[setup], community: "lantern-keepers", thunderstore: setup === "thunderstore" };
     loaders[id] = { defined: setup, community: "lantern-keepers", otherLoader: null };
     mods[id] = [];
     profiles[id] = { Default: { name: "Default", mods: [] } };

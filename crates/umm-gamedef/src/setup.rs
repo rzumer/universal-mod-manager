@@ -9,9 +9,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LoaderSetup {
-    /// BepInEx 5 through Doorstop, with the pack and mods installed from Thunderstore.
+    /// BepInEx (5 or 6) through Doorstop, with the pack and mods installed from Thunderstore.
     Thunderstore,
-    /// BepInEx 5 through Doorstop, with a pack the user imports as the mod `bepinex`.
+    /// BepInEx (5 or 6) through Doorstop, with a pack the user imports as the mod `bepinex`.
     Bepinex,
     /// No mod loader: mod files are copied into the game folder as they are.
     Generic,
@@ -37,7 +37,7 @@ fn rule(m: &str, t: &str) -> InstallRule {
     }
 }
 
-/// Install rules for BepInEx 5 mods that are not already laid out for the game.
+/// Install rules for BepInEx mods that are not already laid out for the game.
 pub fn bepinex_rules() -> Vec<InstallRule> {
     vec![
         rule("BepInEx/**", "BepInEx/"),
@@ -58,7 +58,7 @@ impl GameDef {
         match &self.loader {
             None => Some(LoaderSetup::Generic),
             Some(l) if l.from_thunderstore() => Some(LoaderSetup::Thunderstore),
-            Some(l) if l.kind == "bepinex5" && l.inject == Inject::Doorstop => {
+            Some(l) if l.kind == crate::BEPINEX_KIND && l.inject == Inject::Doorstop => {
                 Some(LoaderSetup::Bepinex)
             }
             Some(_) => None,
@@ -106,7 +106,7 @@ impl GameDef {
                     format!("mod:{BEPINEX_PACK_MOD}")
                 };
                 d.loader = Some(Loader {
-                    kind: "bepinex5".into(),
+                    kind: crate::BEPINEX_KIND.into(),
                     source: Some(source),
                     inject: Inject::Doorstop,
                 });
@@ -186,7 +186,7 @@ target = ""
     #[test]
     fn thunderstore_source_needs_a_community() {
         let text = format!(
-            "{UNREAL}\n[loader]\nkind = \"bepinex5\"\nsource = \"thunderstore\"\ninject = \"doorstop\"\n"
+            "{UNREAL}\n[loader]\nkind = \"bepinex\"\nsource = \"thunderstore\"\ninject = \"doorstop\"\n"
         );
         assert!(matches!(
             GameDef::parse(&text, Path::new("t")),

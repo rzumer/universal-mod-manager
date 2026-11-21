@@ -317,9 +317,9 @@ enum SteamCmd {
 
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum SetupArg {
-    /// BepInEx 5, with the pack and mods from Thunderstore
+    /// BepInEx, with the pack and mods from Thunderstore
     Thunderstore,
-    /// BepInEx 5, with a pack you import as the mod `bepinex`
+    /// BepInEx, with a pack you import as the mod `bepinex`
     Bepinex,
     /// No mod loader: files are copied as they are
     Generic,

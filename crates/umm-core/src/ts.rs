@@ -189,12 +189,28 @@ impl Session {
             .into_iter()
             .map(|p| (p.meta.full_name, p.meta.version))
             .collect();
-        // The plain BepInEx pack if the community has it, else its most used BepInEx pack.
+        // The community's BepInEx pack for this build of the game. An IL2CPP game never gets
+        // the plain Mono pack, a Mono game never an IL2CPP one (game-specific packs like
+        // BepInExPack_AmongUs do not say which they are). Among the rest, BepInEx's own pack
+        // if listed, else the most downloaded.
+        let il2cpp = self
+            .install_path(&self.def(id)?.def)?
+            .is_some_and(|(p, _)| p.join("GameAssembly.dll").is_file());
         let loader_package = packages
             .iter()
             .filter(|p| eco.modloader(&p.full_name).is_some_and(|m| m.loader == "bepinex"))
             .filter(|p| !p.deprecated)
-            .max_by_key(|p| (p.full_name == "BepInEx-BepInExPack", p.downloads))
+            .filter(|p| {
+                if il2cpp {
+                    !p.full_name.eq_ignore_ascii_case("BepInEx-BepInExPack")
+                } else {
+                    !p.full_name.to_lowercase().contains("il2cpp")
+                }
+            })
+            .max_by_key(|p| {
+                let own = p.owner == "BepInEx" && p.name.starts_with("BepInExPack");
+                (own, p.downloads)
+            })
             .map(|p| p.full_name.clone());
         let have = |p: &Package| {
             installed

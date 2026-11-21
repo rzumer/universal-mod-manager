@@ -187,11 +187,48 @@ pub enum GameDefError {
 /// loader's own tree and every mod under it live in a per-profile runtime folder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DoorstopLoader {
-    /// Top-level folder that lives in the runtime folder instead of the game folder.
-    pub runtime_dir: &'static str,
-    /// The assembly Doorstop should load, relative to the runtime folder.
-    pub target_assembly: &'static str,
+    /// Top-level folders that live in the runtime folder instead of the game folder.
+    pub runtime_dirs: &'static [&'static str],
+    /// The builds the loader comes in; which one a profile has is read from its files.
+    pub builds: &'static [BepInExBuild],
 }
+
+/// The BepInEx builds UMM can start, told apart by the assembly Doorstop loads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BepInExBuild {
+    /// BepInEx 5, for Mono Unity games.
+    V5,
+    /// BepInEx 6 for Mono Unity games.
+    V6Mono,
+    /// BepInEx 6 for IL2CPP Unity games; runs on the .NET runtime in the pack's `dotnet/`.
+    V6Il2cpp,
+}
+
+impl BepInExBuild {
+    /// The assembly Doorstop loads, relative to the runtime folder.
+    pub fn target(self) -> &'static str {
+        match self {
+            BepInExBuild::V5 => "BepInEx/core/BepInEx.Preloader.dll",
+            BepInExBuild::V6Mono => "BepInEx/core/BepInEx.Unity.Mono.Preloader.dll",
+            BepInExBuild::V6Il2cpp => "BepInEx/core/BepInEx.Unity.IL2CPP.dll",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            BepInExBuild::V5 => "BepInEx 5",
+            BepInExBuild::V6Mono => "BepInEx 6 (Mono)",
+            BepInExBuild::V6Il2cpp => "BepInEx 6 (IL2CPP)",
+        }
+    }
+}
+
+/// The IL2CPP build's .NET runtime, relative to the runtime folder.
+pub const CORECLR_PATH: &str = "dotnet/coreclr.dll";
+pub const CORLIB_DIR: &str = "dotnet";
+/// Doorstop 4 flags for the .NET runtime that IL2CPP builds load.
+pub const DOORSTOP_CORECLR_FLAG: &str = "--doorstop-clr-runtime-coreclr-path";
+pub const DOORSTOP_CORLIB_FLAG: &str = "--doorstop-clr-corlib-dir";
 
 /// Doorstop 4 command-line flags (BepInEx 5.4.22 and later ship Doorstop 4).
 pub const DOORSTOP_ENABLED_FLAG: &str = "--doorstop-enabled";
@@ -200,20 +237,14 @@ pub const DOORSTOP_TARGET_FLAG: &str = "--doorstop-target-assembly";
 pub const DOORSTOP3_ENABLED_FLAG: &str = "--doorstop-enable";
 pub const DOORSTOP3_TARGET_FLAG: &str = "--doorstop-target";
 
-/// Files that mark a BepInEx 6 pack, which UMM cannot start yet.
-pub const BEPINEX6_MARKERS: &[&str] = &[
-    "BepInEx/core/BepInEx.Unity.IL2CPP.dll",
-    "BepInEx/core/BepInEx.Unity.Mono.Preloader.dll",
-];
+/// Loader kind for BepInEx, any version.
+pub const BEPINEX_KIND: &str = "bepinex";
 
 pub fn doorstop_loader(kind: &str) -> Option<DoorstopLoader> {
-    match kind {
-        "bepinex5" => Some(DoorstopLoader {
-            runtime_dir: "BepInEx",
-            target_assembly: "BepInEx/core/BepInEx.Preloader.dll",
-        }),
-        _ => None,
-    }
+    (kind == BEPINEX_KIND).then_some(DoorstopLoader {
+        runtime_dirs: &["BepInEx", "dotnet"],
+        builds: &[BepInExBuild::V5, BepInExBuild::V6Mono, BepInExBuild::V6Il2cpp],
+    })
 }
 
 impl GameDef {
@@ -355,7 +386,7 @@ impl GameDef {
                 Inject::Doorstop if doorstop_loader(&loader.kind).is_some() => {}
                 Inject::Doorstop => {
                     return Err(GameDefError::Unsupported(format!(
-                        "loader kind `{}` cannot be injected with doorstop (supported: bepinex5); use inject = \"files\"",
+                        "loader kind `{}` cannot be injected with doorstop (supported: bepinex); use inject = \"files\"",
                         loader.kind
                     )))
                 }
@@ -504,7 +535,7 @@ name = "Example"
 marker = "Game.exe"
 
 [loader]
-kind = "bepinex5"
+kind = "bepinex"
 source = "mod:bepinex-pack"
 inject = "doorstop"
 

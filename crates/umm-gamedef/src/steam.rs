@@ -387,13 +387,18 @@ fn build(
     match (setup, found.engine) {
         (LoaderSetup::Thunderstore, _) => notes.push(Note::new(
             "thunderstore",
-            "This game is set up for BepInEx 5. You can download mods directly from the \
+            "This game is set up for BepInEx. You can download mods directly from the \
              Thunderstore tab.",
+        )),
+        (LoaderSetup::Bepinex, Engine::UnityIl2cpp) => notes.push(Note::new(
+            "bepinex",
+            "Set up for BepInEx through Doorstop. Import a BepInEx 6 IL2CPP pack with the mod \
+             id `bepinex`.",
         )),
         (LoaderSetup::Bepinex, _) => notes.push(Note::new(
             "bepinex",
-            "Set up for BepInEx 5 through Doorstop. Import the BepInEx 5 pack (5.4.22 or later) \
-             with the mod id `bepinex`.",
+            "Set up for BepInEx through Doorstop. Import a BepInEx pack (BepInEx 5.4 or 6) with \
+             the mod id `bepinex`.",
         )),
         (LoaderSetup::Generic, Engine::UnityMono) => notes.push(Note::new(
             "generic-unity",
@@ -402,8 +407,8 @@ fn build(
         )),
         (LoaderSetup::Generic, Engine::UnityIl2cpp) => notes.push(Note::new(
             "unity-il2cpp",
-            "IL2CPP Unity game: its mods need BepInEx 6 or MelonLoader, which UMM does not \
-             support yet. Set up as generic: mod files are copied as they are.",
+            "IL2CPP Unity game set up as generic: mod files are copied as they are. To use \
+             BepInEx 6 mods, change the mod loader in the Actions tab.",
         )),
         (LoaderSetup::Generic, _) => {}
     }
@@ -569,7 +574,7 @@ mod tests {
 
         let mono_app = apps.iter().find(|a| a.app_id == 1001).unwrap();
         let own = draft_definition(mono_app, LoaderSetup::Bepinex, None).unwrap();
-        assert_eq!(own.def.doorstop().unwrap().runtime_dir, "BepInEx");
+        assert_eq!(own.def.doorstop().unwrap().runtime_dirs, ["BepInEx", "dotnet"]);
         let ts = draft_definition(mono_app, LoaderSetup::Thunderstore, Some("mono-quest")).unwrap();
         assert_eq!(ts.def.community(), Some("mono-quest"));
         assert_eq!(ts.def.setup(), Some(LoaderSetup::Thunderstore));

@@ -30,19 +30,15 @@ pub struct SteamList {
 }
 
 /// The setups a game can be added with, the default first. Thunderstore BepInEx games get it
-/// by default, except IL2CPP builds (BepInEx 6 is not supported yet); everything else starts
-/// generic.
+/// by default (BepInEx 5 or 6, Mono or IL2CPP); everything else starts generic.
 pub(crate) fn setups_for(engine: Engine, on_thunderstore: bool) -> Vec<LoaderSetup> {
-    let ts_ok = on_thunderstore && engine != Engine::UnityIl2cpp;
-    let mut setups = vec![if ts_ok {
+    let unity = matches!(engine, Engine::UnityMono | Engine::UnityIl2cpp);
+    let mut setups = vec![if on_thunderstore {
         LoaderSetup::Thunderstore
     } else {
         LoaderSetup::Generic
     }];
-    if on_thunderstore && !setups.contains(&LoaderSetup::Thunderstore) {
-        setups.push(LoaderSetup::Thunderstore);
-    }
-    if engine == Engine::UnityMono || ts_ok {
+    if unity || on_thunderstore {
         setups.push(LoaderSetup::Bepinex);
     }
     if !setups.contains(&LoaderSetup::Generic) {
@@ -145,12 +141,6 @@ impl Session {
             draft.notes.push(Note::new(
                 "thunderstore-other-loader",
                 format!("On Thunderstore this game uses {l}, which UMM does not support yet."),
-            ));
-        }
-        if c.community.is_some() && found.engine == Engine::UnityIl2cpp {
-            draft.notes.push(Note::new(
-                "bepinex6",
-                "Thunderstore's mods for this game need BepInEx 6, which UMM does not support yet.",
             ));
         }
         draft.def.id = self.free_game_id(&draft.def.id, &app.app_id.to_string())?;

@@ -115,7 +115,7 @@ fn game(data: &Path, root: &Path, http: Arc<FakeHttp>) -> Session {
         def_file(&s, "test-quest"),
         "schema = 1\nid = \"test-quest\"\nname = \"Test Quest\"\n\
          [detect]\nsteam_app_id = 4242\n[launch]\nexe = \"Game.exe\"\n\
-         [loader]\nkind = \"bepinex5\"\nsource = \"thunderstore\"\ninject = \"doorstop\"\n\
+         [loader]\nkind = \"bepinex\"\nsource = \"thunderstore\"\ninject = \"doorstop\"\n\
          [thunderstore]\ncommunity = \"test-quest\"\n\
          [[install]]\nmatch = \"**\"\ntarget = \"\"\n",
     )
@@ -284,7 +284,65 @@ fn launch_reports_a_missing_or_unsupported_pack() {
     let err = s
         .deploy("test-quest", DEFAULT_PROFILE, &mut Faults::none())
         .unwrap_err();
-    assert!(err.to_string().contains("BepInEx 6"), "{err}");
+    assert!(err.to_string().contains("dotnet/coreclr.dll"), "{err}");
+}
+
+#[test]
+fn bepinex_6_il2cpp_packs_run_from_the_runtime_folder() {
+    let tmp = tempfile::tempdir().unwrap();
+    let http = fake();
+    let root = tmp.path().join("game");
+    // Writes the game's file; the session used below sees the changed Thunderstore data.
+    game(&tmp.path().join("data"), &root, http.clone());
+    // An IL2CPP build of the game, and Thunderstore's IL2CPP pack in its community.
+    fs::write(root.join("GameAssembly.dll"), "il2cpp").unwrap();
+    let with_pack = listing("1.1.0").trim_end().trim_end_matches(']').to_string()
+        + r#", {"name": "BepInExPack_IL2CPP", "full_name": "BepInEx-BepInExPack_IL2CPP", "owner": "BepInEx",
+               "versions": [{"version_number": "6.0.788"}]}]"#;
+    http.responses
+        .lock()
+        .unwrap()
+        .insert("https://cdn/chunk1".into(), gz(&with_pack));
+    http.responses.lock().unwrap().insert(
+        "https://thunderstore.io/package/download/BepInEx/BepInExPack_IL2CPP/6.0.788/".into(),
+        zip_of(&[
+            ("manifest.json", r#"{"name":"BepInExPack_IL2CPP","version_number":"6.0.788"}"#),
+            ("BepInExPack/winhttp.dll", "proxy"),
+            ("BepInExPack/doorstop_config.ini", "[General]\nenabled = true"),
+            ("BepInExPack/.doorstop_version", "4.0.0"),
+            ("BepInExPack/BepInEx/core/BepInEx.Unity.IL2CPP.dll", "bep6"),
+            ("BepInExPack/dotnet/coreclr.dll", "clr"),
+            ("BepInExPack/dotnet/System.Private.CoreLib.dll", "corlib"),
+        ]),
+    );
+    let mut eco: serde_json::Value = serde_json::from_str(ECOSYSTEM).unwrap();
+    eco["modloaderPackages"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({"packageId": "BepInEx-BepInExPack_IL2CPP", "rootFolder": "BepInExPack", "loader": "bepinex"}));
+    http.responses
+        .lock()
+        .unwrap()
+        .insert(ECOSYSTEM_URL.into(), eco.to_string().into_bytes());
+    let s = Session::open_with(Some(tmp.path().join("data")), http).unwrap();
+    s.ts_packages("test-quest", true).unwrap();
+
+    // The tab offers the IL2CPP pack, not the Mono one.
+    let page = s.ts_search("test-quest", &TsQuery::default()).unwrap();
+    assert_eq!(page.loader_package.as_deref(), Some("BepInEx-BepInExPack_IL2CPP"));
+    s.ts_install("test-quest", &[("BepInEx-BepInExPack_IL2CPP".into(), None)], DEFAULT_PROFILE, &mut |_| {})
+        .unwrap();
+
+    // BepInEx/ and dotnet/ go to the runtime folder; only the proxy and its config to the game.
+    s.deploy("test-quest", DEFAULT_PROFILE, &mut Faults::none())
+        .unwrap();
+    let rt = s.game_dir("test-quest").runtime_dir(DEFAULT_PROFILE);
+    assert!(rt.join("BepInEx/core/BepInEx.Unity.IL2CPP.dll").exists());
+    assert!(rt.join("dotnet/coreclr.dll").exists());
+    assert!(root.join("winhttp.dll").exists());
+    assert!(!root.join("dotnet").exists() && !root.join("BepInEx").exists());
+    s.revert("test-quest", false, &mut Faults::none()).unwrap();
+    assert!(!root.join("winhttp.dll").exists());
 }
 
 #[test]

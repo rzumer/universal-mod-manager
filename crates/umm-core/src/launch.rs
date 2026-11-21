@@ -7,8 +7,9 @@ use umm_deploy::{
     apply, build_plan, prepare, Faults, GameLock, Journal, PlannedFile, RevertReport,
 };
 use umm_gamedef::{
-    detect::steam_roots, GameDef, RelPath, SteamRelaunch, DOORSTOP3_ENABLED_FLAG,
-    DOORSTOP3_TARGET_FLAG, DOORSTOP_ENABLED_FLAG, DOORSTOP_TARGET_FLAG,
+    detect::steam_roots, BepInExBuild, DoorstopLoader, GameDef, RelPath, SteamRelaunch,
+    CORECLR_PATH, CORLIB_DIR, DOORSTOP3_ENABLED_FLAG, DOORSTOP3_TARGET_FLAG,
+    DOORSTOP_CORECLR_FLAG, DOORSTOP_CORLIB_FLAG, DOORSTOP_ENABLED_FLAG, DOORSTOP_TARGET_FLAG,
 };
 use umm_launch::{LaunchSpec, Tracking};
 use umm_store::fsutil::{hash_file, write_atomic, IoCtx};
@@ -53,7 +54,7 @@ impl Session {
         id: &str,
         profile_name: &str,
         faults: &mut Faults,
-    ) -> Result<(Journal, Option<SyncReport>, u8)> {
+    ) -> Result<(Journal, Option<SyncReport>, Option<Doorstop>)> {
         let def = self.def(id)?;
         let game = self.data.game(id);
         game.ensure()?;
@@ -65,18 +66,18 @@ impl Session {
         self.ensure_not_running(&def.def)?;
         let profile = umm_store::load_profile(&game, profile_name)?;
         let mut plan = build_plan(&game, &def, &profile)?;
-        let doorstop_major = match def.def.doorstop() {
-            Some(ds) => check_bepinex(&def.def, &plan.files, ds.target_assembly)?,
-            None => 4,
+        let doorstop = match def.def.doorstop() {
+            Some(ds) => Some(check_bepinex(&def.def, &plan.files, &ds)?),
+            None => None,
         };
 
         let runtime = match def.def.doorstop() {
             Some(ds) => {
                 let (inside, outside): (Vec<PlannedFile>, Vec<PlannedFile>) =
                     plan.files.into_iter().partition(|f| {
-                        f.target
-                            .first()
-                            .is_some_and(|c| c.eq_ignore_ascii_case(ds.runtime_dir))
+                        f.target.first().is_some_and(|c| {
+                            ds.runtime_dirs.iter().any(|d| c.eq_ignore_ascii_case(d))
+                        })
                     });
                 plan.files = outside;
                 Some(runtime::sync(&game.runtime_dir(&profile.name), &inside)?)
@@ -94,7 +95,7 @@ impl Session {
 
         let mut journal = prepare(&game, &plan, &root, false)?;
         apply(&game, &mut journal, faults)?;
-        Ok((journal, runtime, doorstop_major))
+        Ok((journal, runtime, doorstop))
     }
 
     /// Deploys the profile, starts the game, waits until every game process has exited, then
@@ -116,7 +117,7 @@ impl Session {
             on_event(LaunchEvent::Recovered(r));
         }
 
-        let (journal, runtime, doorstop_major) =
+        let (journal, runtime, doorstop) =
             self.deploy_profile(id, profile_name, &mut Faults::none())?;
         let game_files = journal
             .ops
@@ -135,7 +136,7 @@ impl Session {
             &journal.game_root,
             &game.runtime_dir(&profile.name),
             &profile,
-            doorstop_major,
+            doorstop,
             find_steam_exe(),
         )?;
 
@@ -180,22 +181,32 @@ impl Session {
     }
 }
 
-/// Checks that the profile carries a BepInEx 5 pack, and returns its Doorstop major version.
-fn check_bepinex(def: &GameDef, files: &[PlannedFile], target: &str) -> Result<u8> {
+/// The BepInEx build a profile has and the Doorstop that starts it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Doorstop {
+    pub build: BepInExBuild,
+    /// 3 or 4: the two spell their arguments differently.
+    pub major: u8,
+}
+
+/// Finds which BepInEx build the profile carries (by the assembly Doorstop would load) and
+/// its Doorstop version. Errors when there is none, or when the pack cannot work.
+fn check_bepinex(def: &GameDef, files: &[PlannedFile], ds: &DoorstopLoader) -> Result<Doorstop> {
     let find = |p: &str| files.iter().find(|f| f.target.as_str().eq_ignore_ascii_case(p));
-    if find(target).is_none() {
-        if umm_gamedef::BEPINEX6_MARKERS.iter().any(|m| find(m).is_some()) {
-            return Err(CoreError::Invalid(
-                "this profile has BepInEx 6, which UMM cannot start yet; use a BepInEx 5 pack".into(),
-            ));
-        }
+    let Some(build) = ds.builds.iter().copied().find(|b| find(b.target()).is_some()) else {
         let how = if def.loader.as_ref().is_some_and(|l| l.from_thunderstore()) {
             "install the BepInEx pack from the Thunderstore tab (it also comes with any mod that needs it)"
         } else {
-            "import the BepInEx 5 pack as the mod `bepinex`"
+            "import a BepInEx pack as the mod `bepinex`"
         };
         return Err(CoreError::Invalid(format!(
-            "the profile has no BepInEx pack (no {target}); {how}"
+            "the profile has no BepInEx pack; {how}"
+        )));
+    };
+    if build == BepInExBuild::V6Il2cpp && find(CORECLR_PATH).is_none() {
+        return Err(CoreError::Invalid(format!(
+            "the {} pack has no {CORECLR_PATH}; reinstall the pack",
+            build.label()
         )));
     }
     let read = |p: &str| {
@@ -203,16 +214,22 @@ fn check_bepinex(def: &GameDef, files: &[PlannedFile], target: &str) -> Result<u
             .and_then(|f| std::fs::read(&f.source).ok())
             .map(|b| String::from_utf8_lossy(&b).into_owned())
     };
-    if let Some(v) = read(".doorstop_version") {
-        if let Some(major) = v.trim().chars().next().and_then(|c| c.to_digit(10)) {
-            return Ok(major as u8);
-        }
+    let major = match read(".doorstop_version")
+        .and_then(|v| v.trim().chars().next().and_then(|c| c.to_digit(10)))
+    {
+        Some(m) => m as u8,
+        // Doorstop 3 configs have an [UnityDoorstop] section; Doorstop 4 ones [General].
+        None => match read("doorstop_config.ini") {
+            Some(ini) if ini.contains("[UnityDoorstop]") => 3,
+            _ => 4,
+        },
+    };
+    if build == BepInExBuild::V6Il2cpp && major < 4 {
+        return Err(CoreError::Invalid(
+            "this BepInEx 6 IL2CPP pack ships Doorstop 3, which cannot start IL2CPP games; use a newer pack".into(),
+        ));
     }
-    // Doorstop 3 configs have an [UnityDoorstop] section; Doorstop 4 ones [General].
-    match read("doorstop_config.ini") {
-        Some(ini) if ini.contains("[UnityDoorstop]") => Ok(3),
-        _ => Ok(4),
-    }
+    Ok(Doorstop { build, major })
 }
 
 fn steam_appid_file(dir: &Path, app_id: u32) -> Result<PlannedFile> {
@@ -259,7 +276,7 @@ pub(crate) fn build_spec(
     game_root: &Path,
     runtime_dir: &Path,
     profile: &Profile,
-    doorstop_major: u8,
+    doorstop: Option<Doorstop>,
     steam_exe: Option<PathBuf>,
 ) -> Result<LaunchSpec> {
     let launch = def
@@ -269,11 +286,11 @@ pub(crate) fn build_spec(
     let exe_rel = RelPath::parse(&launch.exe).map_err(|e| CoreError::Invalid(e.to_string()))?;
 
     let mut game_args = launch.args.clone();
-    if let Some(ds) = def.doorstop() {
-        let target = RelPath::parse(ds.target_assembly)
-            .expect("valid path")
-            .to_path(runtime_dir);
-        let (enabled, target_flag) = if doorstop_major == 3 {
+    if let Some(d) = doorstop {
+        let in_runtime = |rel: &str| {
+            native_path(&RelPath::parse(rel).expect("valid path").to_path(runtime_dir))
+        };
+        let (enabled, target_flag) = if d.major == 3 {
             (DOORSTOP3_ENABLED_FLAG, DOORSTOP3_TARGET_FLAG)
         } else {
             (DOORSTOP_ENABLED_FLAG, DOORSTOP_TARGET_FLAG)
@@ -282,8 +299,17 @@ pub(crate) fn build_spec(
             enabled.to_string(),
             "true".to_string(),
             target_flag.to_string(),
-            native_path(&target),
+            in_runtime(d.build.target()),
         ]);
+        if d.build == BepInExBuild::V6Il2cpp {
+            // The pack's .NET runtime lives in the runtime folder, not the game folder.
+            game_args.extend([
+                DOORSTOP_CORECLR_FLAG.to_string(),
+                in_runtime(CORECLR_PATH),
+                DOORSTOP_CORLIB_FLAG.to_string(),
+                in_runtime(CORLIB_DIR),
+            ]);
+        }
     }
     game_args.extend(profile.launch_args.iter().cloned());
 
@@ -324,10 +350,12 @@ mod tests {
     #[test]
     fn owned_launch_with_doorstop_args() {
         let d = def("[launch]\nexe = \"bin/Game.exe\"\nargs = [\"-windowed\"]\n\
-             [loader]\nkind = \"bepinex5\"\ninject = \"doorstop\"\n");
+             [loader]\nkind = \"bepinex\"\ninject = \"doorstop\"\n");
         let mut p = Profile::new("Default");
         p.launch_args = vec!["-skipintro".into()];
-        let spec = build_spec(&d, Path::new("/game"), Path::new("/rt"), &p, 4, None).unwrap();
+        let ds = |build, major| Some(Doorstop { build, major });
+        let spec = build_spec(&d, Path::new("/game"), Path::new("/rt"), &p, ds(BepInExBuild::V5, 4), None)
+            .unwrap();
         assert_eq!(spec.tracking, Tracking::Job);
         assert_eq!(
             spec.program,
@@ -350,9 +378,34 @@ mod tests {
         );
 
         // Older BepInEx 5 packs ship Doorstop 3, which spells its flags differently.
-        let spec = build_spec(&d, Path::new("/game"), Path::new("/rt"), &p, 3, None).unwrap();
+        let spec = build_spec(&d, Path::new("/game"), Path::new("/rt"), &p, ds(BepInExBuild::V5, 3), None)
+            .unwrap();
         assert_eq!(spec.args[1], "--doorstop-enable");
         assert_eq!(spec.args[3], "--doorstop-target");
+
+        // BepInEx 6 for IL2CPP loads its own assembly and the pack's .NET runtime.
+        let spec = build_spec(&d, Path::new("/game"), Path::new("/rt"), &p, ds(BepInExBuild::V6Il2cpp, 4), None)
+            .unwrap();
+        let rt = |parts: &[&str]| native_path(&parts.iter().fold(Path::new("/rt").to_path_buf(), |p, c| p.join(c)));
+        assert_eq!(
+            spec.args,
+            [
+                "-windowed",
+                "--doorstop-enabled",
+                "true",
+                "--doorstop-target-assembly",
+                &rt(&["BepInEx", "core", "BepInEx.Unity.IL2CPP.dll"]),
+                "--doorstop-clr-runtime-coreclr-path",
+                &rt(&["dotnet", "coreclr.dll"]),
+                "--doorstop-clr-corlib-dir",
+                &rt(&["dotnet"]),
+                "-skipintro"
+            ]
+        );
+        let spec = build_spec(&d, Path::new("/game"), Path::new("/rt"), &p, ds(BepInExBuild::V6Mono, 4), None)
+            .unwrap();
+        assert_eq!(spec.args[4], rt(&["BepInEx", "core", "BepInEx.Unity.Mono.Preloader.dll"]));
+        assert_eq!(spec.args.len(), 6, "no runtime paths for Mono");
     }
 
     #[test]
@@ -363,7 +416,7 @@ mod tests {
             Path::new("/game"),
             Path::new("/rt"),
             &Profile::new("Default"),
-            4,
+            None,
             Some(PathBuf::from("steam.exe")),
         )
         .unwrap();
