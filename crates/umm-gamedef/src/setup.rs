@@ -5,7 +5,7 @@
 
 use crate::{
     loader_name, thunderstore_inject, GameDef, GameDefError, Inject, InstallRule, Loader,
-    Thunderstore, BEPINEX_KIND, SHIMLOADER_KIND,
+    Thunderstore, BEPINEX_KIND, RECURSIVE_MELONLOADER_KIND, SHIMLOADER_KIND,
     THUNDERSTORE_SOURCE,
 };
 use serde::{Deserialize, Serialize};
@@ -78,9 +78,26 @@ pub fn shimloader_rules() -> Vec<InstallRule> {
     ]
 }
 
+/// Install rules for MelonLoader mods imported from files rather than Thunderstore:
+/// MelonLoader's own folders keep their place, a loose DLL is a mod. With `recursive`
+/// (MelonLoader 0.7 and later), each mod gets its own folder under `Mods/`.
+pub fn melonloader_rules(recursive: bool) -> Vec<InstallRule> {
+    let mods = if recursive { "Mods/{mod}/" } else { "Mods/" };
+    vec![
+        rule("Mods/**", mods),
+        rule("Plugins/**", "Plugins/"),
+        rule("UserData/**", "UserData/"),
+        rule("UserLibs/**", "UserLibs/"),
+        rule("MelonLoader/**", "MelonLoader/"),
+        rule("*.dll", mods),
+        rule("**", ""),
+    ]
+}
+
 const BEPINEX_CONFIG: &str = "BepInEx/config/**";
 const SHIMLOADER_CONFIG: &str = "shimloader/cfg/**";
-const LOADER_CONFIGS: &[&str] = &[BEPINEX_CONFIG, SHIMLOADER_CONFIG];
+const MELONLOADER_CONFIG: &str = "UserData/**";
+const LOADER_CONFIGS: &[&str] = &[BEPINEX_CONFIG, SHIMLOADER_CONFIG, MELONLOADER_CONFIG];
 
 impl GameDef {
     /// The setup this definition describes. `None`: a loader none of the setups covers (an
@@ -168,6 +185,11 @@ impl GameDef {
                 });
                 let (rules, config) = if kind == SHIMLOADER_KIND {
                     (shimloader_rules(), SHIMLOADER_CONFIG)
+                } else if crate::is_melonloader(kind) {
+                    (
+                        melonloader_rules(kind == RECURSIVE_MELONLOADER_KIND),
+                        MELONLOADER_CONFIG,
+                    )
                 } else {
                     (bepinex_rules(), BEPINEX_CONFIG)
                 };
@@ -297,6 +319,33 @@ target = ""
             .with_setup(LoaderSetup::Thunderstore, Some(other))
             .unwrap_err();
         assert!(err.to_string().contains("northstar"), "{err}");
+    }
+
+    #[test]
+    fn melonloader_from_thunderstore() {
+        for (loader, mods) in [
+            ("melonloader", "Mods/A.dll"),
+            ("recursive-melonloader", "Mods/m/A.dll"),
+        ] {
+            let c = Community {
+                label: "trip",
+                loader,
+            };
+            let ts = def().with_setup(LoaderSetup::Thunderstore, Some(c)).unwrap();
+            assert_eq!(ts.setup_label(), "MelonLoader from Thunderstore");
+            assert_eq!(ts.runtime_loader(), Some(RuntimeLoader::MelonLoader));
+            let c = ts.compile().unwrap();
+            let map = |p: &str| {
+                c.map_mod_file("m", &RelPath::parse(p).unwrap())
+                    .unwrap()
+                    .unwrap()
+                    .as_str()
+                    .to_string()
+            };
+            assert_eq!(map("A.dll"), mods);
+            assert_eq!(map("UserData/a.cfg"), "UserData/a.cfg");
+            assert!(c.is_writable(&RelPath::parse("UserData/MelonPreferences.cfg").unwrap()));
+        }
     }
 
     #[test]

@@ -10,6 +10,7 @@ use umm_gamedef::{
     detect::steam_roots, loader_name, BepInExBuild, BEPINEX_KIND, DoorstopLoader, GameDef, RelPath, RuntimeLoader,
     SteamRelaunch, CORECLR_PATH, CORLIB_DIR, DOORSTOP3_ENABLED_FLAG, DOORSTOP3_TARGET_FLAG,
     DOORSTOP_CORECLR_FLAG, DOORSTOP_CORLIB_FLAG, DOORSTOP_ENABLED_FLAG, DOORSTOP_TARGET_FLAG,
+    MELONLOADER_BASEDIR_FLAG, MELONLOADER_GENERATED, MELONLOADER_REGENERATE_FLAG,
     SHIMLOADER_DIRS,
 };
 use umm_launch::{LaunchSpec, Tracking};
@@ -110,9 +111,17 @@ impl Session {
                 Some(Injection::Shimloader),
                 Some(check_shimloader(&plan.files)?),
             ),
+            Some(RuntimeLoader::MelonLoader) => {
+                check_melonloader(&plan.files)?;
+                // Whether assemblies need generating is known once the folder is synced.
+                (Some(Injection::MelonLoader { regenerate: false }), None)
+            }
             None => (None, None),
         };
-        let proxied = matches!(injection, Some(Injection::Doorstop(_)));
+        let proxied = matches!(
+            injection,
+            Some(Injection::Doorstop(_) | Injection::MelonLoader { .. })
+        );
         if let (true, Some(launch)) = (proxied, &def.def.launch) {
             if let Ok(exe) = RelPath::parse(&launch.exe) {
                 check_proxy_architecture(&plan.files, &exe.to_path(&root), &def.def.name)?;
@@ -136,6 +145,13 @@ impl Session {
             }
             None => None,
         };
+        let mut injection = injection;
+        if let Some(Injection::MelonLoader { regenerate }) = &mut injection {
+            let dir = game.runtime_dir(&profile.name);
+            *regenerate = !MELONLOADER_GENERATED
+                .iter()
+                .any(|rel| RelPath::parse(rel).expect("valid path").to_path(&dir).is_file());
+        }
 
         if let (Some(launch), Some(app_id)) = (&def.def.launch, def.def.detect.steam_app_id) {
             if launch.steam_relaunch == SteamRelaunch::AppidFile {
@@ -377,6 +393,23 @@ fn check_proxy_architecture(files: &[PlannedFile], game_exe: &Path, game: &str) 
 pub(crate) enum Injection {
     Doorstop(Doorstop),
     Shimloader,
+    /// `regenerate`: the runtime folder has no generated game assemblies yet.
+    MelonLoader { regenerate: bool },
+}
+
+/// Errors when the profile has no MelonLoader (its `MelonLoader.dll`, under `MelonLoader/`).
+fn check_melonloader(files: &[PlannedFile]) -> Result<()> {
+    let found = files.iter().any(|f| {
+        f.target.first().is_some_and(|c| c.eq_ignore_ascii_case("MelonLoader"))
+            && f.target.file_name().is_some_and(|n| n.eq_ignore_ascii_case("MelonLoader.dll"))
+    });
+    if found {
+        Ok(())
+    } else {
+        Err(CoreError::Invalid(
+            "the profile has no MelonLoader; install it from the Thunderstore tab (it also comes with any mod that needs it)".into(),
+        ))
+    }
 }
 
 /// Finds Shimloader's UE4SS among the files for the game folder and returns its folder (the
@@ -503,6 +536,12 @@ pub(crate) fn build_spec(
     if injection == Some(Injection::Shimloader) {
         for (flag, rel) in SHIMLOADER_DIRS {
             game_args.extend([flag.to_string(), in_runtime(rel)]);
+        }
+    }
+    if let Some(Injection::MelonLoader { regenerate }) = injection {
+        game_args.extend([MELONLOADER_BASEDIR_FLAG.to_string(), native_path(runtime_dir)]);
+        if regenerate {
+            game_args.push(MELONLOADER_REGENERATE_FLAG.to_string());
         }
     }
     if let Some(Injection::Doorstop(d)) = injection {
@@ -652,6 +691,28 @@ mod tests {
                 &rt(&["shimloader", "overlay"]),
             ]
         );
+    }
+
+    #[test]
+    fn melonloader_gets_its_base_folder() {
+        let d = def("[launch]\nexe = \"Game.exe\"\n\
+             [loader]\nkind = \"recursive-melonloader\"\nsource = \"thunderstore\"\ninject = \"args\"\n\
+             [thunderstore]\ncommunity = \"g\"\n");
+        let spec = |regenerate| {
+            build_spec(
+                &d,
+                Path::new("/game"),
+                Path::new("/rt"),
+                &Profile::new("Default"),
+                Some(Injection::MelonLoader { regenerate }),
+                None,
+            )
+            .unwrap()
+            .args
+        };
+        let rt = native_path(Path::new("/rt"));
+        assert_eq!(spec(true), ["--melonloader.basedir", rt.as_str(), "--melonloader.agfregenerate"]);
+        assert_eq!(spec(false), ["--melonloader.basedir", rt.as_str()]);
     }
 
     /// The smallest file `is_64_bit` reads: a PE header offset, then the header's machine.

@@ -88,6 +88,31 @@ pub struct ImportOptions {
     /// Replace an existing mod with the same id (an update). The old one is removed only once
     /// the new one is fully stored.
     pub replace: bool,
+    /// Files kept beside the mod in `package/`, by plain file name (a Thunderstore package's
+    /// manifest, icon and readme). Never deployed; names with a path in them are ignored.
+    pub package_files: std::collections::BTreeMap<String, Vec<u8>>,
+}
+
+/// Writes `opts.package_files` into the staged mod's `package/` folder.
+fn stage_package_files(new_dir: &Path, opts: &ImportOptions) -> Result<()> {
+    let files: Vec<_> = opts
+        .package_files
+        .iter()
+        .filter(|(n, _)| {
+            !n.contains(['/', '\\'])
+                && umm_gamedef::RelPath::parse(n).is_ok_and(|r| r.depth() == 1)
+        })
+        .collect();
+    if files.is_empty() {
+        return Ok(());
+    }
+    let dir = new_dir.join("package");
+    fs::create_dir_all(&dir).ctx(|| format!("creating {}", dir.display()))?;
+    for (name, body) in files {
+        let p = dir.join(name);
+        fs::write(&p, body).ctx(|| format!("writing {}", p.display()))?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,6 +164,7 @@ pub fn import_mod(game: &GameDir, src: &Path, opts: &ImportOptions) -> Result<Mo
         let result = (|| -> Result<ModMeta> {
             let new_dir = staging.join("new");
             let meta = stage_mod(src, &staging, &new_dir, &id, name, opts)?;
+            stage_package_files(&new_dir, opts)?;
             let old = staging.join("old");
             fs::rename(&dest, &old).ctx(|| format!("moving {} aside", dest.display()))?;
             if let Err(e) = fs::rename(&new_dir, &dest) {
@@ -154,6 +180,7 @@ pub fn import_mod(game: &GameDir, src: &Path, opts: &ImportOptions) -> Result<Mo
     let result = (|| -> Result<ModMeta> {
         let new_dir = staging.join("new");
         let meta = stage_mod(src, &staging, &new_dir, &id, name, opts)?;
+        stage_package_files(&new_dir, opts)?;
         fs::create_dir_all(game.mods_dir()).ctx(|| "creating the mods folder".to_string())?;
         fs::rename(&new_dir, &dest).ctx(|| format!("moving mod into {}", dest.display()))?;
         Ok(meta)

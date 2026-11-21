@@ -155,6 +155,10 @@ fn shimloader_games_run_mods_from_the_runtime_folder() {
         assert!(rt.join(f).is_file(), "{f}");
     }
     assert!(rt.join("shimloader/overlay").is_dir(), "every folder Shimloader is given exists");
+
+    // The package's icon and manifest are kept beside the mod, and deployed nowhere.
+    let package = s.game_dir("trip").mod_package_dir("ann-glow");
+    assert!(package.join("icon.png").is_file() && package.join("manifest.json").is_file());
     assert!(!rt.join("shimloader/mod/Ann-Glow/icon.png").exists());
 
     s.revert("trip", false, &mut Faults::none()).unwrap();

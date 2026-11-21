@@ -154,6 +154,11 @@ impl GameDir {
     pub fn mod_files_dir(&self, id: &str) -> PathBuf {
         self.mod_dir(id).join("files")
     }
+    /// A Thunderstore package's own files (manifest, icon, readme), kept for the interface
+    /// and never deployed.
+    pub fn mod_package_dir(&self, id: &str) -> PathBuf {
+        self.mod_dir(id).join("package")
+    }
     pub fn profiles_dir(&self) -> PathBuf {
         self.root.join("profiles")
     }

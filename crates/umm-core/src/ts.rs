@@ -390,7 +390,7 @@ impl Session {
         progress: &mut dyn FnMut(&str),
         extra: Option<Package>,
     ) -> Result<TsInstallReport> {
-        let (_, community, eco) = self.ts_game(id)?;
+        let (def, community, eco) = self.ts_game(id)?;
         let m = Self::ts_match(&eco, &community);
         let (listed, _) = self.ts_packages(id, false)?;
         // A package from outside the community's list joins it for this install only.
@@ -449,6 +449,34 @@ impl Session {
             })
         };
 
+        // A dependency on a loader version too old for this game (mods often name MelonLoader
+        // 0.6, which cannot load mods from their own folders) takes the newest version instead.
+        let min_loader = def.ts_loader().and_then(umm_gamedef::min_loader_version);
+        let raised = std::cell::RefCell::new(Vec::<(String, String, String)>::new());
+        let raise = |dep: String| -> String {
+            let Some(min) = min_loader else { return dep };
+            let Some((name, version)) = split_dependency(&dep) else { return dep };
+            if !is_loader(name) || compare_versions(version, min) != Ordering::Less {
+                return dep;
+            }
+            let latest = packages
+                .iter()
+                .find(|p| p.full_name.eq_ignore_ascii_case(name))
+                .and_then(|p| p.latest())
+                .map(|v| v.version.clone())
+                .filter(|v| compare_versions(v, min) != Ordering::Less);
+            match latest {
+                Some(v) => {
+                    let mut r = raised.borrow_mut();
+                    if !r.iter().any(|(n, _, _)| n.eq_ignore_ascii_case(name)) {
+                        r.push((name.to_string(), version.to_string(), v.clone()));
+                    }
+                    format!("{name}-{v}")
+                }
+                None => dep,
+            }
+        };
+
         // Dependencies come from each package's manifest: an installed package's record, or
         // the zip, downloaded once and kept for the install below.
         let mut zips: HashMap<(String, String), Vec<u8>> = HashMap::new();
@@ -457,7 +485,12 @@ impl Session {
             let mut deps_of = |pkg: &Package, version: &str| -> std::result::Result<Vec<String>, String> {
                 if let Some((have, deps)) = recorded.get(&pkg.full_name.to_lowercase()) {
                     if compare_versions(have, version) != Ordering::Less {
-                        return Ok(deps.iter().filter(|d| !other_loader(d)).cloned().collect());
+                        return Ok(deps
+                            .iter()
+                            .filter(|d| !other_loader(d))
+                            .cloned()
+                            .map(&raise)
+                            .collect());
                     }
                 }
                 let key = (pkg.full_name.clone(), version.to_string());
@@ -472,7 +505,7 @@ impl Session {
                 }
                 let manifest = layout::manifest(&zips[&key]).map_err(|e| e.to_string())?;
                 let deps = manifest.map(|m| m.dependencies).unwrap_or_default();
-                Ok(deps.into_iter().filter(|d| !other_loader(d)).collect())
+                Ok(deps.into_iter().filter(|d| !other_loader(d)).map(&raise).collect())
             };
             resolve::resolve(packages, &installed, wanted, &mut deps_of)
         };
@@ -503,6 +536,13 @@ impl Session {
             report
                 .installed
                 .push((step.full_name.clone(), step.version.clone(), step.replaces.clone()));
+        }
+
+        for (name, named, used) in raised.into_inner() {
+            report.notes.push(format!(
+                "Installed {name} {used} instead of {named}, which some mods name: this game needs {} or later",
+                min_loader.unwrap_or_default()
+            ));
         }
 
         let mut p = umm_store::load_profile(&game, profile)?;
@@ -643,6 +683,7 @@ impl Session {
                         loader: loader.is_some(),
                     }),
                     replace: true,
+                    package_files: layout::package_files(zip)?,
                 },
             )?;
             Ok(())

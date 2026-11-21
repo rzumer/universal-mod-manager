@@ -268,6 +268,36 @@ pub fn unreal_binaries_dir(project: &str) -> String {
     format!("{}/Binaries/Win64", project.trim_matches('/'))
 }
 
+/// Loader kinds for MelonLoader. Thunderstore lists two: `melonloader`, whose mods follow the
+/// game's install rules, and `recursive-melonloader` (MelonLoader 0.7 and later), which puts
+/// each mod in its own folder under `Mods/`. Both start the same way.
+pub const MELONLOADER_KIND: &str = "melonloader";
+pub const RECURSIVE_MELONLOADER_KIND: &str = "recursive-melonloader";
+
+/// Whether a loader kind is MelonLoader, either layout.
+pub fn is_melonloader(kind: &str) -> bool {
+    kind == MELONLOADER_KIND || kind == RECURSIVE_MELONLOADER_KIND
+}
+
+/// The oldest version of a loader kind's package that works for it: MelonLoader 0.7 is the
+/// first to load mods from their own folders.
+pub fn min_loader_version(kind: &str) -> Option<&'static str> {
+    (kind == RECURSIVE_MELONLOADER_KIND).then_some("0.7.0")
+}
+
+/// MelonLoader's folders, which `--melonloader.basedir` moves to the runtime folder.
+pub const MELONLOADER_DIRS: &[&str] = &["MelonLoader", "Mods", "Plugins", "UserData", "UserLibs"];
+/// MelonLoader's launch flags: its base folder, and forcing IL2CPP assemblies to be
+/// generated again (needed while the base folder has none yet).
+pub const MELONLOADER_BASEDIR_FLAG: &str = "--melonloader.basedir";
+pub const MELONLOADER_REGENERATE_FLAG: &str = "--melonloader.agfregenerate";
+/// Files whose presence in the base folder means the game's assemblies were generated
+/// (MelonLoader 0.5, then 0.6 and later).
+pub const MELONLOADER_GENERATED: &[&str] = &[
+    "MelonLoader/Managed/Assembly-CSharp.dll",
+    "MelonLoader/Il2CppAssemblies/Assembly-CSharp.dll",
+];
+
 /// A loader that is pointed at a per-profile runtime folder outside the game, so that only
 /// its proxy goes into the game folder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -276,6 +306,8 @@ pub enum RuntimeLoader {
     Doorstop(DoorstopLoader),
     /// Unreal Shimloader, which takes its folders as launch arguments.
     Shimloader,
+    /// MelonLoader, given its base folder as a launch argument.
+    MelonLoader,
 }
 
 impl RuntimeLoader {
@@ -284,6 +316,7 @@ impl RuntimeLoader {
         match self {
             RuntimeLoader::Doorstop(d) => d.runtime_dirs,
             RuntimeLoader::Shimloader => &[SHIMLOADER_DIR],
+            RuntimeLoader::MelonLoader => MELONLOADER_DIRS,
         }
     }
 }
@@ -293,6 +326,7 @@ pub fn thunderstore_inject(kind: &str) -> Option<Inject> {
     match kind {
         BEPINEX_KIND => Some(Inject::Doorstop),
         SHIMLOADER_KIND => Some(Inject::Args),
+        k if is_melonloader(k) => Some(Inject::Args),
         _ => None,
     }
 }
@@ -302,6 +336,7 @@ pub fn loader_name(kind: &str) -> &str {
     match kind {
         BEPINEX_KIND => "BepInEx",
         SHIMLOADER_KIND => "Shimloader",
+        k if is_melonloader(k) => "MelonLoader",
         other => other,
     }
 }
@@ -323,6 +358,7 @@ impl GameDef {
         let l = self.loader.as_ref()?;
         match l.inject {
             Inject::Args if l.kind == SHIMLOADER_KIND => Some(RuntimeLoader::Shimloader),
+            Inject::Args if is_melonloader(&l.kind) => Some(RuntimeLoader::MelonLoader),
             _ => None,
         }
     }
@@ -461,10 +497,11 @@ impl GameDef {
                         loader.kind
                     )))
                 }
-                Inject::Args if loader.kind == SHIMLOADER_KIND => {}
+                Inject::Args
+                    if loader.kind == SHIMLOADER_KIND || is_melonloader(&loader.kind) => {}
                 Inject::Args => {
                     return Err(GameDefError::Unsupported(format!(
-                        "loader kind `{}` cannot be injected with arguments (supported: shimloader); use inject = \"files\"",
+                        "loader kind `{}` cannot be injected with arguments (supported: shimloader, melonloader, recursive-melonloader); use inject = \"files\"",
                         loader.kind
                     )))
                 }

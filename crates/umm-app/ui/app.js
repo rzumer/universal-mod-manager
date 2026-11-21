@@ -629,6 +629,8 @@ function filesTab() {
   const runtimeDirs = {
     bepinex: "BepInEx/",
     shimloader: "shimloader/",
+    melonloader: "MelonLoader/, Mods/, Plugins/, UserData/ and UserLibs/",
+    "recursive-melonloader": "MelonLoader/, Mods/, Plugins/, UserData/ and UserLibs/",
   }[S.details.game.loader];
   const runtimeNote =
     runtimeDirs && ["doorstop", "args"].includes(S.details.game.inject)

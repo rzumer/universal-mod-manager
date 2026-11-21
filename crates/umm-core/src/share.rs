@@ -73,16 +73,18 @@ impl Session {
                 let Ok(rel) = RelPath::from_path(rel) else { continue };
                 let path = rel.as_str();
                 let lower = path.to_lowercase();
-                let in_config = ["bepinex/config/", "shimloader/cfg/"]
+                let in_config = ["bepinex/config/", "shimloader/cfg/", "userdata/"]
                     .iter()
                     .any(|d| lower.starts_with(d));
                 // As r2modman: all of the loader's config folder, other config-type files,
                 // but not package manifests, the .NET runtime or UMM's own bookkeeping.
                 let plugin_manifest = (lower.starts_with("bepinex/plugins/")
-                    || lower.starts_with("shimloader/"))
+                    || lower.starts_with("shimloader/")
+                    || lower.starts_with("mods/"))
                     && lower.ends_with("/manifest.json");
+                // MelonLoader/ holds the loader and what it generates, not settings.
                 let excluded = plugin_manifest
-                    || ["dotnet/", ".umm"].iter().any(|d| lower.starts_with(d));
+                    || ["dotnet/", "melonloader/", ".umm"].iter().any(|d| lower.starts_with(d));
                 let wanted = in_config || (profile::is_config_file(path) && !excluded);
                 if wanted {
                     let body = fs::read(entry.path()).ctx(|| format!("reading {}", entry.path().display()))?;

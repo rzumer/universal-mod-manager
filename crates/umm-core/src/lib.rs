@@ -275,10 +275,11 @@ impl Session {
         }
         let meta = match self.thunderstore_layout(&def.def, src)? {
             // A Thunderstore package zip, for a game set up that way: lay it out like one.
-            Some((files, manifest)) => {
+            Some((files, manifest, package_files)) => {
                 let staging = game.staging_dir().join(umm_store::fsutil::unique_suffix());
                 let result = (|| -> Result<ModMeta> {
                     umm_thunderstore::layout::write(&files, &staging)?;
+                    opts.package_files = package_files;
                     opts.name = opts.name.or(Some(manifest.name.replace('_', " ")));
                     if !manifest.version_number.is_empty() {
                         opts.version = opts.version.or(Some(manifest.version_number.clone()));
@@ -314,6 +315,7 @@ impl Session {
         Option<(
             std::collections::BTreeMap<String, Vec<u8>>,
             umm_thunderstore::layout::Manifest,
+            std::collections::BTreeMap<String, Vec<u8>>,
         )>,
     > {
         let ts = def.loader.as_ref().is_some_and(|l| l.from_thunderstore());
@@ -337,7 +339,8 @@ impl Session {
             manifest.name.clone()
         };
         let files = umm_thunderstore::layout::plan(&bytes, &name, m.r2, None)?;
-        Ok(Some((files, manifest)))
+        let package = umm_thunderstore::layout::package_files(&bytes)?;
+        Ok(Some((files, manifest, package)))
     }
 
     pub fn mods(&self, id: &str) -> Result<Vec<ModMeta>> {

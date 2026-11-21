@@ -105,6 +105,15 @@ pub fn manifest(zip: &[u8]) -> Result<Option<Manifest>> {
     })
 }
 
+/// The package's own files at the zip's root (`manifest.json`, `icon.png`, `README.md`,
+/// `CHANGELOG.md`), by their names in the zip. Stored beside the mod for the interface.
+pub fn package_files(zip: &[u8]) -> Result<BTreeMap<String, Vec<u8>>> {
+    Ok(read_zip(zip)?
+        .into_iter()
+        .filter(|(k, _)| !k.contains('/') && PACKAGE_FILES.contains(&k.to_lowercase().as_str()))
+        .collect())
+}
+
 /// Where each file of the package goes, relative to the game folder.
 pub fn plan(
     zip: &[u8],
@@ -118,6 +127,13 @@ pub fn plan(
 
     if loader.is_some_and(|l| l.loader == umm_gamedef::SHIMLOADER_KIND) {
         return shimloader_pack(files, full_name, &game.data_folder_name);
+    }
+    if let Some(l) = loader.filter(|l| umm_gamedef::is_melonloader(&l.loader)) {
+        let recursive = l.loader == umm_gamedef::RECURSIVE_MELONLOADER_KIND;
+        return melonloader_pack(files, full_name, recursive);
+    }
+    if game.package_loader == umm_gamedef::RECURSIVE_MELONLOADER_KIND && loader.is_none() {
+        return recursive_melonloader_mod(files, full_name);
     }
     if let Some(l) = loader {
         let root = format!("{}/", l.root_folder.trim_matches('/').to_lowercase());
@@ -243,6 +259,83 @@ pub fn plan(
                 };
                 dest(route, &rel)?
             }
+        };
+        out.insert(target, body);
+    }
+    if out.is_empty() {
+        return Err(TsError::Data {
+            what: full_name.into(),
+            message: "the package has no files to install".into(),
+        });
+    }
+    Ok(out)
+}
+
+/// Lays out the MelonLoader package as r2modman does: everything but the package's own
+/// files, at the game folder's root (`version.dll` there, `MelonLoader/` beside it). For
+/// games whose mods each get a folder (`recursive`), only `MelonLoader/` and the proxy, and
+/// only from MelonLoader 0.7, the first to load mods from subfolders.
+fn melonloader_pack(
+    files: BTreeMap<String, Vec<u8>>,
+    full_name: &str,
+    recursive: bool,
+) -> Result<BTreeMap<String, Vec<u8>>> {
+    let bad = |m: String| TsError::Data {
+        what: format!("{full_name} (mod loader)"),
+        message: m,
+    };
+    if recursive {
+        let version = files
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("manifest.json"))
+            .and_then(|(_, b)| {
+                let text = String::from_utf8_lossy(b);
+                serde_json::from_str::<Manifest>(text.trim_start_matches('\u{feff}')).ok()
+            })
+            .map(|m| m.version_number)
+            .unwrap_or_default();
+        let min = umm_gamedef::min_loader_version(umm_gamedef::RECURSIVE_MELONLOADER_KIND)
+            .expect("recursive MelonLoader has a minimum");
+        if crate::index::compare_versions(&version, min) == std::cmp::Ordering::Less {
+            return Err(bad(format!(
+                "this game needs MelonLoader 0.7.0 or later, which loads each mod from its own folder; this package is {}",
+                if version.is_empty() { "of an unknown version" } else { &version }
+            )));
+        }
+    }
+    let mut out = BTreeMap::new();
+    for (path, body) in files {
+        let lower = path.to_lowercase();
+        let at_root = !lower.contains('/');
+        let keep = if recursive {
+            lower.starts_with("melonloader/") || lower == "version.dll" || lower == "winhttp.dll"
+        } else {
+            !(at_root && PACKAGE_FILES.contains(&lower.as_str()))
+        };
+        if keep {
+            out.insert(path, body);
+        }
+    }
+    if !out.keys().any(|k| k.to_lowercase().starts_with("melonloader/")) {
+        return Err(bad("no `MelonLoader` folder in the package".into()));
+    }
+    Ok(out)
+}
+
+/// Lays out a mod for a game whose MelonLoader loads each mod from its own folder, as
+/// r2modman does: the package's `UserData/` goes to `UserData/<Owner-Name>/`, everything else
+/// to `Mods/<Owner-Name>/`, keeping its paths. The package's own files go too: MelonLoader
+/// only loads a mod folder that has a `manifest.json`.
+fn recursive_melonloader_mod(
+    files: BTreeMap<String, Vec<u8>>,
+    full_name: &str,
+) -> Result<BTreeMap<String, Vec<u8>>> {
+    let mut out = BTreeMap::new();
+    for (path, body) in files {
+        let lower = path.to_lowercase();
+        let target = match lower.strip_prefix("userdata/") {
+            Some(_) => format!("UserData/{full_name}/{}", &path["userdata/".len()..]),
+            None => format!("Mods/{full_name}/{path}"),
         };
         out.insert(target, body);
     }
@@ -483,6 +576,50 @@ pub(crate) mod tests {
                 "shimloader/pak/Ann-Two/Blue.pak",
             ]
         );
+    }
+
+    #[test]
+    fn melonloader_packages_and_mods() {
+        let pack = |version: &str| {
+            zip_of(&[
+                ("manifest.json", &format!(r#"{{"name":"MelonLoader","version_number":"{version}"}}"#)),
+                ("README.md", "r"),
+                ("version.dll", "p"),
+                ("NOTICE.txt", "n"),
+                ("MelonLoader/net6/MelonLoader.dll", "m"),
+            ])
+        };
+        let entry = |loader: &str| ModloaderPackage {
+            package_id: "LavaGang-MelonLoader".into(),
+            root_folder: String::new(),
+            loader: loader.into(),
+        };
+        let keys = |m: &BTreeMap<String, Vec<u8>>| m.keys().cloned().collect::<Vec<_>>();
+
+        // As BONELAB: everything but the package's files, and mods by the schema's routes.
+        let mut bonelab = rules();
+        bonelab.package_loader = "melonloader".into();
+        bonelab.install_rules = serde_json::from_str(
+            r#"[{"route": "Mods", "defaultFileExtensions": [".dll"], "trackingMethod": "state", "isDefaultLocation": true},
+                {"route": "UserLibs", "defaultFileExtensions": [".lib.dll"], "trackingMethod": "state"},
+                {"route": "UserData", "trackingMethod": "state"}]"#,
+        )
+        .unwrap();
+        let out = plan(&pack("0.6.1"), "LavaGang-MelonLoader", &bonelab, Some(&entry("melonloader"))).unwrap();
+        assert_eq!(keys(&out), ["MelonLoader/net6/MelonLoader.dll", "NOTICE.txt", "version.dll"]);
+        let zip = zip_of(&[("A.dll", "a"), ("Z.lib.dll", "z"), ("UserData/a.cfg", "c")]);
+        let out = plan(&zip, "Ann-A", &bonelab, None).unwrap();
+        assert_eq!(keys(&out), ["Mods/A.dll", "UserData/a.cfg", "UserLibs/Z.lib.dll"]);
+
+        // As Schedule I: only MelonLoader/ and the proxy, from MelonLoader 0.7 on.
+        let mut schedule = rules();
+        schedule.package_loader = "recursive-melonloader".into();
+        schedule.install_rules.clear();
+        let recursive = entry("recursive-melonloader");
+        let out = plan(&pack("0.7.3"), "LavaGang-MelonLoader", &schedule, Some(&recursive)).unwrap();
+        assert_eq!(keys(&out), ["MelonLoader/net6/MelonLoader.dll", "version.dll"]);
+        let err = plan(&pack("0.6.6"), "LavaGang-MelonLoader", &schedule, Some(&recursive)).unwrap_err();
+        assert!(err.to_string().contains("0.7.0 or later"), "{err}");
     }
 
     #[test]
