@@ -228,6 +228,103 @@ pub fn download(http: &dyn Http, index_url: &str) -> Result<Vec<Package>> {
     Ok(all)
 }
 
+/// A package looked up by name, whatever community lists it, with how each community that
+/// lists it reviewed it (`approved`, `unreviewed`, `rejected`).
+#[derive(Debug, Clone)]
+pub struct FetchedPackage {
+    pub package: Package,
+    /// `(community, review status)`.
+    pub listings: Vec<(String, String)>,
+}
+
+#[derive(Deserialize)]
+struct ApiPackage {
+    name: String,
+    full_name: String,
+    owner: String,
+    #[serde(default)]
+    rating_score: i64,
+    #[serde(default)]
+    is_deprecated: bool,
+    #[serde(default)]
+    is_pinned: bool,
+    #[serde(default)]
+    date_updated: String,
+    /// Thunderstore answers -1 when it has no count.
+    #[serde(default)]
+    total_downloads: i64,
+    latest: ApiVersion,
+    #[serde(default)]
+    community_listings: Vec<ApiListing>,
+}
+
+#[derive(Deserialize)]
+struct ApiVersion {
+    version_number: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    icon: String,
+    #[serde(default)]
+    website_url: String,
+}
+
+#[derive(Deserialize)]
+struct ApiListing {
+    community: String,
+    #[serde(default)]
+    review_status: String,
+    #[serde(default)]
+    categories: Vec<String>,
+    #[serde(default)]
+    has_nsfw_content: bool,
+}
+
+/// Looks up `Owner-Name` on Thunderstore's package API, which knows every package, not only
+/// those a community lists. Only the latest version is known; any other can still be
+/// downloaded by number.
+pub fn fetch_package(http: &dyn Http, full_name: &str) -> Result<FetchedPackage> {
+    let (owner, name) = full_name.split_once('-').ok_or_else(|| {
+        TsError::Invalid(format!("`{full_name}` is not a package name (Owner-Name)"))
+    })?;
+    let ok = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !ok(owner) || !ok(name) {
+        return Err(TsError::Invalid(format!(
+            "`{full_name}` is not a package name (Owner-Name)"
+        )));
+    }
+    let body = http.get(&format!("{BASE_URL}/api/experimental/package/{owner}/{name}/"))?;
+    let p: ApiPackage = json(&body, "package")?;
+    let first = p.community_listings.first();
+    Ok(FetchedPackage {
+        listings: p
+            .community_listings
+            .iter()
+            .map(|l| (l.community.clone(), l.review_status.clone()))
+            .collect(),
+        package: Package {
+            categories: first.map(|l| l.categories.clone()).unwrap_or_default(),
+            nsfw: p.community_listings.iter().any(|l| l.has_nsfw_content),
+            description: p.latest.description,
+            icon: p.latest.icon,
+            website: p.latest.website_url,
+            versions: vec![PackageVersion {
+                version: p.latest.version_number,
+                dependencies: Vec::new(),
+                size: 0,
+            }],
+            owner: p.owner,
+            name: p.name,
+            full_name: p.full_name,
+            rating: p.rating_score,
+            downloads: p.total_downloads.max(0) as u64,
+            deprecated: p.is_deprecated,
+            pinned: p.is_pinned,
+            updated: p.date_updated,
+        },
+    })
+}
+
 /// The community's packages from `cache_file` (gzipped compact JSON), downloaded when the copy
 /// is missing, over an hour old, or `refresh` is set; the cached copy is used when offline.
 pub fn load(
@@ -311,5 +408,28 @@ pub(crate) mod tests {
         let (again, fresh) = load(&FakeHttp::default(), "https://ts/index", &file, false).unwrap();
         assert_eq!(fresh, cache::Freshness::Cached);
         assert_eq!(again.len(), 2);
+    }
+
+    #[test]
+    fn looks_up_a_package_outside_any_list() {
+        let http = FakeHttp::default().with(
+            "https://thunderstore.io/api/experimental/package/BepInEx/BepInExPack_IL2CPP/",
+            r#"{"namespace":"BepInEx","name":"BepInExPack_IL2CPP","full_name":"BepInEx-BepInExPack_IL2CPP",
+                "owner":"BepInEx","rating_score":5,"is_deprecated":false,"total_downloads":-1,
+                "latest":{"version_number":"6.0.788","description":"BepInEx 6 IL2CPP","icon":"i.png","website_url":""},
+                "community_listings":[{"community":"among-us","review_status":"rejected","categories":[]},
+                                      {"community":"megabonk","review_status":"unreviewed","categories":["Libraries"]}]}"#,
+        );
+        let f = fetch_package(&http, "BepInEx-BepInExPack_IL2CPP").unwrap();
+        assert_eq!(f.package.latest().unwrap().version, "6.0.788");
+        assert_eq!(
+            f.listings,
+            [
+                ("among-us".to_string(), "rejected".to_string()),
+                ("megabonk".to_string(), "unreviewed".to_string())
+            ]
+        );
+        assert!(fetch_package(&http, "../evil").is_err());
+        assert!(fetch_package(&http, "NoDash").is_err());
     }
 }

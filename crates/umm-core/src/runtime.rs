@@ -34,6 +34,22 @@ fn hash_of(p: &Path) -> Option<String> {
     hash_file(p).ok()
 }
 
+/// Removes the folders above `file` that are now empty (a removed mod's own folder, say),
+/// stopping at the first that is not, and never removing `root` itself.
+fn remove_empty_parents(file: &Path, root: &Path) {
+    let mut d = file.parent();
+    while let Some(p) = d {
+        if p == root || !p.starts_with(root) {
+            break;
+        }
+        // Fails, and so stops, once a folder still holds something.
+        if fs::remove_dir(p).is_err() {
+            break;
+        }
+        d = p.parent();
+    }
+}
+
 pub fn sync(dir: &Path, files: &[PlannedFile]) -> Result<SyncReport> {
     fs::create_dir_all(dir).ctx(|| format!("creating {}", dir.display()))?;
     let mpath = dir.join(MANIFEST);
@@ -56,6 +72,7 @@ pub fn sync(dir: &Path, files: &[PlannedFile]) -> Result<SyncReport> {
         if p.is_file() && hash_of(&p).as_deref() == Some(placed_hash.as_str()) {
             remove_file_force(&p).ctx(|| format!("removing {}", p.display()))?;
             report.removed += 1;
+            remove_empty_parents(&p, dir);
         }
     }
 

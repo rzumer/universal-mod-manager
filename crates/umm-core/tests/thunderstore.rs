@@ -343,6 +343,19 @@ fn bepinex_6_il2cpp_packs_run_from_the_runtime_folder() {
     assert!(!root.join("dotnet").exists() && !root.join("BepInEx").exists());
     s.revert("test-quest", false, &mut Faults::none()).unwrap();
     assert!(!root.join("winhttp.dll").exists());
+
+    // Deleting the pack takes its files out of the runtime folder at once; a config the game
+    // wrote there stays.
+    fs::create_dir_all(rt.join("BepInEx/config")).unwrap();
+    fs::write(rt.join("BepInEx/config/BepInEx.cfg"), "game wrote this").unwrap();
+    s.remove_mod("test-quest", "bepinex-bepinexpack-il2cpp").unwrap();
+    assert!(!rt.join("BepInEx/core/BepInEx.Unity.IL2CPP.dll").exists());
+    assert!(!rt.join("dotnet/coreclr.dll").exists());
+    assert!(rt.join("BepInEx/config/BepInEx.cfg").exists());
+    // Folders left empty go too; one still holding the game's config stays.
+    assert!(!rt.join("dotnet").exists());
+    assert!(!rt.join("BepInEx/core").exists());
+    assert!(rt.join("BepInEx/config").is_dir());
 }
 
 #[test]
@@ -426,4 +439,134 @@ fn profiles_export_and_import_like_r2modman() {
     assert_eq!(v, "1.2.0");
     let p4 = s.profile("test-quest", &again.profile).unwrap();
     assert!(p4.mods.iter().any(|m| m.id == "ann-lantern-tweaks"));
+}
+
+#[test]
+fn deleting_a_plugin_removes_its_folder_from_the_runtime_folder() {
+    let tmp = tempfile::tempdir().unwrap();
+    let s = game(&tmp.path().join("data"), &tmp.path().join("game"), fake());
+    s.ts_install(
+        "test-quest",
+        &[("Ann-Lantern_Tweaks".into(), Some("1.1.0".into()))],
+        DEFAULT_PROFILE,
+        &mut |_| {},
+    )
+    .unwrap();
+    s.deploy("test-quest", DEFAULT_PROFILE, &mut Faults::none())
+        .unwrap();
+    s.revert("test-quest", false, &mut Faults::none()).unwrap();
+    let rt = s.game_dir("test-quest").runtime_dir(DEFAULT_PROFILE);
+    let folder = rt.join("BepInEx/plugins/Ann-Lantern_Tweaks");
+    assert!(folder.join("LanternTweaks.dll").exists());
+
+    s.remove_mod("test-quest", "ann-lantern-tweaks").unwrap();
+    assert!(!folder.exists(), "the plugin's own folder goes too");
+    assert!(rt.join("BepInEx/core/BepInEx.Preloader.dll").exists(), "the pack stays");
+}
+
+/// A file with just enough of a PE header to tell 32-bit (0x14c) from 64-bit (0x8664).
+fn fake_pe(machine: u16) -> Vec<u8> {
+    let mut b = vec![0u8; 0x40];
+    b[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+    b.extend_from_slice(b"PE\0\0");
+    b.extend_from_slice(&machine.to_le_bytes());
+    b
+}
+
+fn zip_bytes(files: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut w = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for (name, body) in files {
+        w.start_file(*name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        w.write_all(body).unwrap();
+    }
+    w.finish().unwrap().into_inner()
+}
+
+#[test]
+fn a_32_bit_pack_is_flagged_and_an_unlisted_64_bit_one_replaces_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let http = fake();
+    let root = tmp.path().join("game");
+    let s = game(&tmp.path().join("data"), &root, http.clone());
+    fs::write(root.join("Game.exe"), fake_pe(0x8664)).unwrap();
+
+    // The community's own pack ships a 32-bit proxy; the game is 64-bit.
+    http.responses.lock().unwrap().insert(
+        "https://thunderstore.io/package/download/BepInEx/BepInExPack/5.4.2305/".into(),
+        zip_bytes(&[
+            ("manifest.json", br#"{"name":"BepInExPack","version_number":"5.4.2305"}"#),
+            ("BepInExPack/winhttp.dll", &fake_pe(0x14c)),
+            ("BepInExPack/BepInEx/core/BepInEx.Preloader.dll", b"old"),
+        ]),
+    );
+    let r = s
+        .ts_install("test-quest", &[("Ann-Lantern_Tweaks".into(), Some("1.1.0".into()))], DEFAULT_PROFILE, &mut |_| {})
+        .unwrap();
+    assert!(r.warnings[0].contains("is 32-bit, but Test Quest is 64-bit"), "{:?}", r.warnings);
+    assert!(r.warnings[0].ends_with("an unlisted BepInEx pack built for 64-bit."), "{:?}", r.warnings);
+    let page = s.ts_search("test-quest", &TsQuery::default()).unwrap();
+    assert!(page.loader_warning.is_some());
+    // The known pack for a 64-bit Mono game is the one installed, so nothing to suggest;
+    // for an IL2CPP build, the IL2CPP pack.
+    assert_eq!(page.loader_suggestion, None);
+    fs::write(root.join("GameAssembly.dll"), "il2cpp").unwrap();
+    let page = s.ts_search("test-quest", &TsQuery::default()).unwrap();
+    assert_eq!(page.loader_suggestion.as_deref(), Some("BepInEx-BepInExPack_IL2CPP"));
+    fs::remove_file(root.join("GameAssembly.dll")).unwrap();
+    assert!(s
+        .deploy("test-quest", DEFAULT_PROFILE, &mut Faults::none())
+        .unwrap_err()
+        .to_string()
+        .contains("Windows would not load it"));
+
+    // A 64-bit pack the community does not list (its listing here was rejected).
+    let api = "https://thunderstore.io/api/experimental/package/BepInEx/BepInExPack_Wide/";
+    http.responses.lock().unwrap().insert(
+        api.into(),
+        br#"{"name":"BepInExPack_Wide","full_name":"BepInEx-BepInExPack_Wide","owner":"BepInEx",
+             "latest":{"version_number":"6.0.1","description":"64-bit pack"},
+             "community_listings":[{"community":"test-quest","review_status":"rejected"}]}"#
+            .to_vec(),
+    );
+    http.responses.lock().unwrap().insert(
+        "https://thunderstore.io/package/download/BepInEx/BepInExPack_Wide/6.0.1/".into(),
+        zip_bytes(&[
+            ("manifest.json", br#"{"name":"BepInExPack_Wide","version_number":"6.0.1"}"#),
+            ("BepInExPack/winhttp.dll", &fake_pe(0x8664)),
+            ("BepInExPack/BepInEx/core/BepInEx.Preloader.dll", b"new"),
+        ]),
+    );
+    let mut eco: serde_json::Value = serde_json::from_str(ECOSYSTEM).unwrap();
+    eco["modloaderPackages"].as_array_mut().unwrap().push(
+        serde_json::json!({"packageId": "BepInEx-BepInExPack_Wide", "rootFolder": "BepInExPack", "loader": "bepinex"}),
+    );
+    http.responses
+        .lock()
+        .unwrap()
+        .insert(ECOSYSTEM_URL.into(), eco.to_string().into_bytes());
+    let s = Session::open_with(Some(tmp.path().join("data")), http.clone()).unwrap();
+    s.ecosystem(true).unwrap();
+
+    let found = s.ts_lookup("test-quest", "BepInEx-BepInExPack_Wide").unwrap();
+    assert!(!found.listed);
+    assert_eq!(found.review_status.as_deref(), Some("rejected"));
+    let r = s
+        .ts_install_unlisted("test-quest", "BepInEx-BepInExPack_Wide", None, DEFAULT_PROFILE, &mut |_| {})
+        .unwrap();
+    assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    assert_eq!(r.notes.len(), 1, "the old pack is turned off: {:?}", r.notes);
+    let p = s.profile("test-quest", DEFAULT_PROFILE).unwrap();
+    let old = p.mods.iter().find(|m| m.id == "bepinex-bepinexpack").unwrap();
+    assert!(!old.enabled);
+    assert!(s.ts_search("test-quest", &TsQuery::default()).unwrap().loader_warning.is_none());
+
+    // Updating the mod (which names the old pack) does not bring the old pack back.
+    s.ts_install("test-quest", &[("Ann-Lantern_Tweaks".into(), None)], DEFAULT_PROFILE, &mut |_| {})
+        .unwrap();
+    let p = s.profile("test-quest", DEFAULT_PROFILE).unwrap();
+    assert!(!p.mods.iter().find(|m| m.id == "bepinex-bepinexpack").unwrap().enabled);
+    s.deploy("test-quest", DEFAULT_PROFILE, &mut Faults::none())
+        .unwrap();
+    s.revert("test-quest", false, &mut Faults::none()).unwrap();
 }

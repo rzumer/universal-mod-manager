@@ -57,6 +57,9 @@ export const api = {
   tsInstall: (game, packages, profile) => backend.invoke("ts_install", { game, packages, profile }),
   tsUpdate: (game, packages, profile) => backend.invoke("ts_update", { game, packages, profile }),
   tsDependents: (game, modId) => backend.invoke("ts_dependents", { game, modId }),
+  tsLookup: (game, name) => backend.invoke("ts_lookup", { game, name }),
+  tsInstallUnlisted: (game, name, version, profile) =>
+    backend.invoke("ts_install_unlisted", { game, name, version: version || null, profile }),
   exportPreview: (game, profile) => backend.invoke("profile_export_preview", { game, profile }),
   exportCode: (game, profile) => backend.invoke("profile_export_code", { game, profile }),
   exportFile: (game, profile) => backend.invoke("profile_export_file", { game, profile }),

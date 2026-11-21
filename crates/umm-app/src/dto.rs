@@ -529,6 +529,10 @@ pub struct TsPageDto {
     pub stale: bool,
     pub loader_package: Option<String>,
     pub loader_installed: bool,
+    /// The installed BepInEx pack cannot load in this game, and why.
+    pub loader_warning: Option<String>,
+    /// A known pack for the game's build to pre-fill when offering an unlisted install.
+    pub loader_suggestion: Option<String>,
     /// Installed packages with a newer version: (Owner-Name, installed, latest).
     pub updates: Vec<(String, String, String)>,
 }
@@ -546,6 +550,31 @@ pub struct TsInstalledDto {
 pub struct TsReportDto {
     pub installed: Vec<TsInstalledDto>,
     pub missing: Vec<String>,
+    pub warnings: Vec<String>,
+    pub notes: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TsLookupDto {
+    pub package: TsPackageDto,
+    pub listed: bool,
+    pub review_status: Option<String>,
+}
+
+impl From<umm_core::TsLookup> for TsLookupDto {
+    fn from(l: umm_core::TsLookup) -> Self {
+        TsLookupDto {
+            package: umm_core::TsItem {
+                package: l.package,
+                installed: None,
+                update: false,
+            }
+            .into(),
+            listed: l.listed,
+            review_status: l.review_status,
+        }
+    }
 }
 
 impl From<umm_core::TsInstallReport> for TsReportDto {
@@ -561,6 +590,8 @@ impl From<umm_core::TsInstallReport> for TsReportDto {
                 })
                 .collect(),
             missing: r.missing,
+            warnings: r.warnings,
+            notes: r.notes,
         }
     }
 }

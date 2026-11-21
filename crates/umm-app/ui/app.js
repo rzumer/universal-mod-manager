@@ -210,6 +210,9 @@ async function loadHealth() {
 }
 
 async function refreshAll() {
+  // Mods may have changed (deleted, imported, installed), so the Thunderstore tab's
+  // "installed" and "update" marks are out of date until it loads again.
+  S.ts.stale = true;
   await loadGames();
   await loadGame();
 }
@@ -435,7 +438,7 @@ function tabs() {
             if (id === "files" && !S.plan) loadPlan();
             if (id === "health" && !S.health) loadHealth();
             if (id === "actions") loadLoaderChoice();
-            if (id === "thunderstore" && (!S.ts.page || S.ts.game !== S.gameId)) loadTs(true);
+            if (id === "thunderstore" && (!S.ts.page || S.ts.game !== S.gameId || S.ts.stale)) loadTs(true);
           },
         },
         label,
@@ -757,23 +760,26 @@ function actionsTab(d) {
 
 let tsSearchTimer = null;
 
-async function loadTs(reset) {
+/// Loads the Thunderstore list from the top. `reset` also shows the loading state when the
+/// game changed; `append` (Show more) adds the page at the current offset instead.
+async function loadTs(reset, append = false) {
   const game = S.gameId;
+  if (!append) S.ts.query.offset = 0;
   if (reset) {
     // A new search keeps showing the last results until the new ones arrive.
     if (S.ts.game !== game) S.ts.page = null;
     S.ts.game = game;
-    S.ts.query.offset = 0;
     renderMain();
   }
   const page = await attempt(() => api.tsSearch(game, S.ts.query));
   if (S.gameId !== game) return;
   if (!page) {
     S.ts.page = { error: true, items: [], total: 0, categories: [], updates: [] };
-  } else if (!reset && S.ts.page && S.ts.query.offset > 0) {
+  } else if (append && S.ts.page && !S.ts.page.error) {
     S.ts.page = { ...page, items: [...S.ts.page.items, ...page.items] };
   } else {
     S.ts.page = page;
+    S.ts.stale = false;
   }
   if (S.tab === "thunderstore") renderMain();
 }
@@ -793,9 +799,55 @@ async function tsRun(title, call) {
     const names = r.installed.map((i) => (i.replaced ? `${i.fullName} ${i.replaced} → ${i.version}` : `${i.fullName} ${i.version}`));
     toast(names.length ? `Installed ${names.join(", ")}` : "Everything needed was already installed", "ok");
     for (const m of r.missing) toast(`Dependency ${m} is no longer on Thunderstore; skipped`, "error");
+    for (const w of r.warnings || []) toast(w, "error");
+    for (const n of r.notes || []) toast(n, "info");
   }
   await refreshAll();
   await loadTs(false);
+}
+
+const REVIEW_TEXT = {
+  rejected: "This game's Thunderstore moderators rejected it for this game.",
+  unreviewed: "It is waiting for this game's Thunderstore moderators to review it.",
+};
+
+// Installs a package by Owner-Name. One the game's list does not show (not submitted for this
+// game, unreviewed, or rejected by its moderators) is installed only after saying so.
+async function installByName(prefill) {
+  const game = S.gameId;
+  const field = h("input", { type: "text", placeholder: "Owner-Name or Owner-Name@1.2.3", "aria-label": "Package", value: prefill || "" });
+  const v = await modal({
+    title: "Install an unlisted package",
+    body: [
+      h("p", { class: "muted" }, "A Thunderstore package this game's list does not show, by the name on its Thunderstore page (Owner-Name). Its dependencies are installed too."),
+      field,
+    ],
+    actions: [
+      { label: "Cancel", value: null, class: "ghost" },
+      { label: "Look up", value: "go", class: "primary", focus: false },
+    ],
+  });
+  const text = field.value.trim();
+  if (v !== "go" || !text) return;
+  const [name, version] = text.split("@");
+  const found = await attempt(() => api.tsLookup(game, name));
+  if (!found) return;
+  if (found.listed) return tsInstall([text]);
+  const p = found.package;
+  const why = REVIEW_TEXT[found.reviewStatus] || "It is not listed for this game.";
+  const ok = await modal({
+    title: `${p.name.replaceAll("_", " ")} is not listed for this game`,
+    body: [
+      h("p", {}, `${p.fullName} ${version || p.latest}: ${p.description}`),
+      h("p", { class: "banner warn" }, `${why} UMM installs it only because you ask, and it will not offer updates for it.`),
+    ],
+    actions: [
+      { label: "Cancel", value: null, class: "ghost" },
+      { label: "Install anyway", value: "go", class: "danger" },
+    ],
+  });
+  if (ok !== "go") return;
+  await tsRun("Installing…", () => api.tsInstallUnlisted(game, p.fullName, version, S.profileName));
 }
 
 const tsInstall = (pkgs) => tsRun("Installing…", () => api.tsInstall(S.gameId, pkgs, S.profileName));
@@ -878,6 +930,15 @@ function tsTab(d) {
       ),
     );
   if (p?.stale) banners.push(h("div", { class: "ts-banner warn" }, "Thunderstore could not be reached; this is the last list downloaded."));
+  if (p?.loaderWarning)
+    banners.push(
+      h(
+        "div",
+        { class: "ts-banner warn" },
+        h("span", {}, p.loaderWarning),
+        h("button", { class: "small", disabled: locked, onclick: () => installByName(p.loaderSuggestion || "") }, "Install unlisted package…"),
+      ),
+    );
 
   let list;
   if (!p) list = h("div", { class: "loading" }, h("span", { class: "spinner" }), "Loading packages… the first time can take a while for big communities.");
@@ -940,6 +1001,11 @@ function tsTab(d) {
       sort,
       h("label", { class: "check inline" }, installedOnly, "Installed"),
       h("button", { class: "ghost small", onclick: refresh, title: "Download the package list again" }, "Refresh"),
+      h(
+        "button",
+        { class: "ghost small", disabled: locked, onclick: () => installByName(""), title: "Install a Thunderstore package this game's list does not show" },
+        "Install unlisted package…",
+      ),
     ),
     banners,
     p && !p.error && h("p", { class: "muted small" }, `${p.total} package${p.total === 1 ? "" : "s"} · installs into the profile “${S.profileName}” with dependencies`),
@@ -954,7 +1020,7 @@ function tsTab(d) {
             class: "ghost",
             onclick: () => {
               q.offset = p.items.length;
-              loadTs(false);
+              loadTs(false, true);
             },
           },
           "Show more",

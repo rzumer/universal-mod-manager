@@ -17,7 +17,7 @@ pub use manual::FolderInfo;
 pub use setup::LoaderChoice;
 pub use link::{parse_link, system_registry, InstallLink, LinkHandler, SchemeRegistry, LINK_SCHEME};
 pub use share::{ProfileExport, ProfileImport};
-pub use ts::{package_mod_id, InstalledPackage, TsInstallReport, TsItem, TsPage, TsQuery, TsSort};
+pub use ts::{package_mod_id, InstalledPackage, TsInstallReport, TsItem, TsLookup, TsPage, TsQuery, TsSort};
 pub use umm_thunderstore::index::Package;
 pub use steam::{Draft, Engine, Note, SteamApp, SteamCandidate, SteamList};
 pub use umm_deploy::{
@@ -360,6 +360,8 @@ impl Session {
                 umm_store::save_profile(&game, &p)?;
             }
         }
+        // Its files also leave the profiles' runtime folders now, not at the next launch.
+        self.resync_runtimes(id)?;
         Ok(())
     }
 

@@ -46,7 +46,38 @@ pub struct LaunchOutcome {
     pub revert: Option<RevertReport>,
 }
 
+/// Splits planned files into those that live in the runtime folder and those for the game.
+fn split_runtime(files: Vec<PlannedFile>, ds: &DoorstopLoader) -> (Vec<PlannedFile>, Vec<PlannedFile>) {
+    files.into_iter().partition(|f| {
+        f.target
+            .first()
+            .is_some_and(|c| ds.runtime_dirs.iter().any(|d| c.eq_ignore_ascii_case(d)))
+    })
+}
+
 impl Session {
+    /// Brings every profile's existing runtime folder in line with its mod list now, so a
+    /// deleted mod's files leave at once rather than at the next launch. Files the game wrote
+    /// or edited there are kept, as at launch. Callers hold the game lock and have checked
+    /// nothing is deployed.
+    pub(crate) fn resync_runtimes(&self, id: &str) -> Result<()> {
+        let def = self.def(id)?;
+        let Some(ds) = def.def.doorstop() else {
+            return Ok(());
+        };
+        let game = self.data.game(id);
+        for name in umm_store::list_profiles(&game) {
+            let dir = game.runtime_dir(&name);
+            if !dir.is_dir() {
+                continue;
+            }
+            let profile = umm_store::load_profile(&game, &name)?;
+            let (inside, _) = split_runtime(build_plan(&game, &def, &profile)?.files, &ds);
+            runtime::sync(&dir, &inside)?;
+        }
+        Ok(())
+    }
+
     /// Deploys the profile, splitting files between the game folder (journaled) and, for
     /// Doorstop loaders, the profile's runtime folder (synced).
     pub(crate) fn deploy_profile(
@@ -70,15 +101,15 @@ impl Session {
             Some(ds) => Some(check_bepinex(&def.def, &plan.files, &ds)?),
             None => None,
         };
+        if let (Some(_), Some(launch)) = (doorstop, &def.def.launch) {
+            if let Ok(exe) = RelPath::parse(&launch.exe) {
+                check_proxy_architecture(&plan.files, &exe.to_path(&root), &def.def.name)?;
+            }
+        }
 
         let runtime = match def.def.doorstop() {
             Some(ds) => {
-                let (inside, outside): (Vec<PlannedFile>, Vec<PlannedFile>) =
-                    plan.files.into_iter().partition(|f| {
-                        f.target.first().is_some_and(|c| {
-                            ds.runtime_dirs.iter().any(|d| c.eq_ignore_ascii_case(d))
-                        })
-                    });
+                let (inside, outside) = split_runtime(plan.files, &ds);
                 plan.files = outside;
                 Some(runtime::sync(&game.runtime_dir(&profile.name), &inside)?)
             }
@@ -179,6 +210,129 @@ impl Session {
             revert: report,
         })
     }
+}
+
+/// A Windows executable's CPU architecture, from its PE header: `Some(true)` for 64-bit,
+/// `Some(false)` for 32-bit, `None` when it cannot tell.
+fn is_64_bit(path: &Path) -> Option<bool> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut b = [0u8; 4];
+    f.seek(SeekFrom::Start(0x3c)).ok()?;
+    f.read_exact(&mut b).ok()?;
+    let pe = u32::from_le_bytes(b) as u64;
+    let mut h = [0u8; 6];
+    f.seek(SeekFrom::Start(pe)).ok()?;
+    f.read_exact(&mut h).ok()?;
+    if &h[..4] != b"PE\0\0" {
+        return None;
+    }
+    match u16::from_le_bytes([h[4], h[5]]) {
+        0x8664 | 0xaa64 => Some(true),
+        0x14c => Some(false),
+        _ => None,
+    }
+}
+
+/// BepInEx packs known to suit a build of Unity game, by (64-bit, IL2CPP). Only 64-bit packs
+/// are known; for a 32-bit game nothing is suggested.
+fn known_bepinex_pack(game_64: bool, il2cpp: bool) -> Option<&'static str> {
+    match (game_64, il2cpp) {
+        (true, true) => Some("BepInEx-BepInExPack_IL2CPP"),
+        (true, false) => Some("BepInEx-BepInExPack"),
+        (false, _) => None,
+    }
+}
+
+/// An installed BepInEx pack that cannot load in the game.
+#[derive(Debug, Clone)]
+pub struct LoaderMismatch {
+    pub message: String,
+    /// A known pack for the game's build (`Owner-Name`) to offer in its place.
+    pub suggestion: Option<String>,
+}
+
+impl Session {
+    /// A message when an installed mod loader pack (one recorded as a loader) ships a
+    /// Doorstop proxy for the other architecture than the game's exe; `None` when it matches
+    /// or cannot be told.
+    pub(crate) fn loader_architecture_warning(&self, id: &str) -> Option<String> {
+        self.loader_mismatch(id).map(|m| m.message)
+    }
+
+    pub(crate) fn loader_mismatch(&self, id: &str) -> Option<LoaderMismatch> {
+        let def = self.def(id).ok()?.def;
+        let exe = RelPath::parse(&def.launch.as_ref()?.exe).ok()?;
+        let (root, _) = self.install_path(&def).ok()??;
+        let game_64 = is_64_bit(&exe.to_path(&root))?;
+        let il2cpp = root.join("GameAssembly.dll").is_file();
+        let game = self.data.game(id);
+        // Only packs some profile uses: a replaced pack, turned off, is not a problem.
+        let in_use: Vec<String> = umm_store::list_profiles(&game)
+            .iter()
+            .filter_map(|n| umm_store::load_profile(&game, n).ok())
+            .flat_map(|p| p.mods.into_iter().filter(|e| e.enabled).map(|e| e.id))
+            .collect();
+        for m in umm_store::list_mods(&game).ok()? {
+            if !m.thunderstore.as_ref().is_some_and(|t| t.loader) || !in_use.contains(&m.id) {
+                continue;
+            }
+            for file in m.files.keys() {
+                if !DOORSTOP_PROXIES.iter().any(|p| file.eq_ignore_ascii_case(p)) {
+                    continue;
+                }
+                let path = RelPath::parse(file).ok()?.to_path(&game.mod_files_dir(&m.id));
+                if is_64_bit(&path).is_some_and(|p| p != game_64) {
+                    let bits = |b: bool| if b { "64-bit" } else { "32-bit" };
+                    let current = m.thunderstore.as_ref().map(|t| t.full_name.as_str());
+                    return Some(LoaderMismatch {
+                        message: format!(
+                            "{} is {}, but {} is {}, so BepInEx will not load. You can try installing an unlisted BepInEx pack built for {}.",
+                            m.name,
+                            bits(!game_64),
+                            def.name,
+                            bits(game_64),
+                            bits(game_64)
+                        ),
+                        suggestion: known_bepinex_pack(game_64, il2cpp)
+                            .filter(|s| current.is_none_or(|c| !c.eq_ignore_ascii_case(s)))
+                            .map(str::to_string),
+                    });
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Doorstop's proxy DLLs: whichever the pack ships goes next to the game exe.
+const DOORSTOP_PROXIES: &[&str] = &["winhttp.dll", "version.dll", "winmm.dll"];
+
+/// Refuses a Doorstop proxy built for the other architecture than the game: Windows would
+/// skip it without a word, the game would start, and no mod would load.
+fn check_proxy_architecture(files: &[PlannedFile], game_exe: &Path, game: &str) -> Result<()> {
+    let Some(game_64) = is_64_bit(game_exe) else {
+        return Ok(());
+    };
+    for f in files {
+        let name = f.target.as_str();
+        if !DOORSTOP_PROXIES.iter().any(|p| name.eq_ignore_ascii_case(p)) {
+            continue;
+        }
+        if let Some(proxy_64) = is_64_bit(&f.source) {
+            if proxy_64 != game_64 {
+                let bits = |b: bool| if b { "64-bit" } else { "32-bit" };
+                return Err(CoreError::Invalid(format!(
+                    "the mod loader pack's {name} (from {}) is {}, but {game} is {}: Windows would not load it and no mod would run. Use a {} pack",
+                    f.owner,
+                    bits(proxy_64),
+                    bits(game_64),
+                    bits(game_64)
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The BepInEx build a profile has and the Doorstop that starts it.
@@ -406,6 +560,40 @@ mod tests {
             .unwrap();
         assert_eq!(spec.args[4], rt(&["BepInEx", "core", "BepInEx.Unity.Mono.Preloader.dll"]));
         assert_eq!(spec.args.len(), 6, "no runtime paths for Mono");
+    }
+
+    /// The smallest file `is_64_bit` reads: a PE header offset, then the header's machine.
+    fn fake_pe(dir: &Path, name: &str, machine: u16) -> PathBuf {
+        let mut b = vec![0u8; 0x40];
+        b[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+        b.extend_from_slice(b"PE\0\0");
+        b.extend_from_slice(&machine.to_le_bytes());
+        let p = dir.join(name);
+        std::fs::write(&p, b).unwrap();
+        p
+    }
+
+    #[test]
+    fn refuses_a_proxy_for_the_other_architecture() {
+        let tmp = tempfile::tempdir().unwrap();
+        let game = fake_pe(tmp.path(), "Game.exe", 0x8664);
+        let planned = |source: PathBuf| PlannedFile {
+            target: RelPath::parse("winhttp.dll").unwrap(),
+            source,
+            owner: "bepinex-bepinexpack-amongus".into(),
+            hash: String::new(),
+            size: 0,
+            writable: false,
+        };
+        let x86 = planned(fake_pe(tmp.path(), "proxy32.dll", 0x14c));
+        let err = check_proxy_architecture(&[x86], &game, "Among Us").unwrap_err();
+        assert!(err.to_string().contains("is 32-bit, but Among Us is 64-bit"), "{err}");
+        let x64 = planned(fake_pe(tmp.path(), "proxy64.dll", 0x8664));
+        assert!(check_proxy_architecture(&[x64], &game, "Among Us").is_ok());
+        // A file UMM cannot read as an executable is not a reason to refuse.
+        std::fs::write(tmp.path().join("odd.dll"), "not a dll").unwrap();
+        let odd = planned(tmp.path().join("odd.dll"));
+        assert!(check_proxy_architecture(&[odd], &game, "Among Us").is_ok());
     }
 
     #[test]

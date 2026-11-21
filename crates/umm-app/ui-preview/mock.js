@@ -277,10 +277,32 @@ const handlers = {
       stale: false,
       loaderPackage: "BepInEx-BepInExPack",
       loaderInstalled: !!tsInstalledVersion(game, "BepInEx-BepInExPack"),
+      // `?mismatch` previews a pack built for the other architecture.
+      ...(new URLSearchParams(location.search).has("mismatch")
+        ? {
+            loaderWarning: "BepInExPack AmongUs is 32-bit, but Example Unity Game is 64-bit, so BepInEx will not load. You can try installing an unlisted BepInEx pack built for 64-bit.",
+            loaderSuggestion: "BepInEx-BepInExPack_IL2CPP",
+          }
+        : { loaderWarning: null, loaderSuggestion: null }),
       updates,
     };
   },
   ts_refresh: () => true,
+  ts_lookup: ({ name }) => {
+    const listed = tsPackages.find((p) => p.fullName.toLowerCase() === name.toLowerCase());
+    if (listed) return { package: { ...listed, icon: "", website: "", updated: "", installed: null, update: false, modId: tsModId(listed.fullName) }, listed: true, reviewStatus: null };
+    if (name !== "BepInEx-BepInExPack_IL2CPP") throw `could not reach Thunderstore (https://thunderstore.io/api/experimental/package/${name.replace("-", "/")}/): 404 Not Found`;
+    return {
+      package: { fullName: name, owner: "BepInEx", name: "BepInExPack_IL2CPP", description: "BepInEx pack for IL2CPP x64 Unity games.", categories: [], rating: 5, downloads: 1_204_000, latest: "6.0.788", size: 0, icon: "", website: "", updated: "", installed: null, update: false, modId: tsModId(name), deprecated: false },
+      listed: false,
+      reviewStatus: "rejected",
+    };
+  },
+  ts_install_unlisted: async ({ game, name }) => {
+    emit("ts-progress", { game, message: "Downloading BepInExPack_IL2CPP 6.0.788" });
+    await sleep(600);
+    return { installed: [{ fullName: name, version: "6.0.788", replaced: null }], missing: [], warnings: [], notes: ["Turned off BepInEx-BepInExPack in this profile; BepInEx-BepInExPack_IL2CPP replaces it"] };
+  },
   ts_install: async ({ game, packages }) => {
     const order = [];
     const visit = (full) => {

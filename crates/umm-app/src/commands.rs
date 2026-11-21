@@ -419,6 +419,8 @@ pub async fn ts_search(
             stale: page.stale,
             loader_package: page.loader_package,
             loader_installed: page.loader_installed,
+            loader_warning: page.loader_warning,
+            loader_suggestion: page.loader_suggestion,
         })
     })
     .await
@@ -462,6 +464,29 @@ pub async fn ts_install<R: Runtime>(
             .collect();
         let mut progress = progress_to(app, game.clone());
         Ok(s.ts_install(&game, &wanted, &profile, &mut progress)?.into())
+    })
+    .await
+}
+
+/// Looks up a package by `Owner-Name`, including one the game's community does not list.
+#[tauri::command]
+pub async fn ts_lookup(state: State<'_, AppState>, game: String, name: String) -> Res<TsLookupDto> {
+    blocking(&state, move |s| Ok(s.ts_lookup(&game, &name)?.into())).await
+}
+
+/// Installs a package the game's community does not list, after the interface has shown why.
+#[tauri::command]
+pub async fn ts_install_unlisted<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+    game: String,
+    name: String,
+    version: Option<String>,
+    profile: String,
+) -> Res<TsReportDto> {
+    blocking(&state, move |s| {
+        let mut progress = progress_to(app, game.clone());
+        Ok(s.ts_install_unlisted(&game, &name, version, &profile, &mut progress)?.into())
     })
     .await
 }

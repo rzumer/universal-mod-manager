@@ -19,6 +19,12 @@ fn print_install(r: &TsInstallReport) {
     for m in &r.missing {
         eprintln!("warning: dependency {m} is no longer on Thunderstore; skipped");
     }
+    for w in &r.warnings {
+        eprintln!("warning: {w}");
+    }
+    for n in &r.notes {
+        println!("{n}");
+    }
 }
 
 fn ts(s: &Session, cmd: TsCmd) -> Result<()> {
@@ -74,6 +80,7 @@ fn ts(s: &Session, cmd: TsCmd) -> Result<()> {
             game,
             packages,
             profile,
+            unlisted,
         } => {
             let wanted: Vec<(String, Option<String>)> = packages
                 .iter()
@@ -82,7 +89,30 @@ fn ts(s: &Session, cmd: TsCmd) -> Result<()> {
                     None => (p.clone(), None),
                 })
                 .collect();
-            print_install(&s.ts_install(&game, &wanted, &profile, progress)?);
+            let mut listed = Vec::new();
+            let mut outside = Vec::new();
+            for (name, version) in wanted {
+                let found = s.ts_lookup(&game, &name)?;
+                if found.listed {
+                    listed.push((name, version));
+                    continue;
+                }
+                let why = match found.review_status.as_deref() {
+                    Some(st) => format!("its listing for this game is {st}"),
+                    None => "it is not listed for this game".to_string(),
+                };
+                if !unlisted {
+                    bail!("{name} is on Thunderstore, but {why}; rerun with --unlisted to install it anyway");
+                }
+                eprintln!("note: installing {name} although {why}");
+                outside.push((found.package.full_name, version));
+            }
+            if !listed.is_empty() {
+                print_install(&s.ts_install(&game, &listed, &profile, progress)?);
+            }
+            for (name, version) in outside {
+                print_install(&s.ts_install_unlisted(&game, &name, version, &profile, progress)?);
+            }
         }
         TsCmd::Update {
             game,
@@ -287,6 +317,10 @@ enum TsCmd {
         packages: Vec<String>,
         #[arg(short, long, default_value = DEFAULT_PROFILE)]
         profile: String,
+        /// Also install packages the game's Thunderstore community does not list (not
+        /// submitted there, unreviewed, or rejected by its moderators)
+        #[arg(long)]
+        unlisted: bool,
     },
     /// Update installed packages (all of them if none are named)
     Update {

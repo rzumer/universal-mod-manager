@@ -9,7 +9,7 @@ use umm_deploy::GameLock;
 use umm_gamedef::GameDef;
 use umm_store::{fsutil, ImportOptions, Layout, ProfileEntry, ThunderstoreMeta};
 use umm_thunderstore::ecosystem::{package_index_url, SteamMatch};
-use umm_thunderstore::index::{compare_versions, Package};
+use umm_thunderstore::index::{compare_versions, split_dependency, Package};
 use umm_thunderstore::{layout, resolve, Ecosystem};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -54,6 +54,10 @@ pub struct TsPage {
     pub loader_package: Option<String>,
     /// A BepInEx pack is installed for the game.
     pub loader_installed: bool,
+    /// The installed pack cannot load in this game (built for the other architecture).
+    pub loader_warning: Option<String>,
+    /// A known pack for the game's build to offer instead (`Owner-Name`).
+    pub loader_suggestion: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -62,6 +66,21 @@ pub struct TsInstallReport {
     pub installed: Vec<(String, String, Option<String>)>,
     /// Dependencies Thunderstore no longer lists, as `Owner-Name-x.y.z`.
     pub missing: Vec<String>,
+    /// Problems to show, such as a BepInEx pack built for the other architecture.
+    pub warnings: Vec<String>,
+    /// Other changes made along the way, such as an old BepInEx pack turned off.
+    pub notes: Vec<String>,
+}
+
+/// A package looked up by name.
+#[derive(Debug, Clone)]
+pub struct TsLookup {
+    pub package: Package,
+    /// The game's community lists it.
+    pub listed: bool,
+    /// When not listed: how the community's moderators reviewed it (`rejected`,
+    /// `unreviewed`), or `None` if it was never listed there.
+    pub review_status: Option<String>,
 }
 
 /// A package installed for a game: its mod id and Thunderstore details.
@@ -268,6 +287,7 @@ impl Session {
                 }
             })
             .collect();
+        let mismatch = self.loader_mismatch(id);
         Ok(TsPage {
             total: hits.len(),
             items,
@@ -275,6 +295,8 @@ impl Session {
             stale,
             loader_package,
             loader_installed,
+            loader_warning: mismatch.as_ref().map(|m| m.message.clone()),
+            loader_suggestion: mismatch.and_then(|m| m.suggestion),
         })
     }
 
@@ -293,9 +315,85 @@ impl Session {
         profile: &str,
         progress: &mut dyn FnMut(&str),
     ) -> Result<TsInstallReport> {
+        self.install_with(id, wanted, profile, progress, None)
+    }
+
+    /// Looks up a package by `Owner-Name`, including one the game's community does not list
+    /// (not submitted there, unreviewed, or rejected by its moderators).
+    pub fn ts_lookup(&self, id: &str, full_name: &str) -> Result<TsLookup> {
+        let (_, community, _) = self.ts_game(id)?;
+        let (packages, _) = self.ts_packages(id, false)?;
+        if let Some(p) = packages
+            .iter()
+            .find(|p| p.full_name.eq_ignore_ascii_case(full_name.trim()))
+        {
+            return Ok(TsLookup {
+                package: p.clone(),
+                listed: true,
+                review_status: None,
+            });
+        }
+        let f = umm_thunderstore::index::fetch_package(self.http(), full_name.trim())?;
+        let review_status = f
+            .listings
+            .iter()
+            .find(|(c, _)| c == &community)
+            .map(|(_, s)| s.clone());
+        Ok(TsLookup {
+            package: f.package,
+            listed: false,
+            review_status,
+        })
+    }
+
+    /// Installs a package the game's community does not list, by `Owner-Name` (version
+    /// `None` = latest), with its dependencies. The caller has shown the user that it is not
+    /// listed and why ([`Session::ts_lookup`]).
+    pub fn ts_install_unlisted(
+        &self,
+        id: &str,
+        full_name: &str,
+        version: Option<String>,
+        profile: &str,
+        progress: &mut dyn FnMut(&str),
+    ) -> Result<TsInstallReport> {
+        let mut found = self.ts_lookup(id, full_name)?;
+        if found.listed {
+            return self.ts_install(id, &[(found.package.full_name, version)], profile, progress);
+        }
+        if let Some(v) = &version {
+            if found.package.version(v).is_none() {
+                found.package.versions.push(umm_thunderstore::index::PackageVersion {
+                    version: v.clone(),
+                    dependencies: Vec::new(),
+                    size: 0,
+                });
+            }
+        }
+        let wanted = [(found.package.full_name.clone(), version)];
+        self.install_with(id, &wanted, profile, progress, Some(found.package))
+    }
+
+    fn install_with(
+        &self,
+        id: &str,
+        wanted: &[(String, Option<String>)],
+        profile: &str,
+        progress: &mut dyn FnMut(&str),
+        extra: Option<Package>,
+    ) -> Result<TsInstallReport> {
         let (_, community, eco) = self.ts_game(id)?;
         let m = Self::ts_match(&eco, &community);
-        let (packages, _) = self.ts_packages(id, false)?;
+        let (listed, _) = self.ts_packages(id, false)?;
+        // A package from outside the community's list joins it for this install only.
+        let combined: Vec<Package>;
+        let packages: &[Package] = match extra {
+            Some(p) => {
+                combined = listed.iter().cloned().chain(std::iter::once(p)).collect();
+                &combined
+            }
+            None => &listed,
+        };
         let game = self.data.game(id);
         game.ensure()?;
         let _lock = GameLock::acquire(&game)?;
@@ -303,11 +401,45 @@ impl Session {
             return Err(CoreError::Deployed(id.into()));
         }
         let installed = self.installed_versions(id)?;
-        let recorded: HashMap<String, (String, Vec<String>)> = self
-            .ts_installed(id)?
-            .into_iter()
-            .map(|p| (p.meta.full_name.to_lowercase(), (p.meta.version, p.meta.dependencies)))
+        let installed_pkgs = self.ts_installed(id)?;
+        let recorded: HashMap<String, (String, Vec<String>)> = installed_pkgs
+            .iter()
+            .map(|p| {
+                let m = &p.meta;
+                (m.full_name.to_lowercase(), (m.version.clone(), m.dependencies.clone()))
+            })
             .collect();
+
+        // One BepInEx pack per game. A pack asked for by name, else one already installed, is
+        // the game's pack; a dependency on any other pack counts as met by it (mods often name
+        // a game's original pack, which may not suit the game any more).
+        let is_loader = |name: &str| eco.modloader(name).is_some();
+        let in_profile: Vec<String> = umm_store::load_profile(&game, profile)?
+            .mods
+            .into_iter()
+            .filter(|e| e.enabled)
+            .map(|e| e.id)
+            .collect();
+        let chosen_loader: Option<String> = wanted
+            .iter()
+            .map(|(n, _)| n.clone())
+            .find(|n| is_loader(n))
+            .or_else(|| {
+                // The pack this profile uses, else any installed one.
+                let loaders = || installed_pkgs.iter().filter(|p| p.meta.loader);
+                loaders()
+                    .find(|p| in_profile.contains(&p.mod_id))
+                    .or_else(|| loaders().next())
+                    .map(|p| p.meta.full_name.clone())
+            });
+        let other_loader = |dep: &str| {
+            split_dependency(dep).is_some_and(|(n, _)| {
+                is_loader(n)
+                    && chosen_loader
+                        .as_deref()
+                        .is_some_and(|c| !c.eq_ignore_ascii_case(n))
+            })
+        };
 
         // Dependencies come from each package's manifest: an installed package's record, or
         // the zip, downloaded once and kept for the install below.
@@ -317,7 +449,7 @@ impl Session {
             let mut deps_of = |pkg: &Package, version: &str| -> std::result::Result<Vec<String>, String> {
                 if let Some((have, deps)) = recorded.get(&pkg.full_name.to_lowercase()) {
                     if compare_versions(have, version) != Ordering::Less {
-                        return Ok(deps.clone());
+                        return Ok(deps.iter().filter(|d| !other_loader(d)).cloned().collect());
                     }
                 }
                 let key = (pkg.full_name.clone(), version.to_string());
@@ -331,9 +463,10 @@ impl Session {
                     zips.insert(key.clone(), bytes);
                 }
                 let manifest = layout::manifest(&zips[&key]).map_err(|e| e.to_string())?;
-                Ok(manifest.map(|m| m.dependencies).unwrap_or_default())
+                let deps = manifest.map(|m| m.dependencies).unwrap_or_default();
+                Ok(deps.into_iter().filter(|d| !other_loader(d)).collect())
             };
-            resolve::resolve(&packages, &installed, wanted, &mut deps_of)
+            resolve::resolve(packages, &installed, wanted, &mut deps_of)
         };
         let plan = match (plan, net_error) {
             (Ok(p), _) => p,
@@ -366,6 +499,22 @@ impl Session {
 
         let mut p = umm_store::load_profile(&game, profile)?;
         let mut changed = false;
+        // A pack installed by name replaces any other pack in this profile: turned off, kept.
+        if let Some(chosen) = wanted.iter().map(|(n, _)| n).find(|n| is_loader(n)) {
+            for other in installed_pkgs
+                .iter()
+                .filter(|o| o.meta.loader && !o.meta.full_name.eq_ignore_ascii_case(chosen))
+            {
+                if let Some(e) = p.mods.iter_mut().find(|e| e.id == other.mod_id && e.enabled) {
+                    e.enabled = false;
+                    changed = true;
+                    report.notes.push(format!(
+                        "Turned off {} in this profile; {} replaces it",
+                        other.meta.full_name, chosen
+                    ));
+                }
+            }
+        }
         for name in &plan.all {
             let mod_id = package_mod_id(name);
             match p.mods.iter_mut().find(|e| e.id == mod_id) {
@@ -386,6 +535,7 @@ impl Session {
         if changed {
             umm_store::save_profile(&game, &p)?;
         }
+        report.warnings.extend(self.loader_architecture_warning(id));
         Ok(report)
     }
 

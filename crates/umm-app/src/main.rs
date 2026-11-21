@@ -42,6 +42,8 @@ macro_rules! umm_handlers {
             commands::ts_refresh,
             commands::ts_install,
             commands::ts_update,
+            commands::ts_lookup,
+            commands::ts_install_unlisted,
             commands::ts_dependents,
             commands::profile_export_preview,
             commands::profile_export_code,
