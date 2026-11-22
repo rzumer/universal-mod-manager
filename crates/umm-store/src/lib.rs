@@ -10,9 +10,9 @@ mod profile;
 
 pub use fsutil::{IoCtx, IoError};
 pub use mods::{
-    archive_kind, import_mod, list_mods, load_mod, remove_mod, set_placement, slugify, verify_mod,
-    ArchiveKind, FileIssue, FileRecord, ImportOptions, Layout, ModMeta, NexusMeta,
-    ThunderstoreMeta, MOD_META_FILE,
+    archive_kind, import_mod, list_mods, load_mod, remove_mod, set_fomod, set_placement, slugify,
+    verify_mod, ArchiveKind, FileIssue, FileRecord, FomodChoice, FomodFile, FomodMeta,
+    ImportOptions, Layout, ModMeta, NexusMeta, ThunderstoreMeta, MOD_META_FILE,
 };
 pub use placement::{LeftOut, Placement};
 pub use profile::{

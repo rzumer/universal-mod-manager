@@ -141,12 +141,15 @@ pub struct NexusInstallDto {
     pub replaced: bool,
     /// UMM could not tell where the files go: the interface asks.
     pub placement_guessed: bool,
+    /// Its FOMOD installer's options need choosing.
+    pub installer_waiting: bool,
 }
 
 impl From<NexusInstallReport> for NexusInstallDto {
     fn from(r: NexusInstallReport) -> Self {
         NexusInstallDto {
             placement_guessed: r.meta.placement.as_ref().is_some_and(|p| p.guessed),
+            installer_waiting: r.meta.fomod.as_ref().is_some_and(|f| !f.done),
             id: r.meta.id,
             name: r.meta.name,
             version: r.meta.version,

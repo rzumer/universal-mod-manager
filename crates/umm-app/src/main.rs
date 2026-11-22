@@ -5,6 +5,7 @@
 
 mod commands;
 mod dto;
+mod fomod;
 mod nexus;
 #[cfg(test)]
 mod tests;
@@ -73,6 +74,9 @@ macro_rules! umm_handlers {
             crate::nexus::nexus_updates,
             crate::nexus::open_nexus_page,
             crate::nexus::open_web_page,
+            crate::fomod::fomod_view,
+            crate::fomod::fomod_apply,
+            crate::fomod::mod_image,
         ]
     };
 }

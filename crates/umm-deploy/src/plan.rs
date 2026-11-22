@@ -96,7 +96,55 @@ pub fn build_plan(
             continue;
         }
         let identity = *identity || meta.layout == Layout::Game;
-        for (file, rec) in &meta.files {
+        // Each stored file to deploy, and its path before the install rules: from the mod's
+        // FOMOD choices, its placement, or as stored.
+        let mut items: Vec<(&String, RelPath)> = Vec::new();
+        match &meta.fomod {
+            Some(f) if !identity && !f.done => {
+                skipped.push(Skipped {
+                    owner: id.clone(),
+                    file: "(all files)".into(),
+                    reason: "its installer's options have not been chosen yet".into(),
+                });
+                continue;
+            }
+            Some(f) if !identity => {
+                let base = meta
+                    .placement
+                    .as_ref()
+                    .map(|p| RelPath::parse(&p.target))
+                    .transpose()?
+                    .unwrap_or_else(|| RelPath::parse("").expect("empty path"));
+                for m in &f.files {
+                    let Some((file, _)) = meta.files.get_key_value(&m.source) else {
+                        return Err(DeployError::MissingMod(format!("{id} ({})", m.source)));
+                    };
+                    items.push((file, base.join(&RelPath::parse(&m.destination)?)));
+                }
+            }
+            _ => {
+                for file in meta.files.keys() {
+                    let rel = RelPath::parse(file)?;
+                    let placed = match meta.placement.as_ref().filter(|_| !identity) {
+                        Some(p) => match p.place(&rel) {
+                            Ok(placed) => placed,
+                            Err(why) => {
+                                skipped.push(Skipped {
+                                    owner: id.clone(),
+                                    file: file.clone(),
+                                    reason: why.reason().to_string(),
+                                });
+                                continue;
+                            }
+                        },
+                        None => rel,
+                    };
+                    items.push((file, placed));
+                }
+            }
+        }
+        for (file, placed) in items {
+            let rec = &meta.files[file];
             let rel = RelPath::parse(file)?;
             let skip = |reason: &str| Skipped {
                 owner: id.clone(),
@@ -104,18 +152,8 @@ pub fn build_plan(
                 reason: reason.to_string(),
             };
             let target = if identity {
-                Some(rel.clone())
+                Some(placed)
             } else {
-                let placed = match &meta.placement {
-                    Some(p) => match p.place(&rel) {
-                        Ok(placed) => placed,
-                        Err(why) => {
-                            skipped.push(skip(why.reason()));
-                            continue;
-                        }
-                    },
-                    None => rel.clone(),
-                };
                 def.map_mod_file(id, &placed)?
             };
             let Some(target) = target else {

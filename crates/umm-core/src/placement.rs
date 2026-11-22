@@ -417,7 +417,7 @@ pub struct PlacedFile {
 }
 
 impl Session {
-    fn game_index(&self, def: &CompiledDef) -> GameIndex {
+    pub(crate) fn game_index(&self, def: &CompiledDef) -> GameIndex {
         match self.install_path(&def.def) {
             Ok(Some((root, _))) => GameIndex::scan(&root),
             _ => GameIndex::default(),
@@ -465,6 +465,12 @@ impl Session {
         if loader == Some(mod_id) {
             return Err(CoreError::Invalid(format!(
                 "{} is the game's mod loader; its files go where the loader needs them",
+                meta.name
+            )));
+        }
+        if meta.fomod.is_some() {
+            return Err(CoreError::Invalid(format!(
+                "{} has a FOMOD installer, which decides where its files go; change its options instead",
                 meta.name
             )));
         }

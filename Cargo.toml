@@ -32,3 +32,4 @@ umm-launch = { path = "crates/umm-launch" }
 umm-thunderstore = { path = "crates/umm-thunderstore" }
 umm-net = { path = "crates/umm-net" }
 umm-nexus = { path = "crates/umm-nexus" }
+umm-fomod = { path = "crates/umm-fomod" }

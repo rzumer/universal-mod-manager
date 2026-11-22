@@ -2,6 +2,7 @@
 
 mod doctor;
 mod downloads;
+mod fomod;
 mod launch;
 mod link;
 mod manual;
@@ -15,6 +16,7 @@ mod ts;
 
 pub use doctor::{Finding, Level};
 pub use downloads::{downloads_dir, DownloadWatch};
+pub use fomod::{FomodGroupView, FomodOptionView, FomodStepView, FomodView};
 pub use launch::{LaunchEvent, LaunchOutcome};
 pub use link::{
     parse_link, system_registry, InstallLink, LinkHandler, SchemeRegistry, LINK_SCHEME,
@@ -36,6 +38,9 @@ pub use ts::{
 pub use umm_deploy::{
     Conflict, DeployError, Faults, Journal, Method as DeployMethod, Op as DeployOp, Plan,
     RevertReport, Skipped,
+};
+pub use umm_fomod::{
+    Choice as FomodChoice, GroupKind as FomodGroupKind, PluginType as FomodOptionKind,
 };
 pub use umm_gamedef::{CompiledDef, GameDef, GameDefError};
 pub use umm_launch::catch_interrupts;
@@ -300,11 +305,11 @@ impl Session {
             .and_then(|l| l.source_mod())
             .is_some_and(|l| opts.id.as_deref() == Some(l));
         let place = opts.unwrap && opts.layout == umm_store::Layout::Raw && !is_loader;
-        let previous = opts
+        let previous_meta = opts
             .id
             .as_deref()
-            .and_then(|m| umm_store::load_mod(&game, m).ok())
-            .and_then(|m| m.placement);
+            .and_then(|m| umm_store::load_mod(&game, m).ok());
+        let previous = previous_meta.as_ref().and_then(|m| m.placement.clone());
         opts.keep_top_dirs.extend(def.content_top_dirs());
         if let Ok(Some((root, _))) = self.install_path(&def.def) {
             if let Ok(rd) = fs::read_dir(&root) {
@@ -336,7 +341,8 @@ impl Session {
             None if place => {
                 opts.unwrap = false;
                 let meta = umm_store::import_mod(&game, src, &opts)?;
-                self.place_imported(&def, meta, previous)?
+                let meta = self.place_imported(&def, meta, previous)?;
+                self.fomod_imported(&def, meta, previous_meta.map(|m| (m.fomod, m.placement)))?
             }
             None => umm_store::import_mod(&game, src, &opts)?,
         };

@@ -68,6 +68,8 @@ pub struct ModDto {
     /// Where its files go can be changed (not a package laid out for the game).
     pub placeable: bool,
     pub placement: Option<PlacementDto>,
+    /// A FOMOD installer: `waiting` until its options are chosen, then `done`.
+    pub installer: Option<&'static str>,
 }
 
 /// Where a mod's files go; see `umm_store::Placement`.
@@ -154,6 +156,10 @@ impl From<ModMeta> for ModDto {
     fn from(m: ModMeta) -> Self {
         ModDto {
             placeable: m.layout == umm_core::ModLayout::Raw && m.thunderstore.is_none(),
+            installer: m
+                .fomod
+                .as_ref()
+                .map(|f| if f.done { "done" } else { "waiting" }),
             placement: m.placement.clone().map(Into::into),
             thunderstore: m.thunderstore.as_ref().map(|t| t.full_name.clone()),
             nexus_url: m

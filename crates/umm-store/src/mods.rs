@@ -36,6 +36,10 @@ pub struct ModMeta {
     /// install rules.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<Placement>,
+    /// For a mod with a FOMOD installer: the choices made and the files they install, which
+    /// replace the placement's folder and skip list (its game folder still applies).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fomod: Option<FomodMeta>,
     /// Path inside the mod (`/`-separated) → size and hash.
     pub files: BTreeMap<String, FileRecord>,
 }
@@ -92,6 +96,36 @@ pub struct NexusMeta {
     /// `MAIN`, `OPTIONAL`, ...
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+}
+
+/// A mod's FOMOD installer, as it was run.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FomodMeta {
+    /// The folder inside the mod holding `fomod/`; empty for the mod's top.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub root: String,
+    /// False until the user has chosen its options: until then nothing of the mod deploys.
+    #[serde(default)]
+    pub done: bool,
+    /// The options chosen, by step, group and option name; replayed on an update.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub choices: Vec<FomodChoice>,
+    /// The files those choices install: path inside the mod → path in the mod's game folder.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<FomodFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FomodChoice {
+    pub step: String,
+    pub group: String,
+    pub plugins: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FomodFile {
+    pub source: String,
+    pub destination: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -264,6 +298,7 @@ fn stage_mod(
         thunderstore: opts.thunderstore.clone(),
         nexus: opts.nexus.clone(),
         placement: None,
+        fomod: None,
         files,
     };
     write_toml(&out.join(MOD_META_FILE), &meta)?;
@@ -483,6 +518,26 @@ pub fn set_placement(game: &GameDir, id: &str, placement: Option<Placement>) -> 
         ),
         None => None,
     };
+    write_toml(&game.mod_dir(id).join(MOD_META_FILE), &meta)?;
+    Ok(meta)
+}
+
+/// Sets or clears a mod's FOMOD installer record. Every file it names must be one of the
+/// mod's own.
+pub fn set_fomod(game: &GameDir, id: &str, fomod: Option<FomodMeta>) -> Result<ModMeta> {
+    let mut meta = load_mod(game, id)?;
+    if let Some(f) = &fomod {
+        for file in &f.files {
+            if !meta.files.contains_key(&file.source) {
+                return Err(StoreError::Placement(format!(
+                    "the installer names `{}`, which the mod does not have",
+                    file.source
+                )));
+            }
+            RelPath::parse(&file.destination)?;
+        }
+    }
+    meta.fomod = fomod;
     write_toml(&game.mod_dir(id).join(MOD_META_FILE), &meta)?;
     Ok(meta)
 }

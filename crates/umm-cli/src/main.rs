@@ -246,6 +246,22 @@ enum Cmd {
     },
     /// List installed mods
     Mods { game: String },
+    /// Show or choose a mod's FOMOD installer options. Without --save, shows what the choices
+    /// (the saved ones, else the installer's defaults, then any --choose) would install.
+    Fomod {
+        game: String,
+        id: String,
+        /// "Step/Group=Option[,Option...]": the options chosen in a group; can be repeated.
+        /// An empty list ("Step/Group=") chooses none.
+        #[arg(long)]
+        choose: Vec<String>,
+        /// The game folder its files go under (default: the saved one, else UMM's suggestion)
+        #[arg(long)]
+        target: Option<String>,
+        /// Save these choices
+        #[arg(long)]
+        save: bool,
+    },
     /// Show or change where a mod's files go in the game folder
     Place {
         game: String,
@@ -642,6 +658,80 @@ fn run(cli: Cli) -> Result<()> {
                         m.id
                     );
                 }
+            }
+        }
+        Cmd::Fomod {
+            game,
+            id,
+            choose,
+            target,
+            save,
+        } => {
+            // Start from what is in effect, and change the groups named.
+            let mut choices = s.fomod_view(&game, &id, None, target.clone())?.choices;
+            for c in &choose {
+                let (place, picks) = c
+                    .split_once('=')
+                    .with_context(|| format!("`{c}`: expected Step/Group=Option,..."))?;
+                let (step, group) = place
+                    .split_once('/')
+                    .with_context(|| format!("`{c}`: expected Step/Group=Option,..."))?;
+                let plugins: Vec<String> = picks
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                    .map(String::from)
+                    .collect();
+                choices.retain(|x| {
+                    !(x.step.eq_ignore_ascii_case(step.trim())
+                        && x.group.eq_ignore_ascii_case(group.trim()))
+                });
+                choices.push(umm_core::FomodChoice {
+                    step: step.trim().into(),
+                    group: group.trim().into(),
+                    plugins,
+                });
+            }
+            let v = s.fomod_view(&game, &id, Some(choices.clone()), target.clone())?;
+            for step in v.steps.iter().filter(|s| s.visible) {
+                println!("{}", step.name);
+                for g in &step.groups {
+                    let problem = g
+                        .problem
+                        .as_deref()
+                        .map(|p| format!("  <- {p}"))
+                        .unwrap_or_default();
+                    println!("  {}/{}{problem}", step.name, g.name);
+                    for o in &g.options {
+                        let mark = if o.selected { "[x]" } else { "[ ]" };
+                        let kind = match o.kind {
+                            umm_core::FomodOptionKind::Required => " (required)",
+                            umm_core::FomodOptionKind::Recommended => " (recommended)",
+                            umm_core::FomodOptionKind::NotUsable => " (not usable)",
+                            _ => "",
+                        };
+                        println!("    {mark} {}{kind}", o.name);
+                    }
+                }
+            }
+            println!(
+                "{} file(s) into {}",
+                v.files.len(),
+                if v.target.is_empty() {
+                    "the game folder"
+                } else {
+                    &v.target
+                }
+            );
+            for m in &v.missing {
+                println!("  missing from the archive: {m}");
+            }
+            if save {
+                let t = target.unwrap_or(v.target.clone());
+                s.fomod_apply(&game, &id, v.choices, t)?;
+                println!("saved");
+            } else if !v.complete {
+                println!("some groups need a choice (see above); use --choose");
             }
         }
         Cmd::Place {

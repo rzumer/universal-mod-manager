@@ -95,6 +95,7 @@ const mods = {
     { id: "hd-textures", name: "HD Textures", version: "1.4", files: 312, size: 2_150_000_000, placeable: true, placement: { root: "HD Textures 1.4", target: "Example_Data", skip: ["HD Textures 1.4/Nexus page.url", "HD Textures 1.4/README.txt"], guessed: false, chosen: false } },
     { id: "quality-of-life", name: "Quality of Life Tweaks", version: "0.9.2", files: 5, size: 95_000 },
     { id: "old-map-mod", name: "Old Map Mod", version: "0.3", files: 2, size: 40_000, placeable: true, placement: { root: "OldMap", target: "", skip: [], guessed: true, chosen: false } },
+    { id: "rock-textures", name: "Better Rocks", version: "2.0", files: 9, size: 48_000_000, placeable: true, installer: "waiting", nexusUrl: "https://www.nexusmods.com/exampleunitygame/mods/88", nexusMod: 88, nexusFile: 8800 },
     { id: "lantern-light", name: "Lantern Light", version: "1.9", files: 6, size: 1_700_000, nexusUrl: "https://www.nexusmods.com/exampleunitygame/mods/77", nexusMod: 77, nexusFile: 3900, placeable: true },
   ],
   "example-asi-game": [],
@@ -102,6 +103,86 @@ const mods = {
 
 /// What UMM suggests for each mod, fixed once first asked.
 const modSuggestions = {};
+
+/// A FOMOD installer, run the way UMM runs one: steps, groups, options and their files.
+const rockInstaller = {
+  name: "Better Rocks",
+  steps: [
+    {
+      name: "Resolution",
+      groups: [
+        {
+          name: "Textures",
+          kind: "exactly_one",
+          options: [
+            { name: "2K", description: "Sharper rocks, for cards with 4 GB of memory or more.\n\nRecommended for most players.", image: "Better Rocks/fomod/images/2k.png", kind: "recommended", files: ["textures/rock.dds", "textures/rock_n.dds"] },
+            { name: "1K", description: "Lighter on memory.", image: null, kind: "optional", files: ["textures/rock.dds"] },
+          ],
+        },
+      ],
+    },
+    {
+      name: "Extras",
+      visibleWith: "2K",
+      groups: [
+        {
+          name: "Moss",
+          kind: "any",
+          options: [
+            { name: "Moss", description: "Moss on the north side of rocks.", image: null, kind: "optional", files: ["textures/moss.dds"] },
+            { name: "Lichen", description: "Needs the Lichen mod, which is not installed.", image: null, kind: "not_usable", files: [] },
+          ],
+        },
+        {
+          name: "Paths",
+          kind: "at_most_one",
+          options: [
+            { name: "Dusty paths", description: "Dust between the rocks.", image: null, kind: "optional", files: ["textures/dust.dds"] },
+            { name: "Muddy paths", description: "Mud between the rocks.", image: null, kind: "optional", files: ["textures/mud.dds"] },
+          ],
+        },
+      ],
+    },
+  ],
+};
+let rockSaved = null;
+
+function runRockInstaller(choices, target) {
+  const pick = (s, g) => choices?.find((c) => c.step === s && c.group === g)?.plugins;
+  let flag = null;
+  const files = ["Rocks.esp"];
+  const kept = [];
+  const steps = rockInstaller.steps.map((s) => {
+    const visible = !s.visibleWith || flag === s.visibleWith;
+    const groups = s.groups.map((g) => {
+      const given = pick(s.name, g.name);
+      let sel = g.options.map((o) => o.kind !== "not_usable" && (given ? given.includes(o.name) : o.kind === "recommended"));
+      if (!given && g.kind === "exactly_one" && !sel.some(Boolean)) sel[0] = true;
+      const count = sel.filter(Boolean).length;
+      const problem = visible && g.kind === "exactly_one" && count !== 1 ? "choose one option" : null;
+      if (visible) {
+        g.options.forEach((o, i) => sel[i] && files.push(...o.files));
+        kept.push({ step: s.name, group: g.name, plugins: g.options.filter((_, i) => sel[i]).map((o) => o.name) });
+      }
+      return { name: g.name, kind: g.kind, problem, options: g.options.map((o, i) => ({ name: o.name, description: o.description, image: o.image, kind: o.kind, selected: visible && sel[i] })) };
+    });
+    if (s.name === "Resolution") flag = groups[0].options.find((o) => o.selected)?.name || null;
+    return { name: s.name, visible, groups };
+  });
+  return {
+    name: rockInstaller.name,
+    image: null,
+    steps,
+    complete: steps.every((s) => s.groups.every((g) => !g.problem)),
+    needsUnmet: false,
+    files: [...new Set(files)].map((d) => ({ source: `Better Rocks/${d}`, destination: d })),
+    missing: [],
+    choices: kept,
+    target: target ?? rockSaved?.target ?? "Example_Data",
+    suggestedTarget: "Example_Data",
+    gameFolders: ["BepInEx", "Example_Data", "Example_Data/StreamingAssets", "MonoBleedingEdge"],
+  };
+}
 
 /// Files inside some mods, for the "Where its files go" dialog.
 const modFiles = {
@@ -120,6 +201,7 @@ const profiles = {
         { id: "hd-textures", enabled: true },
         { id: "quality-of-life", enabled: false },
         { id: "lantern-light", enabled: true },
+        { id: "rock-textures", enabled: true },
       ],
     },
     Vanilla: { name: "Vanilla", mods: [{ id: "bepinex", enabled: true }] },
@@ -231,6 +313,19 @@ const handlers = {
     const suggested = (modSuggestions[id] ??= { root: "", target: "", skip: [], guessed: false, chosen: false, ...(m.placement || {}), chosen: false });
     return { placement: { ...p }, suggested, folders, gameFolders: ["BepInEx", "BepInEx/plugins", "Example_Data", "Example_Data/StreamingAssets", "MonoBleedingEdge"], files: placed };
   },
+  fomod_view: ({ choices, target }) => runRockInstaller(choices ?? rockSaved?.choices, target),
+  fomod_apply: ({ game, id, choices, target }) => {
+    const v = runRockInstaller(choices, target);
+    if (!v.complete) throw "every shown group needs its options chosen first";
+    rockSaved = { choices: v.choices, target };
+    const m = mods[game].find((x) => x.id === id);
+    m.installer = "done";
+    return { ...m, source: null, importedUnix: 0 };
+  },
+  // A tiny picture, standing in for an option's image.
+  mod_image: () =>
+    "data:image/svg+xml;base64," +
+    btoa('<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="#6b7280"/><circle cx="110" cy="120" r="50" fill="#9ca3af"/><circle cx="210" cy="110" r="60" fill="#4b5563"/></svg>'),
   set_placement: ({ game, id, placement }) => {
     const m = mods[game].find((x) => x.id === id);
     m.placement = placement ? { ...placement, guessed: false, chosen: true } : { ...(modSuggestions[id] || m.placement), chosen: false };
@@ -573,7 +668,10 @@ async function nexusInstall(game, profile, modId, fileId) {
     profiles[game][profile].mods.push({ id, enabled: true });
   }
   nexusDomains[game] ||= "exampleunitygame";
-  return { id, name: existing?.name || m.name, version: f.version, replaced: !!existing };
+  // `?installer` previews a downloaded mod with a FOMOD installer.
+  const waiting = q.has("installer") && !existing;
+  if (waiting) Object.assign(list.find((x) => x.id === id), { installer: "waiting", placeable: true });
+  return { id, name: existing?.name || m.name, version: f.version, replaced: !!existing, installerWaiting: waiting };
 }
 
 export const backend = {
