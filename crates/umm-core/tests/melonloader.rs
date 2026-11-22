@@ -195,7 +195,8 @@ fn a_mod_naming_an_old_melonloader_gets_a_newer_one() {
     s.set_loader("melon-quest", LoaderSetup::Thunderstore)
         .unwrap();
 
-    // MelonLoader 0.6.6 cannot load mods from their own folders, so 0.7.3 comes instead.
+    // The mod names MelonLoader 0.6.6 (which cannot load mods from their own folders); the
+    // newest comes instead, as for any dependency.
     let r = s
         .ts_install(
             "melon-quest",
@@ -212,11 +213,6 @@ fn a_mod_naming_an_old_melonloader_gets_a_newer_one() {
     assert!(
         installed.contains(&("LavaGang-MelonLoader", "0.7.3")),
         "{installed:?}"
-    );
-    assert!(
-        r.notes.iter().any(|n| n.contains("0.7.3 instead of 0.6.6")),
-        "{:?}",
-        r.notes
     );
     s.deploy("melon-quest", DEFAULT_PROFILE, &mut Faults::none())
         .unwrap();

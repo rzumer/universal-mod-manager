@@ -1,7 +1,11 @@
 //! Which package versions to install for a request, dependencies first.
 //!
-//! Each dependency names a version (`Owner-Name-1.2.3`). When several packages need the same
-//! one, the highest named version wins; an installed version at least that new is kept.
+//! Each dependency names a version (`Owner-Name-1.2.3`), the one its mod was built against.
+//! As r2modman does, a dependency gets its newest version instead, unless an installed version
+//! at least as new as the named one is kept (installing a mod does not update the others).
+//! A modpack's dependencies, and theirs, get exactly the versions named, so everyone who
+//! installs it gets the same set. When several packages need the same one, the highest
+//! version wins.
 
 use crate::index::{compare_versions, split_dependency, Package};
 use std::cmp::Ordering;
@@ -31,6 +35,8 @@ pub type DepsOf<'d> = dyn FnMut(&Package, &str) -> Result<Vec<String>, String> +
 
 struct Walk<'a, 'd> {
     find: &'a dyn Fn(&str) -> Option<&'a Package>,
+    /// Installed versions, by lower-case `Owner-Name`.
+    installed: HashMap<String, String>,
     deps_of: &'a mut DepsOf<'d>,
     need: BTreeMap<String, String>,
     order: Vec<String>,
@@ -39,8 +45,9 @@ struct Walk<'a, 'd> {
 }
 
 impl<'a> Walk<'a, '_> {
-    /// Depth first, so dependencies come before the packages that need them.
-    fn visit(&mut self, pkg: &'a Package, version: String) -> Result<(), String> {
+    /// Depth first, so dependencies come before the packages that need them. `exact`: under a
+    /// modpack, dependencies get the versions named.
+    fn visit(&mut self, pkg: &'a Package, version: String, exact: bool) -> Result<(), String> {
         let key = pkg.full_name.clone();
         let raised = match self.need.get(&key) {
             Some(v) if compare_versions(&version, v) != Ordering::Greater => false,
@@ -53,18 +60,27 @@ impl<'a> Walk<'a, '_> {
             return Ok(());
         }
         self.stack.push(key.clone());
+        let exact = exact || is_modpack(pkg);
         for dep in (self.deps_of)(pkg, &version)? {
             match split_dependency(&dep)
                 .and_then(|(n, v)| (self.find)(n).map(|p| (p, v.to_string())))
             {
-                Some((p, v)) => {
-                    // A version Thunderstore no longer has: take the latest instead.
-                    let v = if p.version(&v).is_some() {
-                        v
+                Some((p, named)) => {
+                    let latest = p.latest().map(|l| l.version.clone());
+                    let have = self
+                        .installed
+                        .get(&p.full_name.to_lowercase())
+                        .filter(|h| compare_versions(h, &named) != Ordering::Less)
+                        .cloned();
+                    let v = if exact && p.version(&named).is_some() {
+                        named
+                    } else if exact {
+                        // A version Thunderstore no longer has: take the latest instead.
+                        latest.unwrap_or(named)
                     } else {
-                        p.latest().map(|l| l.version.clone()).unwrap_or(v)
+                        have.or(latest).unwrap_or(named)
                     };
-                    self.visit(p, v)?
+                    self.visit(p, v, exact)?
                 }
                 None => {
                     if !self.missing.contains(&dep) {
@@ -96,6 +112,10 @@ pub fn resolve(
     let find = |name: &str| by_name.get(&name.to_lowercase()).copied();
     let mut walk = Walk {
         find: &find,
+        installed: installed
+            .iter()
+            .map(|(k, v)| (k.to_lowercase(), v.clone()))
+            .collect(),
         deps_of,
         need: BTreeMap::new(),
         order: Vec::new(),
@@ -121,7 +141,7 @@ pub fn resolve(
         };
         explicit.push(pkg.full_name.clone());
         walk.stack.clear();
-        walk.visit(pkg, version)?;
+        walk.visit(pkg, version, false)?;
     }
 
     let Walk {
@@ -158,6 +178,13 @@ pub fn resolve(
         all,
         missing,
     })
+}
+
+/// Whether a package is a modpack, whose dependencies are installed at the versions it names.
+fn is_modpack(p: &Package) -> bool {
+    p.categories
+        .iter()
+        .any(|c| c.eq_ignore_ascii_case("Modpacks"))
 }
 
 /// Packages whose installed version is older than the latest on Thunderstore:
@@ -274,6 +301,55 @@ mod tests {
     }
 
     #[test]
+    fn dependencies_get_their_newest_version() {
+        // Bob-Other names Lib-Core 1.0.0, built against it; 2.0.0 is installed instead.
+        let r = resolve(
+            &index(),
+            &HashMap::new(),
+            &[("Bob-Other".into(), None)],
+            &mut from_list,
+        )
+        .unwrap();
+        assert_eq!(
+            names(&r),
+            [
+                "BepInEx-BepInExPack@5.4.2305",
+                "Lib-Core@2.0.0",
+                "Bob-Other@3.0.0"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_modpack_gets_exactly_the_versions_it_names() {
+        let mut packages = index();
+        let mut pack = pkg(
+            "Team-Pack",
+            &[("1.0.0", &["Lib-Core-2.0.0", "Bob-Other-3.0.0"])],
+        );
+        pack.categories = vec!["Modpacks".into()];
+        packages.push(pack);
+        let r = resolve(
+            &packages,
+            &HashMap::new(),
+            &[("Team-Pack".into(), None)],
+            &mut from_list,
+        )
+        .unwrap();
+        // Lib-Core's own dependency is BepInEx 5.4.2100, named; Bob-Other's Lib-Core 1.0.0
+        // loses to the 2.0.0 the pack names.
+        assert_eq!(
+            names(&r),
+            [
+                "BepInEx-BepInExPack@5.4.2100",
+                "Lib-Core@2.0.0",
+                "Bob-Other@3.0.0",
+                "Team-Pack@1.0.0"
+            ]
+        );
+    }
+
+    #[test]
     fn newer_installed_versions_are_kept() {
         let installed = HashMap::from([
             ("BepInEx-BepInExPack".to_string(), "5.4.2305".to_string()),
@@ -291,7 +367,7 @@ mod tests {
             ["Bob-Other@3.0.0"],
             "Lib-Core 2.0.0 satisfies 1.0.0"
         );
-        assert_eq!(r.all, ["Lib-Core", "Bob-Other"]);
+        assert_eq!(r.all, ["BepInEx-BepInExPack", "Lib-Core", "Bob-Other"]);
 
         let old = HashMap::from([("Lib-Core".to_string(), "1.0.0".to_string())]);
         let r = resolve(&index(), &old, &[("Ann-Mod".into(), None)], &mut from_list).unwrap();
