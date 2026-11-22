@@ -8,6 +8,7 @@
 
 mod apply;
 mod faults;
+mod ini;
 mod journal;
 mod lock;
 mod plan;
@@ -17,7 +18,7 @@ pub use apply::{apply, prepare};
 pub use faults::Faults;
 pub use journal::{Journal, Method, Op, Phase, JOURNAL_VERSION};
 pub use lock::GameLock;
-pub use plan::{build_plan, Conflict, Plan, PlannedFile, Skipped};
+pub use plan::{build_plan, Conflict, Plan, PlannedExternal, PlannedFile, PlannedIni, Skipped};
 pub use revert::{revert, RevertReport};
 
 use std::path::PathBuf;

@@ -7,8 +7,9 @@
 use crate::detect::steam_libraries;
 use crate::vdf::{self, Value};
 use crate::{
-    slug, Community, Detect, GameDef, GameDefError, InstallRule, Launch, LoaderSetup, PathSet,
-    SteamRelaunch, Thunderstore, SCHEMA_VERSION, SHIMLOADER_KIND,
+    slug, Community, Detect, GameDef, GameDefError, GameIniCondition, IniSetting, InstallRule,
+    Launch, LoaderSetup, PathSet, PluginListFormat, Plugins, SteamRelaunch, Thunderstore,
+    SCHEMA_VERSION, SHIMLOADER_KIND,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -285,6 +286,258 @@ struct Origin {
     relaunch: SteamRelaunch,
 }
 
+/// A game whose plugins (or mods) must be listed to load, recognised by its own exe in the
+/// game folder: every edition has it, regional ones (Fallout: New Vegas PCR) included,
+/// whichever store it came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ListGame {
+    pub exe: &'static str,
+    pub list: ListAt,
+    /// The folder holding plugins (RimWorld: mods), relative to the game folder.
+    pub folder: &'static str,
+    /// Editions keeping their `plugins.txt` in another folder under local app data: a file
+    /// only that edition has in the game folder, and the folder. As LOOT's libloadorder tells
+    /// them apart.
+    pub editions: &'static [(&'static str, &'static str)],
+    pub format: PluginListFormat,
+    /// Where its `Custom.ini` (and `Prefs.ini`) live, under Documents\My Games, when it needs
+    /// ini settings for mods to load.
+    pub ini: Option<&'static str>,
+}
+
+/// Where a game keeps its list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListAt {
+    /// `plugins.txt` in this folder under the user's local app data.
+    LocalAppData(&'static str),
+    /// This file in the game folder.
+    Game(&'static str),
+    /// This absolute path, with variables (see [`crate::expand_path`]).
+    Path(&'static str),
+}
+
+const fn game(
+    exe: &'static str,
+    dir: &'static str,
+    editions: &'static [(&'static str, &'static str)],
+    format: PluginListFormat,
+    ini: Option<&'static str>,
+) -> ListGame {
+    ListGame {
+        exe,
+        list: ListAt::LocalAppData(dir),
+        folder: "Data",
+        editions,
+        format,
+        ini,
+    }
+}
+
+const fn other(
+    exe: &'static str,
+    list: ListAt,
+    folder: &'static str,
+    format: PluginListFormat,
+) -> ListGame {
+    ListGame {
+        exe,
+        list,
+        folder,
+        editions: &[],
+        format,
+        ini: None,
+    }
+}
+
+use PluginListFormat::{Asterisk, MorrowindIni, Plain, RimworldXml};
+
+/// RimWorld's list, in its folder under `AppData\LocalLow` (which has no variable of its own).
+const RIMWORLD_LIST: &str =
+    "%USERPROFILE%/AppData/LocalLow/Ludeon Studios/RimWorld by Ludeon Studios/Config/ModsConfig.xml";
+
+/// Games keeping a list, VR editions before the flat ones they share files with.
+pub const LIST_GAMES: &[ListGame] = &[
+    game("SkyrimVR.exe", "Skyrim VR", &[], Asterisk, None),
+    game(
+        "SkyrimSE.exe",
+        "Skyrim Special Edition",
+        &[
+            // Only GOG's installer installs Galaxy64.dll.
+            ("Galaxy64.dll", "Skyrim Special Edition GOG"),
+            ("EOSSDK-Win64-Shipping.dll", "Skyrim Special Edition EPIC"),
+            ("appxmanifest.xml", "Skyrim Special Edition MS"),
+        ],
+        Asterisk,
+        None,
+    ),
+    game("Fallout4VR.exe", "Fallout4VR", &[], Asterisk, None),
+    game(
+        "Fallout4.exe",
+        "Fallout4",
+        &[
+            ("appxmanifest.xml", "Fallout4 MS"),
+            ("EOSSDK-Win64-Shipping.dll", "Fallout4 EPIC"),
+        ],
+        Asterisk,
+        Some("Fallout4"),
+    ),
+    game(
+        "Starfield.exe",
+        "Starfield",
+        &[],
+        Asterisk,
+        Some("Starfield"),
+    ),
+    game("TESV.exe", "Skyrim", &[], Plain, None),
+    game(
+        "FalloutNV.exe",
+        "FalloutNV",
+        &[("EOSSDK-Win32-Shipping.dll", "FalloutNV_Epic")],
+        Plain,
+        None,
+    ),
+    game("Fallout3.exe", "Fallout3", &[], Plain, None),
+    game("Oblivion.exe", "Oblivion", &[], Plain, None),
+    // Its plugins and their list are in the Unreal project's content folder.
+    other(
+        "OblivionRemastered.exe",
+        ListAt::Game("OblivionRemastered/Content/Dev/ObvData/Data/Plugins.txt"),
+        "OblivionRemastered/Content/Dev/ObvData/Data",
+        Plain,
+    ),
+    other(
+        "Morrowind.exe",
+        ListAt::Game("Morrowind.ini"),
+        "Data Files",
+        MorrowindIni,
+    ),
+    other(
+        "RimWorldWin64.exe",
+        ListAt::Path(RIMWORLD_LIST),
+        "Mods",
+        RimworldXml,
+    ),
+    other(
+        "RimWorldWin.exe",
+        ListAt::Path(RIMWORLD_LIST),
+        "Mods",
+        RimworldXml,
+    ),
+];
+
+/// The game keeping a list whose exe is at the top of a game folder (`exes`, relative paths,
+/// as [`Inspection`] lists them).
+pub fn list_game(exes: &[String]) -> Option<&'static ListGame> {
+    LIST_GAMES.iter().find(|g| {
+        exes.iter()
+            .any(|x| !x.contains('/') && x.eq_ignore_ascii_case(g.exe))
+    })
+}
+
+/// Gives a draft of a game keeping a list its plugin list (for the edition in `folder`), the
+/// ini settings it needs, and (RimWorld) a folder per mod, with notes. Other games are left
+/// as they are.
+fn add_list_game(draft: &mut Draft, folder: &Path, found: &Inspection) {
+    let Some(g) = list_game(&found.exes) else {
+        return;
+    };
+    let plugins = g.plugins(folder);
+    let note = match g.format {
+        Asterisk | Plain => format!(
+            "Bethesda game: while mods are deployed, UMM enables their plugins in {}.",
+            plugins.list
+        ),
+        MorrowindIni => "Morrowind: while mods are deployed, UMM enables their plugins in the [Game Files] section of Morrowind.ini. The game loads plugins in the order of their file dates.".into(),
+        RimworldXml => format!(
+            "RimWorld: each mod goes in its own folder in Mods/, and while mods are deployed, UMM activates them in {}, in load order.",
+            plugins.list
+        ),
+    };
+    draft.notes.push(Note::new("plugins", note));
+    if g.format == RimworldXml && draft.setup == LoaderSetup::Generic {
+        for r in &mut draft.def.install {
+            if r.pattern == "**" && r.target.is_empty() {
+                r.target = format!("{}/{{mod}}/", g.folder);
+            }
+        }
+    }
+    draft.def.plugins = Some(plugins);
+    draft.def.ini = g.ini();
+    if !draft.def.ini.is_empty() {
+        draft.notes.push(Note::new(
+            "ini",
+            "Bethesda game: UMM sets the ini settings it needs to load mods (listed in this file) while they are deployed, and puts them back afterwards.",
+        ));
+    }
+}
+
+impl ListGame {
+    /// Its plugin list, for the edition installed in `folder`.
+    pub fn plugins(&self, folder: &Path) -> Plugins {
+        let list = match self.list {
+            ListAt::LocalAppData(dir) => {
+                let dir = self
+                    .editions
+                    .iter()
+                    .find(|(marker, _)| folder.join(marker).exists())
+                    .map_or(dir, |(_, dir)| *dir);
+                format!("%LOCALAPPDATA%/{dir}/plugins.txt")
+            }
+            ListAt::Game(p) | ListAt::Path(p) => p.into(),
+        };
+        Plugins {
+            list,
+            format: self.format,
+            folder: self.folder.into(),
+            // Oblivion set not to use My Games keeps its list in its own folder.
+            in_game_folder_when: (self.exe == "Oblivion.exe").then(|| GameIniCondition {
+                ini: "Oblivion.ini".into(),
+                section: "General".into(),
+                key: "bUseMyGamesDirectory".into(),
+                value: "0".into(),
+            }),
+        }
+    }
+
+    /// The ini settings it needs for mods to load: Fallout 4 reads its plugin list only with
+    /// `bEnableFileSelection`, and Fallout 4 and Starfield load loose files (outside `.ba2`
+    /// archives) only with archive invalidation in their `Custom.ini`, a file of overrides UMM
+    /// may create.
+    pub fn ini(&self) -> Vec<IniSetting> {
+        let Some(dir) = self.ini else {
+            return Vec::new();
+        };
+        let set = |file: String, section: &str, key: &str, value: &str, create: bool| IniSetting {
+            file,
+            section: section.into(),
+            key: key.into(),
+            value: value.into(),
+            create,
+        };
+        let base = format!("%DOCUMENTS%/My Games/{dir}");
+        let mut v = Vec::new();
+        if dir == "Fallout4" {
+            v.push(set(
+                format!("{base}/Fallout4Prefs.ini"),
+                "Launcher",
+                "bEnableFileSelection",
+                "1",
+                false,
+            ));
+        }
+        let custom = format!("{base}/{dir}Custom.ini");
+        v.push(set(
+            custom.clone(),
+            "Archive",
+            "bInvalidateOlderFiles",
+            "1",
+            true,
+        ));
+        v.push(set(custom, "Archive", "sResourceDataDirsFinal", "", true));
+        v
+    }
+}
+
 /// Drafts a game definition with the given setup. `community` is the game's Thunderstore
 /// community, needed for [`LoaderSetup::Thunderstore`].
 pub fn draft_definition(
@@ -313,7 +566,9 @@ pub fn draft_from(
         // DRM all apply. UMM finds the game by its process names.
         relaunch: SteamRelaunch::ViaSteam,
     };
-    build(origin, found, &found.exe, setup, community)
+    let mut draft = build(origin, found, &found.exe, setup, community)?;
+    add_list_game(&mut draft, &app.path, found);
+    Ok(draft)
 }
 
 /// Drafts a definition for a game added by hand: its folder, the name to show, and the exe
@@ -341,7 +596,9 @@ pub fn draft_manual(
         },
         relaunch: SteamRelaunch::None,
     };
-    build(origin, found, exe, setup, community)
+    let mut draft = build(origin, found, exe, setup, community)?;
+    add_list_game(&mut draft, folder, found);
+    Ok(draft)
 }
 
 fn build(
@@ -475,6 +732,8 @@ fn build(
         launch,
         loader: None,
         nexus: None,
+        plugins: None,
+        ini: Vec::new(),
         thunderstore: community.map(|c| Thunderstore {
             community: c.label.to_string(),
         }),
@@ -651,6 +910,155 @@ mod tests {
             ["Trip.exe", "Trip-Win64-Shipping.exe"],
             "the launcher and the real exe it hands off to"
         );
+
+        // Bethesda games get their plugin list, recognised by their exe.
+        let exe = |e: &str| list_game(&[e.to_string()]).unwrap();
+        let steam = tempfile::tempdir().unwrap();
+        let sse = exe("SkyrimSE.exe").plugins(steam.path());
+        assert_eq!(
+            (sse.list.as_str(), sse.format, sse.folder.as_str()),
+            (
+                "%LOCALAPPDATA%/Skyrim Special Edition/plugins.txt",
+                PluginListFormat::Asterisk,
+                "Data"
+            )
+        );
+        // Any edition, regional ones included, has the exe; case does not matter.
+        let exes = vec![
+            "FalloutNVLauncher.exe".to_string(),
+            "falloutnv.exe".to_string(),
+        ];
+        let nv = list_game(&exes).unwrap();
+        assert_eq!(
+            (nv.list, nv.format),
+            (ListAt::LocalAppData("FalloutNV"), PluginListFormat::Plain)
+        );
+        let vr = vec!["Fallout4VR.exe".to_string(), "Fallout4.exe".to_string()];
+        assert_eq!(
+            list_game(&vr).unwrap().list,
+            ListAt::LocalAppData("Fallout4VR")
+        );
+        assert!(list_game(&["Game.exe".to_string(), "bin/SkyrimSE.exe".to_string()]).is_none());
+        let fo4 = exe("Fallout4.exe").ini();
+        assert_eq!(fo4.len(), 3);
+        assert!(
+            !fo4[0].create && fo4[1].create,
+            "Prefs is the game's own; Custom is overrides"
+        );
+        assert_eq!(
+            fo4[1].file,
+            "%DOCUMENTS%/My Games/Fallout4/Fallout4Custom.ini"
+        );
+        let sf = exe("Starfield.exe").ini();
+        assert_eq!(
+            (sf[0].file.as_str(), sf[1].value.as_str()),
+            ("%DOCUMENTS%/My Games/Starfield/StarfieldCustom.ini", "")
+        );
+        assert!(exe("SkyrimSE.exe").ini().is_empty());
+
+        // Other stores' editions keep their list elsewhere, told apart by a file of theirs.
+        let gog = tempfile::tempdir().unwrap();
+        touch(&gog.path().join("Galaxy64.dll"), 1);
+        assert_eq!(
+            exe("SkyrimSE.exe").plugins(gog.path()).list,
+            "%LOCALAPPDATA%/Skyrim Special Edition GOG/plugins.txt"
+        );
+        let epic = tempfile::tempdir().unwrap();
+        touch(&epic.path().join("EOSSDK-Win32-Shipping.dll"), 1);
+        assert_eq!(
+            exe("FalloutNV.exe").plugins(epic.path()).list,
+            "%LOCALAPPDATA%/FalloutNV_Epic/plugins.txt"
+        );
+        // Oblivion's list moves to its own folder when its ini says not to use My Games.
+        let c = exe("Oblivion.exe")
+            .plugins(gog.path())
+            .in_game_folder_when
+            .unwrap();
+        assert_eq!(
+            (c.ini.as_str(), c.key.as_str(), c.value.as_str()),
+            ("Oblivion.ini", "bUseMyGamesDirectory", "0")
+        );
+        assert!(exe("SkyrimSE.exe")
+            .plugins(gog.path())
+            .in_game_folder_when
+            .is_none());
+        // GOG's Fallout 4 uses the same folder as Steam's.
+        assert_eq!(
+            exe("Fallout4.exe").plugins(gog.path()).list,
+            "%LOCALAPPDATA%/Fallout4/plugins.txt"
+        );
+
+        // A game added by hand (a GOG install, say) is recognised the same way.
+        let manual = tempfile::tempdir().unwrap();
+        touch(&manual.path().join("FalloutNV.exe"), 100);
+        touch(&manual.path().join("Data/FalloutNV.esm"), 1);
+        let found = inspect_folder(manual.path());
+        let d = draft_manual(
+            manual.path(),
+            "New Vegas",
+            "FalloutNV.exe",
+            &found,
+            LoaderSetup::Generic,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            d.def.plugins.unwrap().list,
+            "%LOCALAPPDATA%/FalloutNV/plugins.txt"
+        );
+
+        // Other games keeping a list: in the game folder, or with a folder per mod.
+        let or = exe("OblivionRemastered.exe").plugins(manual.path());
+        assert_eq!(
+            (or.list.as_str(), or.folder.as_str(), or.format),
+            (
+                "OblivionRemastered/Content/Dev/ObvData/Data/Plugins.txt",
+                "OblivionRemastered/Content/Dev/ObvData/Data",
+                PluginListFormat::Plain
+            )
+        );
+        assert_eq!(
+            or.list_path(Path::new("C:/g")),
+            Some(PathBuf::from(
+                "C:/g/OblivionRemastered/Content/Dev/ObvData/Data/Plugins.txt"
+            ))
+        );
+        let mw = exe("Morrowind.exe").plugins(manual.path());
+        assert_eq!(
+            (mw.list.as_str(), mw.folder.as_str(), mw.format),
+            (
+                "Morrowind.ini",
+                "Data Files",
+                PluginListFormat::MorrowindIni
+            )
+        );
+        let rim = tempfile::tempdir().unwrap();
+        touch(&rim.path().join("RimWorldWin64.exe"), 100);
+        touch(&rim.path().join("RimWorldWin64_Data/x"), 1);
+        touch(&rim.path().join("UnityPlayer.dll"), 1);
+        let found = inspect_folder(rim.path());
+        let d = draft_manual(
+            rim.path(),
+            "RimWorld",
+            "RimWorldWin64.exe",
+            &found,
+            LoaderSetup::Generic,
+            None,
+        )
+        .unwrap();
+        let p = d.def.plugins.as_ref().unwrap();
+        assert_eq!(
+            (p.format, p.folder.as_str()),
+            (PluginListFormat::RimworldXml, "Mods")
+        );
+        assert!(p.list.ends_with("/Config/ModsConfig.xml"));
+        assert_eq!(
+            d.def.install.last().unwrap().target,
+            "Mods/{mod}/",
+            "a folder per mod"
+        );
+        let text = to_toml(&d);
+        GameDef::parse_game(&text, Path::new("game.toml"), &d.def.id).unwrap();
 
         let plain = draft_for(&apps, 1004);
         assert_eq!(plain.engine, Engine::Unknown);

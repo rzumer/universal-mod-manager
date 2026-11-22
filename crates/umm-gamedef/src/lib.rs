@@ -47,6 +47,14 @@ pub struct GameDef {
     /// The game on Nexus Mods, when UMM installs its mods from there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nexus: Option<Nexus>,
+    /// The game's list of enabled plugins, which UMM writes while mods are deployed
+    /// (Bethesda games' `plugins.txt`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugins: Option<Plugins>,
+    /// Settings in the game's ini files that UMM sets while mods are deployed, and puts back
+    /// afterwards (Fallout 4's `bEnableFileSelection`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ini: Vec<IniSetting>,
     #[serde(default)]
     pub install: Vec<InstallRule>,
     /// Game paths that are never replaced, even if a mod ships them.
@@ -111,6 +119,122 @@ pub struct Thunderstore {
 pub struct Nexus {
     /// The game's name in Nexus URLs, as in `nexusmods.com/<domain>/mods/`.
     pub domain: String,
+}
+
+/// A game that only loads the plugins or mods a list file names (Bethesda games, RimWorld).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Plugins {
+    /// The list file: an absolute path with variables (see [`expand_path`]:
+    /// `%LOCALAPPDATA%/Skyrim Special Edition/plugins.txt`), or a path relative to the game
+    /// folder (`Morrowind.ini`).
+    pub list: String,
+    #[serde(default)]
+    pub format: PluginListFormat,
+    /// The folder holding plugins, relative to the game folder. For
+    /// [`PluginListFormat::RimworldXml`], the folder holding one folder per mod.
+    #[serde(default = "default_plugin_folder")]
+    pub folder: String,
+    /// When this setting of an ini file in the game folder holds, the list is in the game
+    /// folder instead (Oblivion with `bUseMyGamesDirectory=0`). Checked at each deploy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_game_folder_when: Option<GameIniCondition>,
+}
+
+/// A setting of an ini file in the game folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GameIniCondition {
+    /// Relative to the game folder.
+    pub ini: String,
+    pub section: String,
+    pub key: String,
+    pub value: String,
+}
+
+fn default_plugin_folder() -> String {
+    "Data".into()
+}
+
+/// How a plugin list marks plugins.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginListFormat {
+    /// Every plugin listed in load order, enabled ones starting with `*` (Skyrim Special
+    /// Edition, Fallout 4, Starfield).
+    #[default]
+    Asterisk,
+    /// Only enabled plugins are listed, one per line (Oblivion, Oblivion Remastered, Fallout
+    /// 3, Fallout: New Vegas, Skyrim Legendary Edition).
+    Plain,
+    /// Morrowind: enabled plugins as `GameFile0=`, `GameFile1=`... in the `[Game Files]`
+    /// section of `Morrowind.ini`. The game loads them in the order of their file dates.
+    MorrowindIni,
+    /// RimWorld: active mods as `<li>` entries of `<activeMods>` in `ModsConfig.xml`, in load
+    /// order, by the `packageId` in each mod's `About/About.xml`.
+    RimworldXml,
+}
+
+/// The file extensions of plugins.
+pub const PLUGIN_EXTENSIONS: &[&str] = &["esm", "esl", "esp"];
+
+impl Plugins {
+    /// The list file's path, with variables filled in (see [`expand_path`]), or in the game
+    /// folder `root` when relative. `None` when a variable is not set.
+    pub fn list_path(&self, root: &Path) -> Option<PathBuf> {
+        match self.relative_list() {
+            Some(r) => Some(r.to_path(root)),
+            None => expand_path(&self.list),
+        }
+    }
+
+    /// The list file's path in the game folder, when it is given as one.
+    pub fn relative_list(&self) -> Option<RelPath> {
+        if self.list.contains('%') || Path::new(&self.list).is_absolute() {
+            return None;
+        }
+        RelPath::parse(&self.list).ok().filter(|r| !r.is_root())
+    }
+}
+
+/// One setting in an ini file outside the game folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IniSetting {
+    /// The file: an absolute path with variables, as for [`Plugins::list`].
+    pub file: String,
+    pub section: String,
+    pub key: String,
+    pub value: String,
+    /// Create the file when it does not exist (a `Custom.ini` of overrides), and delete it
+    /// again afterwards if nothing else was added to it. Otherwise a missing file is left for
+    /// the game to write.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub create: bool,
+}
+
+/// A path written with variables: `%NAME%` for an environment variable, and `%DOCUMENTS%`
+/// for the user's Documents folder (wherever Windows keeps it). `None` when a variable is not
+/// set or the result is not an absolute path.
+pub fn expand_path(s: &str) -> Option<PathBuf> {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(i) = rest.find('%') {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 1..];
+        let j = after.find('%')?;
+        let name = &after[..j];
+        let value = if name.eq_ignore_ascii_case("DOCUMENTS") {
+            dirs::document_dir()?.display().to_string()
+        } else {
+            std::env::var(name).ok()?
+        };
+        out.push_str(&value);
+        rest = &after[j + 1..];
+    }
+    out.push_str(rest);
+    let p = PathBuf::from(out);
+    p.is_absolute().then_some(p)
 }
 
 /// Whether `s` can be a Nexus game domain name (lower-case letters, digits, `-` and `_`).
@@ -503,6 +627,46 @@ impl GameDef {
                 "[nexus] domain `{}` is not a Nexus Mods game name (lower-case letters, digits, - and _)",
                 n.domain
             )));
+        }
+        if let Some(p) = &self.plugins {
+            RelPath::parse(&p.folder)
+                .map_err(|e| GameDefError::Unsupported(format!("[plugins] folder: {e}")))?;
+            if p.list.trim().is_empty() {
+                return Err(GameDefError::Unsupported("[plugins] list is empty".into()));
+            }
+            let absolute = p.list.contains('%') || Path::new(&p.list).is_absolute();
+            if !absolute && p.relative_list().is_none() {
+                return Err(GameDefError::Unsupported(format!(
+                    "[plugins] list `{}` must be an absolute path or a file in the game folder",
+                    p.list
+                )));
+            }
+            if let Some(c) = &p.in_game_folder_when {
+                RelPath::parse(&c.ini)
+                    .ok()
+                    .filter(|r| !r.is_root())
+                    .ok_or_else(|| {
+                        GameDefError::Unsupported(format!(
+                            "[plugins.in_game_folder_when] ini `{}` must be a file in the game folder",
+                            c.ini
+                        ))
+                    })?;
+            }
+        }
+        for s in &self.ini {
+            let bad = |what: &str| GameDefError::Unsupported(format!("[[ini]] {what}"));
+            if s.file.trim().is_empty() {
+                return Err(bad("file is empty"));
+            }
+            if s.section.trim().is_empty() || s.section.contains([']', '\n', '\r']) {
+                return Err(bad("section must be a plain name"));
+            }
+            if s.key.trim().is_empty() || s.key.contains(['=', '\n', '\r']) {
+                return Err(bad("key must be a plain name"));
+            }
+            if s.value.contains(['\n', '\r']) {
+                return Err(bad("value must be on one line"));
+            }
         }
         if let Some(loader) = &self.loader {
             if let Some(src) = &loader.source {

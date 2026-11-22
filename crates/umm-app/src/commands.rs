@@ -139,7 +139,13 @@ pub async fn preview_plan(
     game: String,
     profile: String,
 ) -> Res<PlanDto> {
-    blocking(&state, move |s| s.plan(&game, &profile).map(Into::into)).await
+    blocking(&state, move |s| {
+        let mut dto: PlanDto = s.plan(&game, &profile)?.into();
+        dto.plugins = s.plugin_list_preview(&game, &profile)?.map(Into::into);
+        dto.settings = s.ini_preview(&game)?.into_iter().map(Into::into).collect();
+        Ok(dto)
+    })
+    .await
 }
 
 /// Opens a native picker. `kind` is "archive" (a .zip) or "folder".

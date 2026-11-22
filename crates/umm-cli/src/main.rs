@@ -820,6 +820,34 @@ fn run(cli: Cli) -> Result<()> {
                     println!("  {}:{} ({})", k.owner, k.file, k.reason);
                 }
             }
+            for i in s.ini_preview(&game)? {
+                let now = match (&i.current, i.exists) {
+                    (_, false) if i.create => "file created while deployed".to_string(),
+                    (_, false) => "file not written by the game yet: left alone".to_string(),
+                    (Some(v), _) if *v == i.value => "already set".to_string(),
+                    (Some(v), _) => format!("now {v}"),
+                    (None, _) => "not set now".to_string(),
+                };
+                println!(
+                    "ini {} [{}] {}={} while deployed ({now})",
+                    i.path.display(),
+                    i.section,
+                    i.key,
+                    i.value
+                );
+            }
+            if let Some(list) = s.plugin_list_preview(&game, &profile)? {
+                println!("plugin list {} while deployed:", list.path.display());
+                for e in &list.entries {
+                    let on = if e.enabled { "[x]" } else { "[ ]" };
+                    let from = e
+                        .owner
+                        .as_deref()
+                        .map(|o| format!("  <- {o}"))
+                        .unwrap_or_default();
+                    println!("  {on} {}{from}", e.name);
+                }
+            }
         }
         Cmd::Deploy { game, profile } => {
             let j = s.deploy(&game, &profile, &mut Faults::none())?;

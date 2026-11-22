@@ -185,6 +185,14 @@ pub fn suggest(files: &[&str], game: &GameIndex, def: &CompiledDef) -> Option<Pl
         .iter()
         .filter_map(|f| RelPath::parse(f).ok())
         .collect();
+    if def
+        .def
+        .plugins
+        .as_ref()
+        .is_some_and(|p| p.format == umm_gamedef::PluginListFormat::RimworldXml)
+    {
+        return rimworld_root(&rels);
+    }
     let mut roots: Vec<String> = vec![String::new()];
     let mut seen: HashSet<String> = HashSet::new();
     for r in &rels {
@@ -278,6 +286,37 @@ pub fn suggest(files: &[&str], game: &GameIndex, def: &CompiledDef) -> Option<Pl
         skip,
         guessed,
         chosen: false,
+    };
+    (p != Placement::default()).then_some(p)
+}
+
+/// A RimWorld mod's folder is the one holding `About/About.xml`: whatever wraps it is
+/// dropped (the install rules give each mod its own folder in `Mods/`). Several at the same
+/// depth (a pack of mods) is a guess.
+fn rimworld_root(rels: &[RelPath]) -> Option<Placement> {
+    let mut roots: Vec<(usize, String)> = rels
+        .iter()
+        .filter(|r| {
+            let c: Vec<&str> = r.components().collect();
+            c.len() >= 2
+                && c[c.len() - 1].eq_ignore_ascii_case("About.xml")
+                && c[c.len() - 2].eq_ignore_ascii_case("About")
+        })
+        .map(|r| {
+            let root = r
+                .parent()
+                .and_then(|p| p.parent())
+                .unwrap_or_else(RelPath::root);
+            (root.depth(), root.as_str().to_string())
+        })
+        .collect();
+    roots.sort();
+    let (depth, root) = roots.first()?.clone();
+    let guessed = roots.get(1).is_some_and(|(d, _)| *d == depth);
+    let p = Placement {
+        root,
+        guessed,
+        ..Default::default()
     };
     (p != Placement::default()).then_some(p)
 }

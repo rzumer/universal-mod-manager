@@ -680,6 +680,46 @@ function filesTab() {
       h("h3", {}, "Skipped files"),
       table(["Mod", "File", "Why"], p.skipped.map((s) => [s.owner, h("code", {}, s.file), s.reason])),
     ],
+    p.settings?.length > 0 && [
+      h("h3", {}, "Game settings"),
+      h("p", { class: "muted" }, "Set while mods are deployed, and put back afterwards. The rest of each file is left as the game keeps it."),
+      table(
+        ["File", "Setting", "Now"],
+        p.settings.map((s) => [
+          h("code", {}, s.path),
+          h("code", {}, `[${s.section}] ${s.key}=${s.value}`),
+          !s.exists
+            ? h("span", { class: "muted" }, s.create ? "file created while deployed" : "the game has not written this file yet; left alone")
+            : s.current === s.value
+              ? h("span", { class: "muted" }, "already set")
+              : s.current == null
+                ? "not set"
+                : `${s.key}=${s.current}`,
+        ]),
+      ),
+    ],
+    p.plugins && [
+      h("h3", {}, p.plugins.kind === "mods" ? "Mod list" : "Plugins"),
+      h(
+        "p",
+        { class: "muted" },
+        p.plugins.kind === "mods"
+          ? "This game uses a list to enable your mods and set their load order."
+          : "This game uses a list to enable plugins included with your mods and set their load order.",
+        " While you play, UMM adds its mods to the end of your list, if you have one.",
+        p.plugins.kind === "dated" ? " Note: this game loads plugins in the order of their file dates." : "",
+        " ",
+        h("code", {}, p.plugins.path),
+      ),
+      table(
+        ["", p.plugins.kind === "mods" ? "Mod" : "Plugin", "From"],
+        p.plugins.entries.map((e, i) => [
+          h("span", { class: "muted" }, i + 1),
+          e.enabled ? h("code", {}, e.name) : h("code", { class: "muted", title: "Listed but not enabled" }, `${e.name} (off)`),
+          e.owner || h("span", { class: "muted" }, "your list"),
+        ]),
+      ),
+    ],
     h(
       "details",
       { class: "all-files" },

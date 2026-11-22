@@ -286,6 +286,20 @@ const handlers = {
     return {
       files,
       conflicts,
+      // `?plugins` previews a game with a plugin list (a Bethesda game).
+      plugins: q.has("plugins")
+        ? {
+            path: String.raw`C:\Users\you\AppData\Local\Skyrim Special Edition\plugins.txt`,
+            kind: q.get("plugins") || "plugins",
+            entries: [
+              { name: "ccBGSSSE001-Fish.esm", enabled: true, owner: null },
+              { name: "OldThing.esp", enabled: false, owner: null },
+              { name: "BetterRocks.esm", enabled: true, owner: "rock-textures" },
+              { name: "BetterRocks.esp", enabled: true, owner: "rock-textures" },
+              { name: "LanternLight.esp", enabled: true, owner: "lantern-light" },
+            ],
+          }
+        : null,
       skipped: on.includes("hd-textures")
         ? [{ owner: "hd-textures", file: "ExampleGame.exe", reason: "ExampleGame.exe is protected by the game definition" }]
         : [],

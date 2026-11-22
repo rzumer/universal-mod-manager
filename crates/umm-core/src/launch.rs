@@ -184,6 +184,8 @@ impl Session {
             }
         }
 
+        self.plan_plugin_list(&def, &profile, &mut plan, &root)?;
+        plan.ini = self.plan_ini(&def)?;
         let mut journal = prepare(&game, &plan, &root, false)?;
         apply(&game, &mut journal, faults)?;
         Ok((journal, runtime, injection))

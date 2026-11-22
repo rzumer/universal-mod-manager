@@ -9,6 +9,9 @@ use umm_gamedef::{RelPath, IN_GAME_BACKUP_DIR};
 use umm_store::fsutil::{clear_readonly, hash_file, unix_now, IoCtx};
 use umm_store::GameDir;
 
+/// Where the originals of files outside the game folder are kept, in the backups.
+pub(crate) const EXTERNAL_BACKUPS: &str = ".external";
+
 /// Inspects the game folder and turns a plan into journal operations. Reads only.
 pub fn prepare(
     game: &GameDir,
@@ -100,6 +103,83 @@ pub fn prepare(
     dirs.sort_by(|a, b| a.depth().cmp(&b.depth()).then_with(|| a.cmp(b)));
     let mut ops: Vec<Op> = dirs.into_iter().map(|path| Op::Mkdir { path }).collect();
     ops.extend(file_ops);
+    for (i, e) in plan.external.iter().enumerate() {
+        if !e.path.is_absolute() {
+            return Err(DeployError::Changed(e.path.display().to_string()));
+        }
+        let orig_hash = match fs::symlink_metadata(&e.path) {
+            Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+            Err(err) => {
+                return Err(umm_store::fsutil::io_err(
+                    err,
+                    format!("inspecting {}", e.path.display()),
+                )
+                .into())
+            }
+            Ok(m) if !m.is_file() => {
+                return Err(DeployError::TargetIsDir(e.path.display().to_string()))
+            }
+            Ok(_) => Some(hash_file(&e.path).ctx(|| format!("hashing {}", e.path.display()))?),
+        };
+        let name = e
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        ops.push(Op::External {
+            path: e.path.clone(),
+            src: e.source.clone(),
+            hash: e.hash.clone(),
+            orig_hash,
+            backup: backup_root
+                .join(EXTERNAL_BACKUPS)
+                .join(format!("{i}-{name}")),
+        });
+    }
+    // Files the settings create: the first setting creates one, the next ones add to it.
+    let mut creating: Vec<PathBuf> = Vec::new();
+    for s in &plan.ini {
+        if !s.path.is_absolute() {
+            return Err(DeployError::Changed(s.path.display().to_string()));
+        }
+        let text = match fs::read(&s.path) {
+            Ok(b) => Some(String::from_utf8_lossy(&b).into_owned()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => {
+                return Err(
+                    umm_store::fsutil::io_err(e, format!("reading {}", s.path.display())).into(),
+                )
+            }
+        };
+        let created = match &text {
+            Some(_) => false,
+            // A file the game has not written yet is left for it to write, unless it is one
+            // of overrides that may be created.
+            None if !s.create => continue,
+            None if creating.contains(&s.path) => false,
+            None => {
+                creating.push(s.path.clone());
+                true
+            }
+        };
+        let orig = text
+            .as_deref()
+            .and_then(|t| crate::ini::get(t, &s.section, &s.key));
+        if orig.as_deref() == Some(s.value.as_str()) {
+            continue;
+        }
+        ops.push(Op::IniSet {
+            section_added: !text
+                .as_deref()
+                .is_some_and(|t| crate::ini::has_section(t, &s.section)),
+            path: s.path.clone(),
+            section: s.section.clone(),
+            key: s.key.clone(),
+            value: s.value.clone(),
+            orig,
+            created,
+        });
+    }
 
     Ok(Journal {
         version: JOURNAL_VERSION,
@@ -201,7 +281,100 @@ fn apply_op(j: &Journal, op: &Op, faults: &mut Faults) -> Result<(), DeployError
             fs::rename(&dst, &backup).ctx(|| format!("backing up {}", dst.display()))?;
             place(src, &dst, *method, faults)
         }
+        Op::External {
+            path,
+            src,
+            orig_hash,
+            backup,
+            ..
+        } => {
+            match orig_hash {
+                Some(orig) => {
+                    let same = path.is_file()
+                        && hash_file(path).ctx(|| format!("hashing {}", path.display()))? == *orig;
+                    if !same {
+                        return Err(DeployError::Changed(path.display().to_string()));
+                    }
+                    // Copied, not moved: the file may be on another drive than the backups.
+                    faults.tick()?;
+                    if let Some(parent) = backup.parent() {
+                        fs::create_dir_all(parent)
+                            .ctx(|| format!("creating {}", parent.display()))?;
+                    }
+                    place(path, backup, Method::Copy, faults)?;
+                }
+                None => {
+                    if fs::symlink_metadata(path).is_ok() {
+                        return Err(DeployError::Changed(path.display().to_string()));
+                    }
+                    faults.tick()?;
+                    if let Some(parent) = path.parent() {
+                        fs::create_dir_all(parent)
+                            .ctx(|| format!("creating {}", parent.display()))?;
+                    }
+                }
+            }
+            place(src, path, Method::Copy, faults)
+        }
+        Op::IniSet {
+            path,
+            section,
+            key,
+            value,
+            orig,
+            created: true,
+            ..
+        } => {
+            if fs::symlink_metadata(path).is_ok() {
+                return Err(DeployError::Changed(op_label(path, section, key)));
+            }
+            faults.tick()?;
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).ctx(|| format!("creating {}", parent.display()))?;
+            }
+            debug_assert!(orig.is_none());
+            write_text(
+                path,
+                &crate::ini::set("", section, key, Some(value)),
+                faults,
+            )
+        }
+        Op::IniSet {
+            path,
+            section,
+            key,
+            value,
+            orig,
+            created: false,
+            ..
+        } => {
+            let text = read_text(path)?;
+            if crate::ini::get(&text, section, key) != *orig {
+                return Err(DeployError::Changed(op_label(path, section, key)));
+            }
+            let new = crate::ini::set(&text, section, key, Some(value));
+            write_text(path, &new, faults)
+        }
     }
+}
+
+pub(crate) fn op_label(path: &Path, section: &str, key: &str) -> String {
+    format!("{} [{section}] {key}", path.display())
+}
+
+pub(crate) fn read_text(path: &Path) -> Result<String, DeployError> {
+    let b = fs::read(path).ctx(|| format!("reading {}", path.display()))?;
+    Ok(String::from_utf8_lossy(&b).into_owned())
+}
+
+/// Replaces a file's text through a temporary sibling, so it never holds a partial file.
+pub(crate) fn write_text(path: &Path, text: &str, faults: &mut Faults) -> Result<(), DeployError> {
+    let tmp = tmp_path(path);
+    faults.tick()?;
+    fs::write(&tmp, text).ctx(|| format!("writing {}", tmp.display()))?;
+    faults.tick()?;
+    fs::rename(&tmp, path).ctx(|| format!("replacing {}", path.display()))?;
+    Ok(())
 }
 
 pub(crate) fn tmp_path(dst: &Path) -> PathBuf {

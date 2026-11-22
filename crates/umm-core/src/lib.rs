@@ -8,6 +8,7 @@ mod link;
 mod manual;
 mod nexus;
 mod placement;
+mod plugins;
 mod runtime;
 mod setup;
 mod share;
@@ -28,6 +29,7 @@ pub use nexus::{
     NexusRequirement, NexusSearch, NexusSort, NexusUpdate, NexusUpdateState,
 };
 pub use placement::{PlacedFile, PlacementView};
+pub use plugins::{IniPreview, PluginEntry, PluginList};
 pub use runtime::SyncReport;
 pub use setup::LoaderChoice;
 pub use share::{ProfileExport, ProfileImport};
@@ -42,6 +44,7 @@ pub use umm_deploy::{
 pub use umm_fomod::{
     Choice as FomodChoice, GroupKind as FomodGroupKind, PluginType as FomodOptionKind,
 };
+pub use umm_gamedef::PluginListFormat;
 pub use umm_gamedef::{CompiledDef, GameDef, GameDefError};
 pub use umm_launch::catch_interrupts;
 pub use umm_nexus::graph::{

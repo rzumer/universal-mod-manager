@@ -192,6 +192,77 @@ pub struct PlanDto {
     pub files: Vec<PlanFile>,
     pub conflicts: Vec<ConflictDto>,
     pub skipped: Vec<SkippedDto>,
+    /// The game's plugin list while deployed, for games that keep one.
+    pub plugins: Option<PluginListDto>,
+    /// Ini settings set while deployed.
+    pub settings: Vec<IniSettingDto>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IniSettingDto {
+    pub path: String,
+    pub section: String,
+    pub key: String,
+    pub value: String,
+    pub current: Option<String>,
+    pub exists: bool,
+    pub create: bool,
+}
+
+impl From<umm_core::IniPreview> for IniSettingDto {
+    fn from(s: umm_core::IniPreview) -> Self {
+        IniSettingDto {
+            path: s.path.display().to_string(),
+            section: s.section,
+            key: s.key,
+            value: s.value,
+            current: s.current,
+            exists: s.exists,
+            create: s.create,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginListDto {
+    pub path: String,
+    /// `plugins`; `mods` when it lists mods (RimWorld); `dated` when the game loads its
+    /// plugins in the order of their file dates instead (Morrowind).
+    pub kind: &'static str,
+    pub entries: Vec<PluginEntryDto>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginEntryDto {
+    pub name: String,
+    pub enabled: bool,
+    /// The mod providing it; absent for the user's own entries.
+    pub owner: Option<String>,
+}
+
+impl From<umm_core::PluginList> for PluginListDto {
+    fn from(l: umm_core::PluginList) -> Self {
+        PluginListDto {
+            path: l.path.display().to_string(),
+            kind: match l.format {
+                umm_core::PluginListFormat::RimworldXml => "mods",
+                umm_core::PluginListFormat::MorrowindIni => "dated",
+                _ => "plugins",
+            },
+            entries: l
+                .entries
+                .into_iter()
+                .map(|e| PluginEntryDto {
+                    name: e.name,
+                    enabled: e.enabled,
+                    owner: e.owner,
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -248,6 +319,8 @@ impl From<Plan> for PlanDto {
                     reason: s.reason,
                 })
                 .collect(),
+            plugins: None,
+            settings: Vec::new(),
         }
     }
 }

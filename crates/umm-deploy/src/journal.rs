@@ -46,12 +46,46 @@ pub enum Op {
         size: u64,
         orig_hash: String,
     },
+    /// A file outside the game folder that UMM writes while mods are deployed (a game's
+    /// plugin list): its original copied to `backup` first, if there was one.
+    External {
+        path: PathBuf,
+        /// UMM's version, in the data folder.
+        src: PathBuf,
+        hash: String,
+        /// `None`: the file did not exist.
+        orig_hash: Option<String>,
+        backup: PathBuf,
+    },
+    /// One key of an ini file outside the game folder, set while mods are deployed. Only the
+    /// key is undone, so other changes to the file (the game's own settings) are kept.
+    IniSet {
+        path: PathBuf,
+        section: String,
+        key: String,
+        value: String,
+        /// `None`: the file did not set the key.
+        orig: Option<String>,
+        /// UMM created the file; it is deleted again if nothing else was added to it.
+        #[serde(default)]
+        created: bool,
+        /// The file had no such section; it is removed again once empty.
+        #[serde(default)]
+        section_added: bool,
+    },
 }
 
 impl Op {
-    pub fn path(&self) -> &RelPath {
+    /// The path it changes, for messages.
+    pub fn label(&self) -> String {
         match self {
-            Op::Mkdir { path } | Op::Add { path, .. } | Op::Replace { path, .. } => path,
+            Op::Mkdir { path } | Op::Add { path, .. } | Op::Replace { path, .. } => {
+                path.to_string()
+            }
+            Op::External { path, .. } => path.display().to_string(),
+            Op::IniSet {
+                path, section, key, ..
+            } => format!("{} [{section}] {key}", path.display()),
         }
     }
 }

@@ -13,6 +13,33 @@ pub struct Plan {
     pub files: Vec<PlannedFile>,
     pub conflicts: Vec<Conflict>,
     pub skipped: Vec<Skipped>,
+    /// Files outside the game folder written while deployed (a game's plugin list).
+    pub external: Vec<PlannedExternal>,
+    /// Ini settings outside the game folder set while deployed.
+    pub ini: Vec<PlannedIni>,
+}
+
+/// An ini setting UMM sets while mods are deployed. Skipped when the file does not exist (the
+/// game has not written it yet) or already has the value.
+#[derive(Debug, Clone)]
+pub struct PlannedIni {
+    /// Absolute.
+    pub path: PathBuf,
+    pub section: String,
+    pub key: String,
+    pub value: String,
+    /// Create the file when missing (and delete it again afterwards if nothing else was added).
+    pub create: bool,
+}
+
+/// A file outside the game folder that UMM writes while mods are deployed.
+#[derive(Debug, Clone)]
+pub struct PlannedExternal {
+    /// Absolute.
+    pub path: PathBuf,
+    /// UMM's version of it, already written in the data folder.
+    pub source: PathBuf,
+    pub hash: String,
 }
 
 #[derive(Debug, Clone)]
@@ -231,5 +258,7 @@ pub fn build_plan(
         files,
         conflicts,
         skipped,
+        external: Vec::new(),
+        ini: Vec::new(),
     })
 }

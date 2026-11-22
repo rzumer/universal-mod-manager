@@ -45,7 +45,7 @@ pub fn revert(
         match revert_op(journal, op, &quarantine, &mut report, faults) {
             Ok(()) => {}
             Err(e @ DeployError::InjectedCrash(_)) => return Err(e),
-            Err(e) => report.errors.push(format!("{}: {e}", op.path())),
+            Err(e) => report.errors.push(format!("{}: {e}", op.label())),
         }
     }
 
@@ -99,6 +99,57 @@ fn revert_op(
     faults: &mut Faults,
 ) -> Result<(), DeployError> {
     match op {
+        Op::IniSet {
+            path,
+            section,
+            key,
+            value,
+            orig,
+            created,
+            section_added,
+        } => {
+            clean_tmp(path, faults)?;
+            if !exists(path) {
+                return Ok(()); // the file is gone: nothing to put back
+            }
+            let text = crate::apply::read_text(path)?;
+            let now = crate::ini::get(&text, section, key);
+            if now.as_deref() == Some(value.as_str()) {
+                let mut back = crate::ini::set(&text, section, key, orig.as_deref());
+                if *section_added {
+                    back = crate::ini::remove_empty_section(&back, section);
+                }
+                if *created && !crate::ini::has_keys(&back) {
+                    // UMM made the file and nothing else was put in it.
+                    faults.tick()?;
+                    remove_file_force(path).ctx(|| format!("removing {}", path.display()))?;
+                } else {
+                    crate::apply::write_text(path, &back, faults)?;
+                }
+                report.restored += 1;
+            } else if now != *orig {
+                // Changed while deployed (by the user or the game): keep their value.
+                report
+                    .kept_game_versions
+                    .push(crate::apply::op_label(path, section, key));
+            }
+            Ok(())
+        }
+        Op::External {
+            path,
+            hash,
+            orig_hash,
+            backup,
+            ..
+        } => revert_external(
+            path,
+            hash,
+            orig_hash.as_deref(),
+            backup,
+            quarantine,
+            report,
+            faults,
+        ),
         Op::Mkdir { path } => {
             let p = j.target(path);
             if !p.is_dir() {
@@ -189,6 +240,91 @@ fn revert_op(
                 report.kept_game_versions.push(path.to_string());
                 Ok(())
             }
+        }
+    }
+}
+
+/// Copies `from` over `to` through a temporary sibling, so `to` never holds a partial file.
+fn copy_into(from: &Path, to: &Path, faults: &mut Faults) -> Result<(), DeployError> {
+    let tmp = tmp_path(to);
+    faults.tick()?;
+    fs::copy(from, &tmp).ctx(|| format!("copying {} to {}", from.display(), tmp.display()))?;
+    umm_store::fsutil::clear_readonly(&tmp).ctx(|| format!("updating {}", tmp.display()))?;
+    faults.tick()?;
+    fs::rename(&tmp, to).ctx(|| format!("restoring {}", to.display()))?;
+    Ok(())
+}
+
+/// Undoes a file written outside the game folder: the original comes back (or the file goes,
+/// if there was none). A version neither UMM's nor the original (the game or the user changed
+/// it meanwhile) is set aside in quarantine first.
+fn revert_external(
+    path: &Path,
+    hash: &str,
+    orig_hash: Option<&str>,
+    backup: &Path,
+    quarantine: &Path,
+    report: &mut RevertReport,
+    faults: &mut Faults,
+) -> Result<(), DeployError> {
+    clean_tmp(path, faults)?;
+    clean_tmp(backup, faults)?;
+    let now = if exists(path) {
+        Some(hash_file(path).ctx(|| format!("hashing {}", path.display()))?)
+    } else {
+        None
+    };
+    let name = path.file_name().map(|n| n.to_owned()).unwrap_or_default();
+    let set_aside = |report: &mut RevertReport, faults: &mut Faults| -> Result<(), DeployError> {
+        let q = quarantine.join(crate::apply::EXTERNAL_BACKUPS).join(&name);
+        faults.tick()?;
+        if let Some(parent) = q.parent() {
+            fs::create_dir_all(parent).ctx(|| format!("creating {}", parent.display()))?;
+        }
+        fs::copy(path, &q).ctx(|| format!("quarantining {}", path.display()))?;
+        report.quarantined.push(path.display().to_string());
+        Ok(())
+    };
+    match orig_hash {
+        Some(orig) if exists(backup) => {
+            if now.as_deref() == Some(orig) {
+                // Never replaced, or already restored.
+            } else {
+                if now.as_deref().is_some_and(|n| n != hash) {
+                    set_aside(report, faults)?;
+                }
+                copy_into(backup, path, faults)?;
+                report.restored += 1;
+            }
+            faults.tick()?;
+            remove_file_force(backup).ctx(|| format!("removing {}", backup.display()))?;
+            Ok(())
+        }
+        Some(orig) => match now.as_deref() {
+            Some(n) if n == orig => Ok(()),
+            None => Err(DeployError::Changed(format!(
+                "{}: both the original file and its backup are missing",
+                path.display()
+            ))),
+            Some(n) if n == hash => Err(DeployError::Changed(format!(
+                "{}: the backup of the original file is missing",
+                path.display()
+            ))),
+            Some(_) => {
+                report.kept_game_versions.push(path.display().to_string());
+                Ok(())
+            }
+        },
+        None => {
+            if let Some(n) = &now {
+                if n != hash {
+                    set_aside(report, faults)?;
+                }
+                faults.tick()?;
+                remove_file_force(path).ctx(|| format!("removing {}", path.display()))?;
+                report.removed += 1;
+            }
+            Ok(())
         }
     }
 }
