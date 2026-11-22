@@ -143,6 +143,20 @@ pub fn plan(
     if game.package_loader == umm_gamedef::LOVELY_KIND && loader.is_none() {
         return lovely_mod(files, full_name);
     }
+    if let Some(l) = loader.filter(|l| l.loader == umm_gamedef::RIVET_KIND) {
+        return rivet_pack(files, full_name, &l.root_folder);
+    }
+    if game.package_loader == umm_gamedef::RIVET_KIND && loader.is_none() {
+        return Ok(files
+            .into_iter()
+            .map(|(path, body)| {
+                (
+                    format!("{}/{full_name}/{path}", umm_gamedef::RIVET_MODS_DIR),
+                    body,
+                )
+            })
+            .collect());
+    }
     if let Some(l) = loader.filter(|l| l.loader == umm_gamedef::MIO_KIND) {
         return mio_pack(files, full_name, &l.root_folder);
     }
@@ -428,6 +442,45 @@ fn lovely_mod(
         return Err(TsError::Data {
             what: full_name.into(),
             message: "the package has no files to install".into(),
+        });
+    }
+    Ok(out)
+}
+
+/// Lays out the Rivet package as r2modman does: its proxy, `Rivet.ini` and `Rivet/` folder,
+/// from the package's `RivetPack/` (which r2modman reads, whatever Thunderstore's data names
+/// as its root folder), go to the game folder's root. The rest is left out.
+fn rivet_pack(
+    files: BTreeMap<String, Vec<u8>>,
+    full_name: &str,
+    root_folder: &str,
+) -> Result<BTreeMap<String, Vec<u8>>> {
+    let in_pack = files
+        .keys()
+        .any(|k| k.to_ascii_lowercase().starts_with("rivetpack/"));
+    let root = match (in_pack, root_folder.trim_matches('/')) {
+        (true, _) => "rivetpack/".to_string(),
+        (false, "") => String::new(),
+        (false, r) => format!("{}/", r.to_ascii_lowercase()),
+    };
+    let mut out = BTreeMap::new();
+    for (path, body) in files {
+        let lower = path.to_ascii_lowercase();
+        let Some(rel) = lower.strip_prefix(&root) else {
+            continue;
+        };
+        if rel == "version.dll" || rel == "rivet.ini" || rel.starts_with("rivet/") {
+            out.insert(path[path.len() - rel.len()..].to_string(), body);
+        }
+    }
+    if !out.contains_key(umm_gamedef::RIVET_PROXY)
+        || !out
+            .keys()
+            .any(|k| k.eq_ignore_ascii_case(umm_gamedef::RIVET_LOADER))
+    {
+        return Err(TsError::Data {
+            what: format!("{full_name} (mod loader)"),
+            message: "no version.dll and Rivet/Loader.dll in the package".into(),
         });
     }
     Ok(out)
@@ -1062,6 +1115,48 @@ pub(crate) mod tests {
                 "mods/Steamodded-smods/lovely.toml",
                 "mods/Steamodded-smods/manifest.json",
                 "mods/Steamodded-smods/src/core.lua",
+            ]
+        );
+    }
+
+    #[test]
+    fn rivet_packages_and_mods() {
+        let mut sm = rules();
+        sm.package_loader = "rivet".into();
+        sm.install_rules.clear();
+        let entry = ModloaderPackage {
+            package_id: "ReDoIngMods-Rivet".into(),
+            root_folder: "Rivet".into(),
+            loader: "rivet".into(),
+        };
+        let keys = |m: &BTreeMap<String, Vec<u8>>| m.keys().cloned().collect::<Vec<_>>();
+        let pack = zip_of(&[
+            ("manifest.json", "{}"),
+            ("RivetPack/version.dll", "p"),
+            ("RivetPack/Rivet.ini", "[Doorstop]"),
+            ("RivetPack/Rivet/Loader.dll", "l"),
+            ("RivetPack/Rivet/Mods/.keep", ""),
+        ]);
+        let out = plan(&pack, "ReDoIngMods-Rivet", &sm, Some(&entry)).unwrap();
+        assert_eq!(
+            keys(&out),
+            [
+                "Rivet.ini",
+                "Rivet/Loader.dll",
+                "Rivet/Mods/.keep",
+                "version.dll"
+            ]
+        );
+        let empty = zip_of(&[("RivetPack/version.dll", "p")]);
+        assert!(plan(&empty, "ReDoIngMods-Rivet", &sm, Some(&entry)).is_err());
+
+        // A mod: the whole package, in its own folder.
+        let zip = zip_of(&[("manifest.json", "{}"), ("Mine.dll", "d")]);
+        assert_eq!(
+            keys(&plan(&zip, "Me-Mine", &sm, None).unwrap()),
+            [
+                "Rivet/Mods/Me-Mine/Mine.dll",
+                "Rivet/Mods/Me-Mine/manifest.json"
             ]
         );
     }

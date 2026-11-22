@@ -6,7 +6,8 @@
 use crate::{
     loader_name, thunderstore_inject, GameDef, GameDefError, Inject, InstallRule, Loader,
     Thunderstore, BEPINEX_KIND, GDWEAVE_KIND, GODOTML_KIND, LOVELY_KIND, MIO_KIND, NORTHSTAR_KIND,
-    RECURSIVE_MELONLOADER_KIND, ROM_KIND, SHIMLOADER_KIND, THUNDERSTORE_SOURCE, UMM_KIND,
+    RECURSIVE_MELONLOADER_KIND, RIVET_KIND, ROM_KIND, SHIMLOADER_KIND, THUNDERSTORE_SOURCE,
+    UMM_KIND,
 };
 use serde::{Deserialize, Serialize};
 
@@ -180,6 +181,19 @@ pub fn mio_rules() -> Vec<InstallRule> {
     ]
 }
 
+/// Install rules for Rivet mods imported from files rather than Thunderstore: its proxy and
+/// `Rivet.ini` keep their place at the game folder's root, its folder keeps its place, a
+/// `Mods/` folder goes into it, and anything else is a mod in its own folder there.
+pub fn rivet_rules() -> Vec<InstallRule> {
+    vec![
+        rule("version.dll", ""),
+        rule("Rivet.ini", ""),
+        rule("Rivet/**", "Rivet/"),
+        rule("Mods/**", "Rivet/Mods/"),
+        rule("**", "Rivet/Mods/{mod}/"),
+    ]
+}
+
 const BEPINEX_CONFIG: &str = "BepInEx/config/**";
 const SHIMLOADER_CONFIG: &str = "shimloader/cfg/**";
 const MELONLOADER_CONFIG: &str = "UserData/**";
@@ -299,6 +313,9 @@ impl GameDef {
                     (rom_rules(), Some(ROM_CONFIG))
                 } else if kind == UMM_KIND {
                     (umm_rules(), Some(UMM_CONFIG))
+                } else if kind == RIVET_KIND {
+                    // `Rivet.ini` is an ini, which the definition already copies.
+                    (rivet_rules(), None)
                 } else if kind == MIO_KIND {
                     (mio_rules(), Some(MIO_CONFIG))
                 } else if kind == NORTHSTAR_KIND {
@@ -439,12 +456,12 @@ target = ""
 
         let other = Community {
             label: "trip",
-            loader: "rivet",
+            loader: "bepisloader",
         };
         let err = def()
             .with_setup(LoaderSetup::Thunderstore, Some(other))
             .unwrap_err();
-        assert!(err.to_string().contains("rivet"), "{err}");
+        assert!(err.to_string().contains("bepisloader"), "{err}");
     }
 
     #[test]

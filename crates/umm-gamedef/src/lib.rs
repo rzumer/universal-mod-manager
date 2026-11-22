@@ -532,6 +532,24 @@ pub const MIO_CONFIG_DIR: &str = "modconfig";
 pub const MIO_MODS_FLAG: &str = "--mods-path";
 pub const MIO_CONFIG_FLAG: &str = "--mods-config-path";
 
+/// Loader kind for Rivet (Scrap Mechanic).
+pub const RIVET_KIND: &str = "rivet";
+/// Its proxy, which reads `Rivet.ini` beside it in the game folder; its folder (the loader and
+/// the mods) in the runtime folder, and the flags pointing it there (each one argument, then
+/// the value).
+pub const RIVET_PROXY: &str = "version.dll";
+pub const RIVET_DIR: &str = "Rivet";
+pub const RIVET_LOADER: &str = "Rivet/Loader.dll";
+pub const RIVET_MODS_DIR: &str = "Rivet/Mods";
+/// Its log, written in the game folder unless told otherwise.
+pub const RIVET_LOG: &str = "Rivet/rivet.log";
+pub const RIVET_FLAGS: [&str; 4] = [
+    "-rivetEnable",
+    "-rivetTarget",
+    "-rivetDirectory",
+    "-rivetLog",
+];
+
 /// A loader that is pointed at a per-profile runtime folder outside the game, so that only
 /// its proxy goes into the game folder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -554,6 +572,8 @@ pub enum RuntimeLoader {
     Northstar,
     /// The MIO Mod Loader, given its mod and settings folders as launch arguments.
     Mio,
+    /// Rivet, given its loader, mod folder and log as launch arguments.
+    Rivet,
 }
 
 impl RuntimeLoader {
@@ -569,6 +589,7 @@ impl RuntimeLoader {
             RuntimeLoader::ReturnOfModding => &[ROM_DIR],
             RuntimeLoader::Northstar => &[NORTHSTAR_DIR],
             RuntimeLoader::Mio => &[MIO_MODS_DIR, MIO_CONFIG_DIR],
+            RuntimeLoader::Rivet => &[RIVET_DIR],
         }
     }
 }
@@ -586,6 +607,7 @@ pub fn thunderstore_inject(kind: &str) -> Option<Inject> {
         ROM_KIND => Some(Inject::Args),
         NORTHSTAR_KIND => Some(Inject::Args),
         MIO_KIND => Some(Inject::Args),
+        RIVET_KIND => Some(Inject::Args),
         _ => None,
     }
 }
@@ -603,6 +625,7 @@ pub fn loader_name(kind: &str) -> &str {
         ROM_KIND => "Return of Modding",
         NORTHSTAR_KIND => "Northstar",
         MIO_KIND => "MIO Mod Loader",
+        RIVET_KIND => "Rivet",
         other => other,
     }
 }
@@ -631,6 +654,7 @@ impl GameDef {
             Inject::Args if l.kind == ROM_KIND => Some(RuntimeLoader::ReturnOfModding),
             Inject::Args if l.kind == NORTHSTAR_KIND => Some(RuntimeLoader::Northstar),
             Inject::Args if l.kind == MIO_KIND => Some(RuntimeLoader::Mio),
+            Inject::Args if l.kind == RIVET_KIND => Some(RuntimeLoader::Rivet),
             _ => None,
         }
     }
@@ -807,10 +831,11 @@ impl GameDef {
                         || loader.kind == ROM_KIND
                         || loader.kind == NORTHSTAR_KIND
                         || loader.kind == MIO_KIND
+                        || loader.kind == RIVET_KIND
                         || is_melonloader(&loader.kind) => {}
                 Inject::Args => {
                     return Err(GameDefError::Unsupported(format!(
-                        "loader kind `{}` cannot be injected with arguments (supported: shimloader, melonloader, recursive-melonloader, lovely, gdweave, godotml, return-of-modding, northstar, mio); use inject = \"files\"",
+                        "loader kind `{}` cannot be injected with arguments (supported: shimloader, melonloader, recursive-melonloader, lovely, gdweave, godotml, return-of-modding, northstar, mio, rivet); use inject = \"files\"",
                         loader.kind
                     )))
                 }

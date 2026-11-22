@@ -15,7 +15,8 @@ use umm_gamedef::{
     LOVELY_PROXIES, MELONLOADER_BASEDIR_FLAG, MELONLOADER_GENERATED, MELONLOADER_REGENERATE_FLAG,
     MIO_CONFIG_DIR, MIO_CONFIG_FLAG, MIO_LOADER, MIO_MODS_DIR, MIO_MODS_FLAG, MIO_PROXY,
     NORTHSTAR_DIR, NORTHSTAR_DLL, NORTHSTAR_FLAG, NORTHSTAR_PROFILE_FLAG, NORTHSTAR_PROXY,
-    ROM_PROXIES, ROM_ROOT_FLAG, SHIMLOADER_DIRS,
+    RIVET_FLAGS, RIVET_LOADER, RIVET_LOG, RIVET_MODS_DIR, RIVET_PROXY, ROM_PROXIES, ROM_ROOT_FLAG,
+    SHIMLOADER_DIRS,
 };
 use umm_launch::{LaunchSpec, Tracking};
 use umm_store::fsutil::{hash_file, write_atomic, IoCtx};
@@ -132,6 +133,22 @@ impl Session {
                 check_gdweave(&plan.files)?;
                 (Some(Injection::GDWeave), None)
             }
+            Some(RuntimeLoader::Rivet) => {
+                let has = |p: &str| {
+                    plan.files
+                        .iter()
+                        .any(|f| f.target.as_str().eq_ignore_ascii_case(p))
+                };
+                if !has(RIVET_PROXY) || !has(RIVET_LOADER) {
+                    return Err(CoreError::Invalid(
+                        "the profile has no Rivet; install it from the Thunderstore tab (it also comes with any mod that needs it)".into(),
+                    ));
+                }
+                // Its proxy, and the ini it reads beside it, go next to the game's exe
+                // (Scrap Mechanic's is in `Release/`), as r2modman puts the proxy.
+                place_by_exe(&def.def, &mut plan.files, &[RIVET_PROXY, "Rivet.ini"]);
+                (Some(Injection::Rivet), None)
+            }
             Some(RuntimeLoader::Mio) => {
                 let has = |p: &str| {
                     plan.files
@@ -205,6 +222,7 @@ impl Session {
                     | Injection::GDWeave
                     | Injection::ReturnOfModding
                     | Injection::Mio
+                    | Injection::Rivet
             )
         );
         if let (true, Some(launch)) = (proxied, &def.def.launch) {
@@ -513,11 +531,28 @@ pub(crate) enum Injection {
     ReturnOfModding,
     Northstar,
     Mio,
+    Rivet,
+    /// The renderer's BepInEx preloader, when the profile has it.
+    BepisLoader {
+        renderer: Option<&'static str>,
+    },
 }
 
 /// Puts Return of Modding's proxy DLL next to the game's exe (Hades II keeps its own in
 /// `Ship/`); errors when the profile has none.
 fn place_rom_proxy(def: &GameDef, files: &mut [PlannedFile]) -> Result<()> {
+    if place_by_exe(def, files, ROM_PROXIES) {
+        Ok(())
+    } else {
+        Err(CoreError::Invalid(
+            "the profile has no Return of Modding; install it from the Thunderstore tab (it also comes with any mod that needs it)".into(),
+        ))
+    }
+}
+
+/// Moves the files named `names` at the game folder's root next to the game's exe, when the
+/// exe is in a subfolder (a proxy DLL loads from there). Whether any was found.
+fn place_by_exe(def: &GameDef, files: &mut [PlannedFile], names: &[&str]) -> bool {
     let exe_dir = def
         .launch
         .as_ref()
@@ -527,7 +562,7 @@ fn place_rom_proxy(def: &GameDef, files: &mut [PlannedFile]) -> Result<()> {
     let mut found = false;
     for f in files.iter_mut() {
         let name = f.target.as_str();
-        if f.target.depth() != 1 || !ROM_PROXIES.iter().any(|p| name.eq_ignore_ascii_case(p)) {
+        if f.target.depth() != 1 || !names.iter().any(|p| name.eq_ignore_ascii_case(p)) {
             continue;
         }
         found = true;
@@ -535,13 +570,7 @@ fn place_rom_proxy(def: &GameDef, files: &mut [PlannedFile]) -> Result<()> {
             f.target = dir.join(&f.target);
         }
     }
-    if found {
-        Ok(())
-    } else {
-        Err(CoreError::Invalid(
-            "the profile has no Return of Modding; install it from the Thunderstore tab (it also comes with any mod that needs it)".into(),
-        ))
-    }
+    found
 }
 
 /// Whether `file` has `needle` in it, read a piece at a time.
@@ -784,6 +813,20 @@ pub(crate) fn build_spec(
     }
     if injection == Some(Injection::Lovely) {
         game_args.extend([LOVELY_MOD_DIR_FLAG.to_string(), in_runtime(LOVELY_DIR)]);
+    }
+    if injection == Some(Injection::Rivet) {
+        let [enable, target, directory, log] = RIVET_FLAGS;
+        game_args.extend([
+            enable.to_string(),
+            "true".to_string(),
+            target.to_string(),
+            in_runtime(RIVET_LOADER),
+            directory.to_string(),
+            in_runtime(RIVET_MODS_DIR),
+            // Its log in the runtime folder, not left in the game folder.
+            log.to_string(),
+            in_runtime(RIVET_LOG),
+        ]);
     }
     if injection == Some(Injection::Mio) {
         game_args.extend([
@@ -1059,6 +1102,42 @@ mod tests {
             [
                 "--mod-dir",
                 native_path(&Path::new("/rt").join("mods")).as_str()
+            ]
+        );
+    }
+
+    #[test]
+    fn rivet_gets_its_loader_mods_and_log() {
+        let d = def("[launch]\nexe = \"Release/ScrapMechanic.exe\"\n\
+             [loader]\nkind = \"rivet\"\nsource = \"thunderstore\"\ninject = \"args\"\n\
+             [thunderstore]\ncommunity = \"scrap-mechanic\"\n");
+        let spec = build_spec(
+            &d,
+            Path::new("/game"),
+            Path::new("/rt"),
+            &Profile::new("Default"),
+            Some(Injection::Rivet),
+            None,
+        )
+        .unwrap();
+        let rt = |parts: &[&str]| {
+            native_path(
+                &parts
+                    .iter()
+                    .fold(Path::new("/rt").to_path_buf(), |p, c| p.join(c)),
+            )
+        };
+        assert_eq!(
+            spec.args,
+            [
+                "-rivetEnable",
+                "true",
+                "-rivetTarget",
+                &rt(&["Rivet", "Loader.dll"]),
+                "-rivetDirectory",
+                &rt(&["Rivet", "Mods"]),
+                "-rivetLog",
+                &rt(&["Rivet", "rivet.log"])
             ]
         );
     }
