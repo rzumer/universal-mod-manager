@@ -177,11 +177,12 @@ fn browses_and_installs_downloads_without_an_account() {
         .unwrap();
     assert!(!r.replaced && r.domain_set);
     assert_eq!(r.meta.id, "glow");
+    // Stored as extracted; the placement installs from inside the wrapper folder.
     assert_eq!(
         r.meta.files.keys().collect::<Vec<_>>(),
-        ["glow.dll"],
-        "the wrapper folder is unwrapped"
+        ["Glow 3.0/glow.dll"]
     );
+    assert_eq!(r.meta.placement.as_ref().unwrap().root, "Glow 3.0");
     let n = r.meta.nexus.as_ref().unwrap();
     assert_eq!((n.mod_id, n.file_id, n.game_id), (14, 491, Some(1539)));
     assert!(got.is_file(), "the user's download is left where it is");
@@ -241,8 +242,14 @@ fn browses_and_installs_downloads_without_an_account() {
         (r.meta.id.as_str(), r.meta.nexus.as_ref().unwrap().file_id),
         ("glow", 507)
     );
-    let stored = s.data().game("glow").mod_files_dir("glow").join("glow.dll");
+    let stored = s
+        .data()
+        .game("glow")
+        .mod_files_dir("glow")
+        .join("Glow 3.1/glow.dll");
     assert_eq!(fs::read_to_string(stored).unwrap(), "new");
+    // UMM's own placement follows the new version's wrapper folder.
+    assert_eq!(r.meta.placement.as_ref().unwrap().root, "Glow 3.1");
     assert!(matches!(
         s.nexus_updates("glow").unwrap()[0].state,
         NexusUpdateState::Current

@@ -181,6 +181,36 @@ pub async fn import_mod(
     .await
 }
 
+/// Where a mod's files go under `placement` (default: its own), file by file.
+#[tauri::command]
+pub async fn placement_view(
+    state: State<'_, AppState>,
+    game: String,
+    id: String,
+    placement: Option<crate::dto::PlacementDto>,
+) -> Res<crate::dto::PlacementViewDto> {
+    blocking(&state, move |s| {
+        s.placement_view(&game, &id, placement.map(Into::into))
+            .map(Into::into)
+    })
+    .await
+}
+
+/// Saves where a mod's files go; `None` goes back to UMM's suggestion.
+#[tauri::command]
+pub async fn set_placement(
+    state: State<'_, AppState>,
+    game: String,
+    id: String,
+    placement: Option<crate::dto::PlacementDto>,
+) -> Res<ModDto> {
+    blocking(&state, move |s| {
+        s.set_placement(&game, &id, placement.map(Into::into))
+            .map(Into::into)
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn remove_mod(state: State<'_, AppState>, game: String, id: String) -> Res<()> {
     blocking(&state, move |s| s.remove_mod(&game, &id)).await

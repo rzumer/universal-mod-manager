@@ -141,7 +141,10 @@ fn profile_and_import_round_trip() {
         "preview_plan",
         json!({"game": "ipc-game", "profile": "Default"}),
     );
-    assert_eq!(plan["files"].as_array().unwrap().len(), 2);
+    // The readme is left out; the bundle replaces the game's.
+    let files = plan["files"].as_array().unwrap();
+    assert_eq!(files.len(), 1, "{plan}");
+    assert_eq!(files[0]["target"], "Data/ui.bundle");
 
     ok(
         &fx,

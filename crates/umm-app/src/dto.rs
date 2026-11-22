@@ -1,7 +1,7 @@
 //! Serializable shapes sent to the webview. Kept here so the engine crates stay free of
 //! UI concerns.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use umm_core::{
     Finding, GameStatus, LaunchEvent, Level, LoaderChoice, LoaderSetup, ModMeta, Plan,
     RevertReport, SyncReport,
@@ -65,11 +65,96 @@ pub struct ModDto {
     pub thunderstore: Option<String>,
     /// The mod's page, for files installed from Nexus Mods.
     pub nexus_url: Option<String>,
+    /// Where its files go can be changed (not a package laid out for the game).
+    pub placeable: bool,
+    pub placement: Option<PlacementDto>,
+}
+
+/// Where a mod's files go; see `umm_store::Placement`.
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PlacementDto {
+    #[serde(default)]
+    pub root: String,
+    #[serde(default)]
+    pub target: String,
+    #[serde(default)]
+    pub skip: Vec<String>,
+    #[serde(default)]
+    pub guessed: bool,
+    #[serde(default)]
+    pub chosen: bool,
+}
+
+impl From<umm_core::Placement> for PlacementDto {
+    fn from(p: umm_core::Placement) -> Self {
+        PlacementDto {
+            root: p.root,
+            target: p.target,
+            skip: p.skip,
+            guessed: p.guessed,
+            chosen: p.chosen,
+        }
+    }
+}
+
+impl From<PlacementDto> for umm_core::Placement {
+    fn from(p: PlacementDto) -> Self {
+        umm_core::Placement {
+            root: p.root,
+            target: p.target,
+            skip: p.skip,
+            guessed: p.guessed,
+            chosen: p.chosen,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlacedFileDto {
+    pub file: String,
+    pub target: Option<String>,
+    pub note: Option<String>,
+    pub skipped: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlacementViewDto {
+    pub placement: PlacementDto,
+    pub suggested: PlacementDto,
+    pub folders: Vec<String>,
+    pub game_folders: Vec<String>,
+    pub files: Vec<PlacedFileDto>,
+}
+
+impl From<umm_core::PlacementView> for PlacementViewDto {
+    fn from(v: umm_core::PlacementView) -> Self {
+        PlacementViewDto {
+            placement: v.placement.into(),
+            suggested: v.suggested.into(),
+            folders: v.folders,
+            game_folders: v.game_folders,
+            files: v
+                .files
+                .into_iter()
+                .map(|f| PlacedFileDto {
+                    file: f.file,
+                    target: f.target,
+                    note: f.note,
+                    skipped: f.skipped,
+                })
+                .collect(),
+        }
+    }
 }
 
 impl From<ModMeta> for ModDto {
     fn from(m: ModMeta) -> Self {
         ModDto {
+            placeable: m.layout == umm_core::ModLayout::Raw && m.thunderstore.is_none(),
+            placement: m.placement.clone().map(Into::into),
             thunderstore: m.thunderstore.as_ref().map(|t| t.full_name.clone()),
             nexus_url: m
                 .nexus

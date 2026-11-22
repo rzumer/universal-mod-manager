@@ -5,14 +5,16 @@
 
 pub mod fsutil;
 mod mods;
+mod placement;
 mod profile;
 
 pub use fsutil::{IoCtx, IoError};
 pub use mods::{
-    archive_kind, import_mod, list_mods, load_mod, remove_mod, slugify, verify_mod, ArchiveKind,
-    FileIssue, FileRecord, ImportOptions, Layout, ModMeta, NexusMeta, ThunderstoreMeta,
-    MOD_META_FILE,
+    archive_kind, import_mod, list_mods, load_mod, remove_mod, set_placement, slugify, verify_mod,
+    ArchiveKind, FileIssue, FileRecord, ImportOptions, Layout, ModMeta, NexusMeta,
+    ThunderstoreMeta, MOD_META_FILE,
 };
+pub use placement::{LeftOut, Placement};
 pub use profile::{
     list_profiles, load_profile, save_profile, Profile, ProfileEntry, DEFAULT_PROFILE,
 };
@@ -56,6 +58,8 @@ pub enum StoreError {
     UnsafeEntry(String),
     #[error(transparent)]
     Path(#[from] RelPathError),
+    #[error("placement: {0}")]
+    Placement(String),
 }
 
 pub type Result<T, E = StoreError> = std::result::Result<T, E>;

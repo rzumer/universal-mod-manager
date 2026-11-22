@@ -53,7 +53,8 @@ const ICONS = {
   trash: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2h4l.5 1H13v1.5H3V3h2.5zM4 5.5h8l-.6 8.5H4.6z"/></svg>',
   play: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 2.8v10.4L13 8z"/></svg>',
   folder: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 3.5h5l1.5 1.5h6.5v8.5h-13z"/></svg>',
-};
+  // Adjusting where a mod's files go.
+  sliders: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3.3h12v1.4H2zM2 7.3h12v1.4H2zM2 11.3h12v1.4H2z"/><rect x="9" y="1.5" width="2.6" height="5" rx=".8"/><rect x="3.8" y="5.5" width="2.6" height="5" rx=".8"/><rect x="8" y="9.5" width="2.6" height="5" rx=".8"/></svg>',};
 
 const icon = (name) => h("span", { class: "icon", html: ICONS[name] });
 
@@ -552,11 +553,15 @@ function modsTab(d) {
           "div",
           { class: "mod-meta" },
           m ? `${m.thunderstore ? "Thunderstore · " : m.nexusUrl ? "Nexus Mods · " : ""}${e.id} · ${m.files} file${m.files === 1 ? "" : "s"} · ${fmtBytes(m.size)}` : "No longer installed — remove it from the profile or import it again",
+          m?.placement?.guessed &&
+            h("button", { class: "chip warn chip-button", title: "UMM could not tell where this mod's files go", onclick: () => placementDialog(m) }, "Check where its files go"),
         ),
       ),
       h(
         "div",
         { class: "row-actions" },
+        m?.placeable &&
+          h("button", { class: "icon-btn", title: "Choose where its files go in the game folder", "aria-label": `Where ${m.name} installs`, disabled: playing, onclick: () => placementDialog(m) }, icon("sliders")),
         m?.nexusUrl &&
           h("button", { class: "icon-btn", title: "Open its page on Nexus Mods", "aria-label": "Open on Nexus Mods", onclick: () => attempt(() => api.openNexusPage(m.nexusUrl)) }, "↗"),
         m?.thunderstore &&
@@ -1230,7 +1235,7 @@ async function handleNxmLink(url) {
   if (S.nexus.game?.game !== S.gameId) loadNexus(true);
   const game = S.gameId;
   const r = await nexusRun("Downloading", () => api.nexusInstallLink(game, S.profileName, url));
-  if (r) nexusToast(r);
+  if (r) await nexusToast(r);
 }
 
 async function handleInstallLink(url) {
@@ -1660,9 +1665,11 @@ function waitForDownload(dir, label) {
   });
 }
 
-function nexusToast(r) {
+/// Says what was installed, and asks where its files go when UMM could not tell.
+async function nexusToast(r) {
   const v = r.version ? ` ${r.version}` : "";
   toast(r.replaced ? `Updated ${r.name} to${v || " its newest file"}` : `Installed ${r.name}${v}`, "ok");
+  if (r.placementGuessed) await placementDialog({ id: r.id, name: r.name }, true);
 }
 
 /// Runs a Nexus install for the current game, with its progress at the top of the Nexus tab.
@@ -1681,7 +1688,7 @@ async function nexusGet(domain, modId, fileId, label) {
   const game = S.gameId;
   if (S.nexus.account?.premium) {
     const r = await nexusRun(`Downloading ${label}`, () => api.nexusInstallFile(game, S.profileName, domain, modId, fileId));
-    if (r) nexusToast(r);
+    if (r) await nexusToast(r);
     return !!r;
   }
   const dir = await attempt(() => api.nexusDownloadStart(game, domain, modId, fileId));
@@ -1701,7 +1708,7 @@ async function nexusGet(domain, modId, fileId, label) {
     r = ok ? await nexusRun("Installing", () => api.nexusDownloadInstall(S.profileName, path, true)) : null;
     if (!ok) attempt(api.nexusDownloadCancel);
   }
-  if (r?.installed) nexusToast(r.installed);
+  if (r?.installed) await nexusToast(r.installed);
   return !!r?.installed;
 }
 
@@ -1907,6 +1914,134 @@ async function importPath(path) {
   const m = await attempt(() => api.importMod(S.gameId, path, S.profileName));
   S.busy = false;
   if (m) toast(`Imported ${m.name} (${m.files} files) into ${S.profileName}`, "ok");
+  await refreshAll();
+  if (m?.placement?.guessed) await placementDialog(m, true);
+}
+
+/// Where a mod's files go: the folder inside it they install from, the game folder they go
+/// into, and the files left out. `asked` when UMM could not tell and opened it after an install.
+async function placementDialog(m, asked = false) {
+  const game = S.gameId;
+  let view = await attempt(() => api.placementView(game, m.id, null));
+  if (!view) return;
+  const p = { ...view.placement, skip: [...view.placement.skip] };
+  const list = h("div", { class: "place-files" });
+  const summary = h("p", { class: "muted small" });
+  const under = (f) => !p.root || f.toLowerCase().startsWith(`${p.root.toLowerCase()}/`);
+  const shown = (f) => (p.root ? f.slice(p.root.length + 1) : f);
+  let timer = null;
+  const refresh = (now = false) => {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      try {
+        view = await api.placementView(game, m.id, p);
+        draw();
+      } catch (e) {
+        summary.textContent = String(e);
+        summary.className = "small error-text";
+      }
+    }, now ? 0 : 300);
+  };
+  const draw = () => {
+    const inside = view.files.filter((f) => under(f.file));
+    const placed = inside.filter((f) => f.target).length;
+    const outside = view.files.length - inside.length;
+    summary.className = "muted small";
+    summary.textContent =
+      `${plural(placed, "file")} go${placed === 1 ? "es" : ""} into the game` +
+      (inside.length - placed ? `, ${inside.length - placed} left out` : "") +
+      (outside ? `; ${plural(outside, "file")} outside this folder ${outside === 1 ? "is" : "are"} left out` : "") +
+      ".";
+    list.replaceChildren(
+      ...inside.map((f) =>
+        h(
+          "label",
+          { class: `place-file ${f.target ? "" : "out"}` },
+          h("input", {
+            type: "checkbox",
+            checked: !f.skipped,
+            "aria-label": `Install ${f.file}`,
+            onchange: (ev) => {
+              p.skip = p.skip.filter((s) => s.toLowerCase() !== f.file.toLowerCase());
+              if (!ev.target.checked) p.skip.push(f.file);
+              refresh(true);
+            },
+          }),
+          h("code", { class: "place-from" }, shown(f.file)),
+          h("span", { class: "place-to" }, f.target ? h("code", {}, `→ ${f.target}`) : h("span", { class: "muted" }, f.note)),
+        ),
+      ),
+    );
+  };
+  const rootSel = h(
+    "select",
+    {
+      "aria-label": "Install from",
+      onchange: (ev) => {
+        p.root = ev.target.value;
+        p.skip = p.skip.filter(under);
+        refresh(true);
+      },
+    },
+    h("option", { value: "", selected: !p.root }, "The whole mod"),
+    view.folders.map((d) => h("option", { value: d, selected: d === p.root }, d)),
+  );
+  const targetIn = h("input", {
+    type: "text",
+    list: "place-game-folders",
+    value: p.target,
+    placeholder: "The game folder itself",
+    "aria-label": "Into this game folder",
+    oninput: (ev) => {
+      p.target = ev.target.value;
+      refresh();
+    },
+  });
+  draw();
+  const s = view.suggested;
+  // The files the suggestion leaves out, as they appear in the list below.
+  const inRoot = (f) => (s.root && f.toLowerCase().startsWith(`${s.root.toLowerCase()}/`) ? f.slice(s.root.length + 1) : f);
+  const names = s.skip.map(inRoot);
+  const leftOut = !names.length
+    ? ""
+    : names.length <= 3
+      ? `, leaving out ${names.slice(0, -1).join(", ")}${names.length > 1 ? " and " : ""}${names[names.length - 1]}`
+      : `, leaving out ${names.slice(0, 3).join(", ")} and ${names.length - 3} more`;
+  const key = (x) => [x.root.toLowerCase(), x.target.toLowerCase(), ...x.skip.map((f) => f.toLowerCase()).sort()].join("\n");
+  const showSuggestion = () => {
+    p.root = s.root;
+    p.target = s.target;
+    p.skip = [...s.skip];
+    rootSel.value = s.root;
+    targetIn.value = s.target;
+    refresh(true);
+  };
+  const v = await modal({
+    title: `Where ${m.name} installs`,
+    body: [
+      asked && h("p", { class: "banner warn" }, "UMM could not tell where this mod's files go from what is in the game folder. Check them before playing."),
+      h("p", { class: "muted" }, "Pick the folder inside the mod to install from, and the game folder its contents go into. Untick files to leave them out."),
+      h("label", { class: "field" }, h("span", {}, "Install from"), rootSel),
+      h("label", { class: "field" }, h("span", {}, "Into this game folder"), targetIn, h("datalist", { id: "place-game-folders" }, view.gameFolders.map((d) => h("option", { value: d })))),
+      h(
+        "p",
+        { class: "muted small" },
+        `UMM suggests: ${s.root ? `“${s.root}”` : "the whole mod"} into ${s.target ? `“${s.target}”` : "the game folder"}${leftOut}${s.guessed ? " (a guess)" : ""}. `,
+        h("button", { class: "link inline-link", title: "Fill in the suggestion below; nothing is saved until you press Save", onclick: showSuggestion }, "Apply"),
+      ),
+      summary,
+      list,
+    ],
+    actions: [
+      { label: "Cancel", value: null, class: "ghost" },
+      { label: "Save", value: "save", class: "primary", focus: true },
+    ],
+  });
+  clearTimeout(timer);
+  if (v !== "save") return;
+  // Saved as UMM's own when it is the suggestion, so updates keep suggesting afresh.
+  if (key(p) === key(s)) await attempt(() => api.setPlacement(game, m.id, null), `${m.name} uses UMM's suggestion`);
+  else await attempt(() => api.setPlacement(game, m.id, p), `Saved where ${m.name} installs`);
   await refreshAll();
 }
 

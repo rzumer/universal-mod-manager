@@ -98,15 +98,25 @@ pub fn build_plan(
         let identity = *identity || meta.layout == Layout::Game;
         for (file, rec) in &meta.files {
             let rel = RelPath::parse(file)?;
-            let target = if identity {
-                Some(rel.clone())
-            } else {
-                def.map_mod_file(id, &rel)?
-            };
             let skip = |reason: &str| Skipped {
                 owner: id.clone(),
                 file: file.clone(),
                 reason: reason.to_string(),
+            };
+            let target = if identity {
+                Some(rel.clone())
+            } else {
+                let placed = match &meta.placement {
+                    Some(p) => match p.place(&rel) {
+                        Ok(placed) => placed,
+                        Err(why) => {
+                            skipped.push(skip(why.reason()));
+                            continue;
+                        }
+                    },
+                    None => rel.clone(),
+                };
+                def.map_mod_file(id, &placed)?
             };
             let Some(target) = target else {
                 skipped.push(skip("no install rule matches"));

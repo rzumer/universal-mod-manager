@@ -32,6 +32,8 @@ export const api = {
   deleteProfile: (game, profile) => backend.invoke("delete_profile", { game, profile }),
   previewPlan: (game, profile) => backend.invoke("preview_plan", { game, profile }),
   pickPath: (kind) => backend.invoke("pick_path", { kind }),
+  placementView: (game, id, placement) => backend.invoke("placement_view", { game, id, placement }),
+  setPlacement: (game, id, placement) => backend.invoke("set_placement", { game, id, placement }),
   importMod: (game, path, profile, id) =>
     backend.invoke("import_mod", { game, path, profile, id: id || null }),
   removeMod: (game, id) => backend.invoke("remove_mod", { game, id }),

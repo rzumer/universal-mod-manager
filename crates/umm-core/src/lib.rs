@@ -6,6 +6,7 @@ mod launch;
 mod link;
 mod manual;
 mod nexus;
+mod placement;
 mod runtime;
 mod secrets;
 mod setup;
@@ -25,6 +26,7 @@ pub use nexus::{
     ExpectedFile, NexusAccount, NexusFile, NexusGame, NexusInstallReport, NexusItem, NexusModFiles,
     NexusPage, NexusRequirement, NexusSearch, NexusSort, NexusUpdate, NexusUpdateState,
 };
+pub use placement::{PlacedFile, PlacementView};
 pub use runtime::SyncReport;
 pub use secrets::{system_secrets, MemorySecrets, SecretStore};
 pub use setup::LoaderChoice;
@@ -44,7 +46,8 @@ pub use umm_nexus::graph::{
 };
 pub use umm_nexus::{NexusError, NxmLink};
 pub use umm_store::{
-    DataDir, GameDir, ImportOptions, ModMeta, Profile, ProfileEntry, StoreError, DEFAULT_PROFILE,
+    DataDir, GameDir, ImportOptions, Layout as ModLayout, ModMeta, Placement, Profile,
+    ProfileEntry, StoreError, DEFAULT_PROFILE,
 };
 pub use umm_thunderstore::index::Package;
 
@@ -304,6 +307,20 @@ impl Session {
     ) -> Result<ModMeta> {
         let def = self.def(id)?;
         let game = self.data.game(id);
+        // A mod (not the loader pack, whose paths UMM reads) gets a placement instead of
+        // having its wrapper folders stripped: its files stay as extracted.
+        let is_loader = def
+            .def
+            .loader
+            .as_ref()
+            .and_then(|l| l.source_mod())
+            .is_some_and(|l| opts.id.as_deref() == Some(l));
+        let place = opts.unwrap && opts.layout == umm_store::Layout::Raw && !is_loader;
+        let previous = opts
+            .id
+            .as_deref()
+            .and_then(|m| umm_store::load_mod(&game, m).ok())
+            .and_then(|m| m.placement);
         opts.keep_top_dirs.extend(def.content_top_dirs());
         if let Ok(Some((root, _))) = self.install_path(&def.def) {
             if let Ok(rd) = fs::read_dir(&root) {
@@ -331,6 +348,11 @@ impl Session {
                 })();
                 let _ = fs::remove_dir_all(&staging);
                 result?
+            }
+            None if place => {
+                opts.unwrap = false;
+                let meta = umm_store::import_mod(&game, src, &opts)?;
+                self.place_imported(&def, meta, previous)?
             }
             None => umm_store::import_mod(&game, src, &opts)?,
         };

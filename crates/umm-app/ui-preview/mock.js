@@ -92,13 +92,23 @@ if (new URLSearchParams(location.search).has("empty")) for (const k of Object.ke
 const mods = {
   "example-unity-game": [
     { id: "bepinex", name: "BepInEx Pack", version: "5.4.2100", files: 42, size: 3_400_000, thunderstore: "BepInEx-BepInExPack" },
-    { id: "better-ui", name: "Better UI", version: "2.1.0", files: 3, size: 220_000 },
-    { id: "hd-textures", name: "HD Textures", version: "1.4", files: 312, size: 2_150_000_000 },
+    { id: "better-ui", name: "Better UI", version: "2.1.0", files: 3, size: 220_000, placeable: true },
+    { id: "hd-textures", name: "HD Textures", version: "1.4", files: 312, size: 2_150_000_000, placeable: true, placement: { root: "HD Textures 1.4", target: "Example_Data", skip: ["HD Textures 1.4/Nexus page.url", "HD Textures 1.4/README.txt"], guessed: false, chosen: false } },
     { id: "quality-of-life", name: "Quality of Life Tweaks", version: "0.9.2", files: 5, size: 95_000 },
-    { id: "old-map-mod", name: "Old Map Mod", version: "0.3", files: 2, size: 40_000 },
-    { id: "lantern-light", name: "Lantern Light", version: "1.9", files: 6, size: 1_700_000, nexusUrl: "https://www.nexusmods.com/exampleunitygame/mods/77", nexusMod: 77, nexusFile: 3900 },
+    { id: "old-map-mod", name: "Old Map Mod", version: "0.3", files: 2, size: 40_000, placeable: true, placement: { root: "OldMap", target: "", skip: [], guessed: true, chosen: false } },
+    { id: "lantern-light", name: "Lantern Light", version: "1.9", files: 6, size: 1_700_000, nexusUrl: "https://www.nexusmods.com/exampleunitygame/mods/77", nexusMod: 77, nexusFile: 3900, placeable: true },
   ],
   "example-asi-game": [],
+};
+
+/// What UMM suggests for each mod, fixed once first asked.
+const modSuggestions = {};
+
+/// Files inside some mods, for the "Where its files go" dialog.
+const modFiles = {
+  "hd-textures": ["HD Textures 1.4/sharedassets0.assets", "HD Textures 1.4/ui.bundle", "HD Textures 1.4/StreamingAssets/sky.bundle", "HD Textures 1.4/README.txt", "HD Textures 1.4/Nexus page.url"],
+  "old-map-mod": ["OldMap/map.dat", "OldMap/icons/pin.png"],
+  "better-ui": ["BetterUI/BetterUI.dll", "BetterUI/BetterUI.pdb", "BetterUI/CHANGELOG.md"],
 };
 
 const profiles = {
@@ -203,6 +213,29 @@ const handlers = {
   pick_path: () => null,
   import_mod: () => {
     throw "The preview cannot open files. In the app, this opens a file picker.";
+  },
+  placement_view: ({ game, id, placement }) => {
+    const m = mods[game].find((x) => x.id === id);
+    const files = modFiles[id] || ["Mod/plugin.dll", "Mod/readme.txt"];
+    const p = placement || m.placement || { root: "", target: "", skip: [], guessed: false, chosen: false };
+    if (p.root && !files.some((f) => f.toLowerCase().startsWith(p.root.toLowerCase() + "/"))) throw `placement: the mod has no folder \`${p.root}\``;
+    if (p.target.includes("..")) throw `placement: game folder \`${p.target}\`: the path leaves the folder it is relative to`;
+    const folders = [...new Set(files.flatMap((f) => f.split("/").slice(0, -1).map((_, i, a) => a.slice(0, i + 1).join("/"))))].sort();
+    const placed = files.map((f) => {
+      const skipped = p.skip.some((s) => s.toLowerCase() === f.toLowerCase());
+      const inside = !p.root || f.toLowerCase().startsWith(p.root.toLowerCase() + "/");
+      if (skipped) return { file: f, target: null, note: "left out: documentation or similar", skipped: true };
+      if (!inside) return { file: f, target: null, note: "outside the folder this mod installs from", skipped: false };
+      const rel = p.root ? f.slice(p.root.length + 1) : f;
+      return { file: f, target: p.target ? `${p.target.replace(/\/$/, "")}/${rel}` : rel, note: null, skipped: false };
+    });
+    const suggested = (modSuggestions[id] ??= { root: "", target: "", skip: [], guessed: false, chosen: false, ...(m.placement || {}), chosen: false });
+    return { placement: { ...p }, suggested, folders, gameFolders: ["BepInEx", "BepInEx/plugins", "Example_Data", "Example_Data/StreamingAssets", "MonoBleedingEdge"], files: placed };
+  },
+  set_placement: ({ game, id, placement }) => {
+    const m = mods[game].find((x) => x.id === id);
+    m.placement = placement ? { ...placement, guessed: false, chosen: true } : { ...(modSuggestions[id] || m.placement), chosen: false };
+    return { ...m, source: null, importedUnix: 0 };
   },
   remove_mod: ({ game, id }) => {
     mods[game] = mods[game].filter((m) => m.id !== id);

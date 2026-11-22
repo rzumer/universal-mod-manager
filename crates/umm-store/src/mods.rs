@@ -2,6 +2,7 @@
 //! `mods/<id>/files/` holds its content and `mods/<id>/mod.toml` its metadata and file hashes.
 
 use crate::fsutil::{self, clear_readonly, hash_file, IoCtx};
+use crate::placement::Placement;
 use crate::{read_toml, write_toml, GameDir, Result, StoreError};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -31,6 +32,10 @@ pub struct ModMeta {
     /// Set for files installed from Nexus Mods.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nexus: Option<NexusMeta>,
+    /// Where the files go, for a mod not laid out like the game folder. Applies before the
+    /// install rules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<Placement>,
     /// Path inside the mod (`/`-separated) → size and hash.
     pub files: BTreeMap<String, FileRecord>,
 }
@@ -258,6 +263,7 @@ fn stage_mod(
         layout: opts.layout,
         thunderstore: opts.thunderstore.clone(),
         nexus: opts.nexus.clone(),
+        placement: None,
         files,
     };
     write_toml(&out.join(MOD_META_FILE), &meta)?;
@@ -464,6 +470,21 @@ pub fn load_mod(game: &GameDir, id: &str) -> Result<ModMeta> {
         return Err(StoreError::ModNotFound(id.to_string()));
     }
     read_toml(&p)
+}
+
+/// Sets or clears a mod's placement, after checking it against the mod's files. Only the
+/// metadata changes; the files stay as they are.
+pub fn set_placement(game: &GameDir, id: &str, placement: Option<Placement>) -> Result<ModMeta> {
+    let mut meta = load_mod(game, id)?;
+    meta.placement = match placement {
+        Some(p) => Some(
+            p.checked(meta.files.keys().map(String::as_str))
+                .map_err(StoreError::Placement)?,
+        ),
+        None => None,
+    };
+    write_toml(&game.mod_dir(id).join(MOD_META_FILE), &meta)?;
+    Ok(meta)
 }
 
 /// Every complete mod in the store. Folders without `mod.toml` (an interrupted import) are

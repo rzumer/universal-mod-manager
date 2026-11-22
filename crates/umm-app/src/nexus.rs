@@ -133,11 +133,14 @@ pub struct NexusInstallDto {
     pub name: String,
     pub version: Option<String>,
     pub replaced: bool,
+    /// UMM could not tell where the files go: the interface asks.
+    pub placement_guessed: bool,
 }
 
 impl From<NexusInstallReport> for NexusInstallDto {
     fn from(r: NexusInstallReport) -> Self {
         NexusInstallDto {
+            placement_guessed: r.meta.placement.as_ref().is_some_and(|p| p.guessed),
             id: r.meta.id,
             name: r.meta.name,
             version: r.meta.version,

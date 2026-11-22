@@ -574,6 +574,8 @@ impl GameDef {
                 matcher,
                 strip,
                 target: r.target.clone(),
+                catch_all: r.pattern.trim_matches('/') == "**"
+                    && r.target.trim_matches('/').is_empty(),
             });
         }
         Ok(CompiledDef {
@@ -611,6 +613,8 @@ struct CompiledRule {
     matcher: GlobMatcher,
     strip: usize,
     target: String,
+    /// `match = "**"`, `target = ""`: keeps every path as it is.
+    catch_all: bool,
 }
 
 /// A validated game definition with its globs compiled.
@@ -642,12 +646,39 @@ impl CompiledDef {
         Ok(None)
     }
 
+    /// Whether a rule other than the keep-the-path catch-all (`**` → game folder) decides
+    /// where this file goes: the game definition knows something about it.
+    pub fn has_specific_rule(&self, rel: &RelPath) -> bool {
+        self.rules
+            .iter()
+            .find(|r| r.matcher.is_match(rel.as_str()))
+            .is_some_and(|r| !r.catch_all)
+    }
+
     pub fn is_protected(&self, target: &RelPath) -> bool {
         self.protect.is_match(target.as_str())
     }
 
     pub fn is_writable(&self, target: &RelPath) -> bool {
         self.writable.is_match(target.as_str())
+    }
+
+    /// Top-level folders of rules that give each mod a folder of its own (`plugins/**` →
+    /// `BepInEx/plugins/{mod}/`): where a mod's content can go when nothing else says.
+    pub fn per_mod_top_dirs(&self) -> Vec<String> {
+        self.def
+            .install
+            .iter()
+            .filter(|r| r.target.contains("{mod}"))
+            .filter_map(|r| {
+                r.pattern
+                    .split('/')
+                    .next()
+                    .filter(|_| r.pattern.contains('/'))
+            })
+            .filter(|c| !c.is_empty() && !c.contains(['*', '?', '[', '{']))
+            .map(|c| c.to_string())
+            .collect()
     }
 
     /// Top-level folder names the install rules expect inside mods (e.g. `BepInEx`), used to
@@ -722,6 +753,12 @@ paths = ["BepInEx/config/**"]
         assert_eq!(map(&c, "Bar.dll"), "BepInEx/plugins/my-mod/Bar.dll");
         // `*.dll` does not cross folders, so this falls through to the identity rule.
         assert_eq!(map(&c, "sub/Baz.dll"), "sub/Baz.dll");
+        let rel = |p: &str| RelPath::parse(p).unwrap();
+        assert!(c.has_specific_rule(&rel("Bar.dll")));
+        assert!(
+            !c.has_specific_rule(&rel("sub/Baz.dll")),
+            "only the catch-all"
+        );
         assert_eq!(
             c.def.loader.as_ref().unwrap().source_mod(),
             Some("bepinex-pack")

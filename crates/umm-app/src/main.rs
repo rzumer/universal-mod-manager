@@ -24,6 +24,8 @@ macro_rules! umm_handlers {
             commands::pick_path,
             commands::import_mod,
             commands::remove_mod,
+            commands::placement_view,
+            commands::set_placement,
             commands::set_install_path,
             commands::launch,
             commands::stop_waiting,

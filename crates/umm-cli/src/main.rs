@@ -238,7 +238,7 @@ enum Cmd {
         name: Option<String>,
         #[arg(long = "mod-version")]
         version: Option<String>,
-        /// Keep a single top-level folder instead of unwrapping it
+        /// Install every file as the archive lays it out, without a placement suggestion
         #[arg(long)]
         no_unwrap: bool,
         #[arg(short, long, default_value = DEFAULT_PROFILE)]
@@ -246,6 +246,26 @@ enum Cmd {
     },
     /// List installed mods
     Mods { game: String },
+    /// Show or change where a mod's files go in the game folder
+    Place {
+        game: String,
+        id: String,
+        /// Folder inside the mod to install from ("" for the whole mod)
+        #[arg(long)]
+        root: Option<String>,
+        /// Game folder its contents go into ("" for the game folder itself)
+        #[arg(long)]
+        target: Option<String>,
+        /// Leave a file out (its path inside the mod); can be repeated
+        #[arg(long)]
+        skip: Vec<String>,
+        /// Install a file that was left out; can be repeated
+        #[arg(long)]
+        include: Vec<String>,
+        /// Go back to UMM's suggestion
+        #[arg(long, conflicts_with_all = ["root", "target", "skip", "include"])]
+        suggested: bool,
+    },
     /// Delete a mod from UMM and all profiles
     RemoveMod {
         game: String,
@@ -468,6 +488,31 @@ fn main() {
     }
 }
 
+fn print_placement(p: &umm_core::Placement) {
+    let root = if p.root.is_empty() {
+        "the whole mod".to_string()
+    } else {
+        format!("`{}`", p.root)
+    };
+    let target = if p.target.is_empty() {
+        "the game folder".to_string()
+    } else {
+        format!("`{}`", p.target)
+    };
+    let left = match p.skip.len() {
+        0 => String::new(),
+        n => format!(", leaving out {n} file(s)"),
+    };
+    let how = if p.chosen {
+        " (your choice)"
+    } else if p.guessed {
+        " (a guess)"
+    } else {
+        ""
+    };
+    println!("installs {root} into {target}{left}{how}");
+}
+
 fn print_report(r: &RevertReport) {
     println!(
         "restored {} original file(s), removed {} mod file(s)",
@@ -589,6 +634,54 @@ fn run(cli: Cli) -> Result<()> {
                 m.id,
                 m.files.len()
             );
+            if let Some(p) = &m.placement {
+                print_placement(p);
+                if p.guessed {
+                    println!(
+                        "UMM could not tell where its files go; check with `umm place {game} {}`",
+                        m.id
+                    );
+                }
+            }
+        }
+        Cmd::Place {
+            game,
+            id,
+            root,
+            target,
+            skip,
+            include,
+            suggested,
+        } => {
+            let changing = suggested
+                || root.is_some()
+                || target.is_some()
+                || !skip.is_empty()
+                || !include.is_empty();
+            if suggested {
+                s.set_placement(&game, &id, None)?;
+            } else if changing {
+                let mut p = s.placement_view(&game, &id, None)?.placement;
+                p.root = root.unwrap_or(p.root);
+                p.target = target.unwrap_or(p.target);
+                p.skip
+                    .retain(|f| !include.iter().any(|i| i.eq_ignore_ascii_case(f)));
+                p.skip.extend(skip);
+                s.set_placement(&game, &id, Some(p))?;
+            }
+            let v = s.placement_view(&game, &id, None)?;
+            print_placement(&v.placement);
+            if v.placement != v.suggested {
+                print!("UMM suggests: ");
+                print_placement(&v.suggested);
+            }
+            for f in &v.files {
+                match (&f.target, &f.note) {
+                    (Some(t), _) => println!("  {:<50} -> {t}", f.file),
+                    (None, Some(n)) => println!("  {:<50}    ({n})", f.file),
+                    (None, None) => println!("  {}", f.file),
+                }
+            }
         }
         Cmd::Mods { game } => {
             for m in s.mods(&game)? {
