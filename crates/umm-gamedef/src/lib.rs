@@ -332,35 +332,43 @@ pub struct DoorstopLoader {
     /// Top-level folders that live in the runtime folder instead of the game folder.
     pub runtime_dirs: &'static [&'static str],
     /// The builds the loader comes in; which one a profile has is read from its files.
-    pub builds: &'static [BepInExBuild],
+    pub builds: &'static [DoorstopTarget],
+    /// What the profile is missing without it, as the user knows it.
+    pub name: &'static str,
 }
 
-/// The BepInEx builds UMM can start, told apart by the assembly Doorstop loads.
+/// The loaders UMM can start through Doorstop, told apart by the assembly Doorstop loads:
+/// BepInEx builds, and Unity Mod Manager.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BepInExBuild {
+pub enum DoorstopTarget {
     /// BepInEx 5, for Mono Unity games.
     V5,
     /// BepInEx 6 for Mono Unity games.
     V6Mono,
     /// BepInEx 6 for IL2CPP Unity games; runs on the .NET runtime in the pack's `dotnet/`.
     V6Il2cpp,
+    /// Unity Mod Manager (its Thunderstore build), which reads mods from `UMM/Mods/` beside
+    /// its own `UMM/Core/`.
+    UnityModManager,
 }
 
-impl BepInExBuild {
+impl DoorstopTarget {
     /// The assembly Doorstop loads, relative to the runtime folder.
     pub fn target(self) -> &'static str {
         match self {
-            BepInExBuild::V5 => "BepInEx/core/BepInEx.Preloader.dll",
-            BepInExBuild::V6Mono => "BepInEx/core/BepInEx.Unity.Mono.Preloader.dll",
-            BepInExBuild::V6Il2cpp => "BepInEx/core/BepInEx.Unity.IL2CPP.dll",
+            DoorstopTarget::V5 => "BepInEx/core/BepInEx.Preloader.dll",
+            DoorstopTarget::V6Mono => "BepInEx/core/BepInEx.Unity.Mono.Preloader.dll",
+            DoorstopTarget::V6Il2cpp => "BepInEx/core/BepInEx.Unity.IL2CPP.dll",
+            DoorstopTarget::UnityModManager => "UMM/Core/UnityModManager.dll",
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
-            BepInExBuild::V5 => "BepInEx 5",
-            BepInExBuild::V6Mono => "BepInEx 6 (Mono)",
-            BepInExBuild::V6Il2cpp => "BepInEx 6 (IL2CPP)",
+            DoorstopTarget::V5 => "BepInEx 5",
+            DoorstopTarget::V6Mono => "BepInEx 6 (Mono)",
+            DoorstopTarget::V6Il2cpp => "BepInEx 6 (IL2CPP)",
+            DoorstopTarget::UnityModManager => "Unity Mod Manager",
         }
     }
 }
@@ -383,15 +391,31 @@ pub const DOORSTOP3_TARGET_FLAG: &str = "--doorstop-target";
 pub const BEPINEX_KIND: &str = "bepinex";
 
 pub fn doorstop_loader(kind: &str) -> Option<DoorstopLoader> {
-    (kind == BEPINEX_KIND).then_some(DoorstopLoader {
-        runtime_dirs: &["BepInEx", "dotnet"],
-        builds: &[
-            BepInExBuild::V5,
-            BepInExBuild::V6Mono,
-            BepInExBuild::V6Il2cpp,
-        ],
-    })
+    match kind {
+        BEPINEX_KIND => Some(DoorstopLoader {
+            runtime_dirs: &["BepInEx", "dotnet"],
+            builds: &[
+                DoorstopTarget::V5,
+                DoorstopTarget::V6Mono,
+                DoorstopTarget::V6Il2cpp,
+            ],
+            name: "BepInEx pack",
+        }),
+        UMM_KIND => Some(DoorstopLoader {
+            runtime_dirs: &[UMM_DIR],
+            builds: &[DoorstopTarget::UnityModManager],
+            name: "Unity Mod Manager",
+        }),
+        _ => None,
+    }
 }
+
+/// Loader kind for Unity Mod Manager (newman55's), started through Unity Doorstop.
+pub const UMM_KIND: &str = "umm";
+/// Its folder: `Core/` with the manager, `Mods/` with a folder per mod.
+pub const UMM_DIR: &str = "UMM";
+/// Unity Doorstop's own files, which go into the game folder with Unity Mod Manager.
+pub const DOORSTOP_FILES: &[&str] = &["winhttp.dll", "doorstop_config.ini", ".doorstop_version"];
 
 /// Loader kind for Thunderstore's unreal-shimloader (RE-UE4SS behind a `dwmapi.dll` proxy).
 pub const SHIMLOADER_KIND: &str = "shimloader";
@@ -528,6 +552,7 @@ pub fn thunderstore_inject(kind: &str) -> Option<Inject> {
         LOVELY_KIND => Some(Inject::Args),
         GDWEAVE_KIND => Some(Inject::Args),
         GODOTML_KIND => Some(Inject::Args),
+        UMM_KIND => Some(Inject::Doorstop),
         ROM_KIND => Some(Inject::Args),
         _ => None,
     }
@@ -542,6 +567,7 @@ pub fn loader_name(kind: &str) -> &str {
         LOVELY_KIND => "Lovely",
         GDWEAVE_KIND => "GDWeave",
         GODOTML_KIND => "Godot Mod Loader",
+        UMM_KIND => "Unity Mod Manager",
         ROM_KIND => "Return of Modding",
         other => other,
     }

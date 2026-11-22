@@ -6,7 +6,7 @@
 use crate::{
     loader_name, thunderstore_inject, GameDef, GameDefError, Inject, InstallRule, Loader,
     Thunderstore, BEPINEX_KIND, GDWEAVE_KIND, GODOTML_KIND, LOVELY_KIND,
-    RECURSIVE_MELONLOADER_KIND, ROM_KIND, SHIMLOADER_KIND, THUNDERSTORE_SOURCE,
+    RECURSIVE_MELONLOADER_KIND, ROM_KIND, SHIMLOADER_KIND, THUNDERSTORE_SOURCE, UMM_KIND,
 };
 use serde::{Deserialize, Serialize};
 
@@ -144,13 +144,27 @@ pub fn rom_rules() -> Vec<InstallRule> {
     ]
 }
 
+/// Install rules for Unity Mod Manager mods imported from files rather than Thunderstore:
+/// its own folders keep their place, and anything else is a mod in its own folder under
+/// `UMM/Mods/` (Unity Mod Manager reads one folder per mod, with its `Info.json`).
+pub fn umm_rules() -> Vec<InstallRule> {
+    vec![
+        rule("UMM/**", "UMM/"),
+        rule("Mods/**", "UMM/Mods/"),
+        rule("**", "UMM/Mods/{mod}/"),
+    ]
+}
+
 const BEPINEX_CONFIG: &str = "BepInEx/config/**";
 const SHIMLOADER_CONFIG: &str = "shimloader/cfg/**";
 const MELONLOADER_CONFIG: &str = "UserData/**";
 const LOVELY_CONFIG: &str = "mods/lovely/**";
 const GDWEAVE_CONFIG: &str = "GDWeave/configs/**";
 const ROM_CONFIG: &str = "ReturnOfModding/config/**";
+/// Unity Mod Manager's settings, and each mod's `Settings.xml`.
+const UMM_CONFIG: &str = "UMM/**/*.xml";
 const LOADER_CONFIGS: &[&str] = &[
+    UMM_CONFIG,
     ROM_CONFIG,
     BEPINEX_CONFIG,
     SHIMLOADER_CONFIG,
@@ -256,6 +270,8 @@ impl GameDef {
                     (godotml_rules(), None)
                 } else if kind == ROM_KIND {
                     (rom_rules(), Some(ROM_CONFIG))
+                } else if kind == UMM_KIND {
+                    (umm_rules(), Some(UMM_CONFIG))
                 } else if crate::is_melonloader(kind) {
                     (
                         melonloader_rules(kind == RECURSIVE_MELONLOADER_KIND),

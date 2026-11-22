@@ -7,7 +7,7 @@ use umm_deploy::{
     apply, build_plan, prepare, Faults, GameLock, Journal, PlannedFile, RevertReport,
 };
 use umm_gamedef::{
-    detect::steam_roots, loader_name, BepInExBuild, DoorstopLoader, GameDef, RelPath,
+    detect::steam_roots, loader_name, DoorstopLoader, DoorstopTarget, GameDef, RelPath,
     RuntimeLoader, SteamRelaunch, BEPINEX_KIND, CORECLR_PATH, CORLIB_DIR, DOORSTOP3_ENABLED_FLAG,
     DOORSTOP3_TARGET_FLAG, DOORSTOP_CORECLR_FLAG, DOORSTOP_CORLIB_FLAG, DOORSTOP_ENABLED_FLAG,
     DOORSTOP_TARGET_FLAG, GDWEAVE_DIR, GDWEAVE_FOLDER_FLAG, GDWEAVE_PROXY, GODOTML_AUTOLOAD,
@@ -624,7 +624,7 @@ fn check_shimloader(files: &[PlannedFile]) -> Result<RelPath> {
 /// The BepInEx build a profile has and the Doorstop that starts it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Doorstop {
-    pub build: BepInExBuild,
+    pub build: DoorstopTarget,
     /// 3 or 4: the two spell their arguments differently.
     pub major: u8,
 }
@@ -644,15 +644,19 @@ fn check_bepinex(def: &GameDef, files: &[PlannedFile], ds: &DoorstopLoader) -> R
         .find(|b| find(b.target()).is_some())
     else {
         let how = if def.loader.as_ref().is_some_and(|l| l.from_thunderstore()) {
-            "install the BepInEx pack from the Thunderstore tab (it also comes with any mod that needs it)"
+            format!(
+                "install the {} from the Thunderstore tab (it also comes with any mod that needs it)",
+                ds.name
+            )
         } else {
-            "import a BepInEx pack as the mod `bepinex`"
+            format!("import a {} as the mod `bepinex`", ds.name)
         };
         return Err(CoreError::Invalid(format!(
-            "the profile has no BepInEx pack; {how}"
+            "the profile has no {}; {how}",
+            ds.name
         )));
     };
-    if build == BepInExBuild::V6Il2cpp && find(CORECLR_PATH).is_none() {
+    if build == DoorstopTarget::V6Il2cpp && find(CORECLR_PATH).is_none() {
         return Err(CoreError::Invalid(format!(
             "the {} pack has no {CORECLR_PATH}; reinstall the pack",
             build.label()
@@ -673,7 +677,7 @@ fn check_bepinex(def: &GameDef, files: &[PlannedFile], ds: &DoorstopLoader) -> R
             _ => 4,
         },
     };
-    if build == BepInExBuild::V6Il2cpp && major < 4 {
+    if build == DoorstopTarget::V6Il2cpp && major < 4 {
         return Err(CoreError::Invalid(
             "this BepInEx 6 IL2CPP pack ships Doorstop 3, which cannot start IL2CPP games; use a newer pack".into(),
         ));
@@ -792,7 +796,7 @@ pub(crate) fn build_spec(
             target_flag.to_string(),
             in_runtime(d.build.target()),
         ]);
-        if d.build == BepInExBuild::V6Il2cpp {
+        if d.build == DoorstopTarget::V6Il2cpp {
             // The pack's .NET runtime lives in the runtime folder, not the game folder.
             game_args.extend([
                 DOORSTOP_CORECLR_FLAG.to_string(),
@@ -849,7 +853,7 @@ mod tests {
             Path::new("/game"),
             Path::new("/rt"),
             &p,
-            ds(BepInExBuild::V5, 4),
+            ds(DoorstopTarget::V5, 4),
             None,
         )
         .unwrap();
@@ -880,7 +884,7 @@ mod tests {
             Path::new("/game"),
             Path::new("/rt"),
             &p,
-            ds(BepInExBuild::V5, 3),
+            ds(DoorstopTarget::V5, 3),
             None,
         )
         .unwrap();
@@ -893,7 +897,7 @@ mod tests {
             Path::new("/game"),
             Path::new("/rt"),
             &p,
-            ds(BepInExBuild::V6Il2cpp, 4),
+            ds(DoorstopTarget::V6Il2cpp, 4),
             None,
         )
         .unwrap();
@@ -924,7 +928,7 @@ mod tests {
             Path::new("/game"),
             Path::new("/rt"),
             &p,
-            ds(BepInExBuild::V6Mono, 4),
+            ds(DoorstopTarget::V6Mono, 4),
             None,
         )
         .unwrap();
@@ -933,6 +937,18 @@ mod tests {
             rt(&["BepInEx", "core", "BepInEx.Unity.Mono.Preloader.dll"])
         );
         assert_eq!(spec.args.len(), 6, "no runtime paths for Mono");
+        // Unity Mod Manager, through the same Doorstop.
+        let spec = build_spec(
+            &d,
+            Path::new("/game"),
+            Path::new("/rt"),
+            &p,
+            ds(DoorstopTarget::UnityModManager, 4),
+            None,
+        )
+        .unwrap();
+        assert_eq!(spec.args[4], rt(&["UMM", "Core", "UnityModManager.dll"]));
+        assert_eq!(spec.args.len(), 6);
     }
 
     #[test]

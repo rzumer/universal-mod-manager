@@ -143,6 +143,9 @@ pub fn plan(
     if game.package_loader == umm_gamedef::LOVELY_KIND && loader.is_none() {
         return lovely_mod(files, full_name);
     }
+    if loader.is_some_and(|l| l.loader == umm_gamedef::UMM_KIND) {
+        return umm_pack(files, full_name);
+    }
     if let Some(l) = loader.filter(|l| l.loader == umm_gamedef::ROM_KIND) {
         return rom_pack(files, full_name, &l.root_folder);
     }
@@ -419,6 +422,32 @@ fn lovely_mod(
         return Err(TsError::Data {
             what: full_name.into(),
             message: "the package has no files to install".into(),
+        });
+    }
+    Ok(out)
+}
+
+/// Lays out the Unity Mod Manager package as r2modman does: `UMM/Core/` and Unity Doorstop's
+/// files (its proxy, config, version and `doorstop_libs/`) keep their place. The rest
+/// (`run_umm.sh`, for Linux, among it) is left out.
+fn umm_pack(
+    files: BTreeMap<String, Vec<u8>>,
+    full_name: &str,
+) -> Result<BTreeMap<String, Vec<u8>>> {
+    let out: BTreeMap<String, Vec<u8>> = files
+        .into_iter()
+        .filter(|(path, _)| {
+            let lower = path.to_ascii_lowercase();
+            lower.starts_with("umm/core/")
+                || lower.starts_with("doorstop_libs/")
+                || umm_gamedef::DOORSTOP_FILES.contains(&lower.as_str())
+        })
+        .collect();
+    let target = umm_gamedef::DoorstopTarget::UnityModManager.target();
+    if !out.keys().any(|k| k.eq_ignore_ascii_case(target)) {
+        return Err(TsError::Data {
+            what: format!("{full_name} (mod loader)"),
+            message: format!("no {target} in the package"),
         });
     }
     Ok(out)
@@ -954,6 +983,40 @@ pub(crate) mod tests {
                 "mods/Steamodded-smods/src/core.lua",
             ]
         );
+    }
+
+    #[test]
+    fn unity_mod_manager_package() {
+        let mut adofai = rules();
+        adofai.package_loader = "umm".into();
+        let entry = ModloaderPackage {
+            package_id: "UMM-UMM".into(),
+            root_folder: "UMM".into(),
+            loader: "umm".into(),
+        };
+        let keys = |m: &BTreeMap<String, Vec<u8>>| m.keys().cloned().collect::<Vec<_>>();
+        let pack = zip_of(&[
+            ("manifest.json", "{}"),
+            ("UMM/Core/UnityModManager.dll", "u"),
+            ("UMM/Core/0Harmony.dll", "h"),
+            ("winhttp.dll", "p"),
+            ("doorstop_config.ini", "c"),
+            (".doorstop_version", "4"),
+            ("run_umm.sh", "s"),
+        ]);
+        let out = plan(&pack, "UMM-UMM", &adofai, Some(&entry)).unwrap();
+        assert_eq!(
+            keys(&out),
+            [
+                ".doorstop_version",
+                "UMM/Core/0Harmony.dll",
+                "UMM/Core/UnityModManager.dll",
+                "doorstop_config.ini",
+                "winhttp.dll"
+            ]
+        );
+        let empty = zip_of(&[("winhttp.dll", "p")]);
+        assert!(plan(&empty, "UMM-UMM", &adofai, Some(&entry)).is_err());
     }
 
     #[test]

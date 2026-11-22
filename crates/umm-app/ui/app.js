@@ -659,6 +659,7 @@ function filesTab() {
     gdweave: "GDWeave/",
     godotml: "mods/ and addons/",
     "return-of-modding": "ReturnOfModding/",
+    umm: "UMM/",
   }[S.details.game.loader];
   const runtimeNote =
     runtimeDirs && ["doorstop", "args"].includes(S.details.game.inject)
