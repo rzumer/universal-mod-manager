@@ -5,8 +5,8 @@
 
 use crate::{
     loader_name, thunderstore_inject, GameDef, GameDefError, Inject, InstallRule, Loader,
-    Thunderstore, BEPINEX_KIND, GDWEAVE_KIND, LOVELY_KIND, RECURSIVE_MELONLOADER_KIND,
-    SHIMLOADER_KIND, THUNDERSTORE_SOURCE,
+    Thunderstore, BEPINEX_KIND, GDWEAVE_KIND, GODOTML_KIND, LOVELY_KIND,
+    RECURSIVE_MELONLOADER_KIND, SHIMLOADER_KIND, THUNDERSTORE_SOURCE,
 };
 use serde::{Deserialize, Serialize};
 
@@ -119,6 +119,16 @@ pub fn gdweave_rules() -> Vec<InstallRule> {
     ]
 }
 
+/// Install rules for Godot Mod Loader mods imported from files rather than Thunderstore: the
+/// loader reads mods as zips, so zips go to `mods/`. Anything else keeps its path.
+pub fn godotml_rules() -> Vec<InstallRule> {
+    vec![
+        rule("mods/**", "mods/"),
+        rule("*.zip", "mods/"),
+        rule("**", ""),
+    ]
+}
+
 const BEPINEX_CONFIG: &str = "BepInEx/config/**";
 const SHIMLOADER_CONFIG: &str = "shimloader/cfg/**";
 const MELONLOADER_CONFIG: &str = "UserData/**";
@@ -218,19 +228,22 @@ impl GameDef {
                 d.thunderstore = Some(Thunderstore {
                     community: label.to_string(),
                 });
+                // GodotML keeps its configs in the game's user folder, outside UMM's.
                 let (rules, config) = if kind == SHIMLOADER_KIND {
-                    (shimloader_rules(), SHIMLOADER_CONFIG)
+                    (shimloader_rules(), Some(SHIMLOADER_CONFIG))
                 } else if kind == LOVELY_KIND {
-                    (lovely_rules(), LOVELY_CONFIG)
+                    (lovely_rules(), Some(LOVELY_CONFIG))
                 } else if kind == GDWEAVE_KIND {
-                    (gdweave_rules(), GDWEAVE_CONFIG)
+                    (gdweave_rules(), Some(GDWEAVE_CONFIG))
+                } else if kind == GODOTML_KIND {
+                    (godotml_rules(), None)
                 } else if crate::is_melonloader(kind) {
                     (
                         melonloader_rules(kind == RECURSIVE_MELONLOADER_KIND),
-                        MELONLOADER_CONFIG,
+                        Some(MELONLOADER_CONFIG),
                     )
                 } else {
-                    (bepinex_rules(), BEPINEX_CONFIG)
+                    (bepinex_rules(), Some(BEPINEX_CONFIG))
                 };
                 (
                     Some(Loader {
@@ -239,7 +252,7 @@ impl GameDef {
                         inject,
                     }),
                     rules,
-                    Some(config),
+                    config,
                 )
             }
         };

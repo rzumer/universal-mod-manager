@@ -461,6 +461,19 @@ pub const GDWEAVE_FOLDER_FLAG: &str = "--gdweave-folder-override=";
 /// GDWeave's proxy DLL.
 pub const GDWEAVE_PROXY: &str = "winmm.dll";
 
+/// Loader kind for the Godot Mod Loader (GodotML), which Brotato and Dome Keeper ship built in.
+pub const GODOTML_KIND: &str = "godotml";
+/// Where GodotML loads mod zips from, in the runtime folder; the flags pointing it there and
+/// turning mods on (games may need `--enable-mods`).
+pub const GODOTML_MODS_DIR: &str = "mods";
+pub const GODOTML_ENABLE_FLAG: &str = "--enable-mods";
+pub const GODOTML_MODS_FLAG: &str = "--mods-path";
+/// The loader's own files from its Thunderstore package, kept in the runtime folder: games
+/// that have it built in do not use them.
+pub const GODOTML_LOADER_DIR: &str = "addons";
+/// What a game's project settings say when GodotML is built in (its autoload).
+pub const GODOTML_AUTOLOAD: &str = "res://addons/mod_loader/mod_loader.gd";
+
 /// A loader that is pointed at a per-profile runtime folder outside the game, so that only
 /// its proxy goes into the game folder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -475,6 +488,8 @@ pub enum RuntimeLoader {
     Lovely,
     /// GDWeave, given its folder as a launch argument.
     GDWeave,
+    /// The Godot Mod Loader built into the game, given its mod folder as a launch argument.
+    GodotML,
 }
 
 impl RuntimeLoader {
@@ -486,6 +501,7 @@ impl RuntimeLoader {
             RuntimeLoader::MelonLoader => MELONLOADER_DIRS,
             RuntimeLoader::Lovely => &[LOVELY_DIR],
             RuntimeLoader::GDWeave => &[GDWEAVE_DIR],
+            RuntimeLoader::GodotML => &[GODOTML_MODS_DIR, GODOTML_LOADER_DIR],
         }
     }
 }
@@ -498,6 +514,7 @@ pub fn thunderstore_inject(kind: &str) -> Option<Inject> {
         k if is_melonloader(k) => Some(Inject::Args),
         LOVELY_KIND => Some(Inject::Args),
         GDWEAVE_KIND => Some(Inject::Args),
+        GODOTML_KIND => Some(Inject::Args),
         _ => None,
     }
 }
@@ -510,6 +527,7 @@ pub fn loader_name(kind: &str) -> &str {
         k if is_melonloader(k) => "MelonLoader",
         LOVELY_KIND => "Lovely",
         GDWEAVE_KIND => "GDWeave",
+        GODOTML_KIND => "Godot Mod Loader",
         other => other,
     }
 }
@@ -534,6 +552,7 @@ impl GameDef {
             Inject::Args if is_melonloader(&l.kind) => Some(RuntimeLoader::MelonLoader),
             Inject::Args if l.kind == LOVELY_KIND => Some(RuntimeLoader::Lovely),
             Inject::Args if l.kind == GDWEAVE_KIND => Some(RuntimeLoader::GDWeave),
+            Inject::Args if l.kind == GODOTML_KIND => Some(RuntimeLoader::GodotML),
             _ => None,
         }
     }
@@ -706,10 +725,11 @@ impl GameDef {
                     if loader.kind == SHIMLOADER_KIND
                         || loader.kind == LOVELY_KIND
                         || loader.kind == GDWEAVE_KIND
+                        || loader.kind == GODOTML_KIND
                         || is_melonloader(&loader.kind) => {}
                 Inject::Args => {
                     return Err(GameDefError::Unsupported(format!(
-                        "loader kind `{}` cannot be injected with arguments (supported: shimloader, melonloader, recursive-melonloader, lovely, gdweave); use inject = \"files\"",
+                        "loader kind `{}` cannot be injected with arguments (supported: shimloader, melonloader, recursive-melonloader, lovely, gdweave, godotml); use inject = \"files\"",
                         loader.kind
                     )))
                 }

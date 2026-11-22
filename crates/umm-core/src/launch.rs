@@ -10,9 +10,10 @@ use umm_gamedef::{
     detect::steam_roots, loader_name, BepInExBuild, DoorstopLoader, GameDef, RelPath,
     RuntimeLoader, SteamRelaunch, BEPINEX_KIND, CORECLR_PATH, CORLIB_DIR, DOORSTOP3_ENABLED_FLAG,
     DOORSTOP3_TARGET_FLAG, DOORSTOP_CORECLR_FLAG, DOORSTOP_CORLIB_FLAG, DOORSTOP_ENABLED_FLAG,
-    DOORSTOP_TARGET_FLAG, GDWEAVE_DIR, GDWEAVE_FOLDER_FLAG, GDWEAVE_PROXY, LOVELY_DIR,
-    LOVELY_MOD_DIR_FLAG, LOVELY_PROXIES, MELONLOADER_BASEDIR_FLAG, MELONLOADER_GENERATED,
-    MELONLOADER_REGENERATE_FLAG, SHIMLOADER_DIRS,
+    DOORSTOP_TARGET_FLAG, GDWEAVE_DIR, GDWEAVE_FOLDER_FLAG, GDWEAVE_PROXY, GODOTML_AUTOLOAD,
+    GODOTML_ENABLE_FLAG, GODOTML_MODS_DIR, GODOTML_MODS_FLAG, LOVELY_DIR, LOVELY_MOD_DIR_FLAG,
+    LOVELY_PROXIES, MELONLOADER_BASEDIR_FLAG, MELONLOADER_GENERATED, MELONLOADER_REGENERATE_FLAG,
+    SHIMLOADER_DIRS,
 };
 use umm_launch::{LaunchSpec, Tracking};
 use umm_store::fsutil::{hash_file, write_atomic, IoCtx};
@@ -106,6 +107,8 @@ impl Session {
         let profile = umm_store::load_profile(&game, profile_name)?;
         let mut plan = build_plan(&game, &def, &profile)?;
         let rl = def.def.runtime_loader();
+        // The Godot Mod Loader's own files go to the game folder when UMM sets it up.
+        let mut godotml_in_game = false;
         let (injection, shim_bin) = match rl {
             Some(RuntimeLoader::Doorstop(ds)) => (
                 Some(Injection::Doorstop(check_bepinex(
@@ -126,6 +129,33 @@ impl Session {
             Some(RuntimeLoader::GDWeave) => {
                 check_gdweave(&plan.files)?;
                 (Some(Injection::GDWeave), None)
+            }
+            Some(RuntimeLoader::GodotML) => {
+                if !godotml_built_in(&def.def, &root) {
+                    // Set up for the session: the loader's files and what its setup makes
+                    // go to the game folder, journaled.
+                    let loader: Vec<PlannedFile> = plan
+                        .files
+                        .iter()
+                        .filter(|f| crate::godotml::is_loader_file(f))
+                        .cloned()
+                        .collect();
+                    if !loader.iter().any(|f| {
+                        f.target
+                            .as_str()
+                            .eq_ignore_ascii_case("addons/mod_loader/mod_loader_setup.gd")
+                    }) {
+                        return Err(CoreError::Invalid(
+                            "the profile has no Godot Mod Loader; install it from the Thunderstore tab (it also comes with any mod that needs it)".into(),
+                        ));
+                    }
+                    let made = self.godotml_setup_files(&def.def, &root, &loader)?;
+                    plan.files
+                        .retain(|f| !made.iter().any(|m| m.target.key() == f.target.key()));
+                    plan.files.extend(made);
+                    godotml_in_game = true;
+                }
+                (Some(Injection::GodotML), None)
             }
             Some(RuntimeLoader::MelonLoader) => {
                 check_melonloader(&plan.files)?;
@@ -151,7 +181,13 @@ impl Session {
 
         let runtime = match rl {
             Some(rl) => {
-                let (inside, outside) = split_runtime(plan.files, &rl);
+                let (mut inside, mut outside) = split_runtime(plan.files, &rl);
+                if godotml_in_game {
+                    let (loader, rest): (Vec<_>, Vec<_>) =
+                        inside.into_iter().partition(crate::godotml::is_loader_file);
+                    outside.extend(loader);
+                    inside = rest;
+                }
                 plan.files = outside;
                 let dir = game.runtime_dir(&profile.name);
                 let report = runtime::sync(&dir, &inside)?;
@@ -198,6 +234,9 @@ impl Session {
         plan.ini = self.plan_ini(&def)?;
         let mut journal = prepare(&game, &plan, &root, false)?;
         apply(&game, &mut journal, faults)?;
+        if rl == Some(RuntimeLoader::GodotML) {
+            self.place_godotml_hooks(&game, &root, &profile.name);
+        }
         Ok((journal, runtime, injection))
     }
 
@@ -436,6 +475,46 @@ pub(crate) enum Injection {
     },
     Lovely,
     GDWeave,
+    GodotML,
+}
+
+/// Whether `file` has `needle` in it, read a piece at a time.
+fn file_contains(file: &Path, needle: &[u8]) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(file) else {
+        return false;
+    };
+    let mut buf = vec![0u8; 1 << 20];
+    let mut carry: Vec<u8> = Vec::new();
+    loop {
+        let n = match f.read(&mut buf) {
+            Ok(0) | Err(_) => return false,
+            Ok(n) => n,
+        };
+        carry.extend_from_slice(&buf[..n]);
+        if carry.windows(needle.len()).any(|w| w == needle) {
+            return true;
+        }
+        let keep = carry.len().saturating_sub(needle.len() - 1);
+        carry.drain(..keep);
+    }
+}
+
+/// Whether the game has the Godot Mod Loader built in: its project settings, in its pack
+/// (`<exe>.pck`, or inside the exe), load it. Otherwise UMM sets it up for each session.
+fn godotml_built_in(def: &GameDef, root: &Path) -> bool {
+    let autoload = format!("*{GODOTML_AUTOLOAD}");
+    let exe = def
+        .launch
+        .as_ref()
+        .and_then(|l| RelPath::parse(&l.exe).ok())
+        .map(|e| e.to_path(root));
+    let Some(exe) = exe else {
+        return false;
+    };
+    [exe.with_extension("pck"), exe]
+        .iter()
+        .any(|f| file_contains(f, autoload.as_bytes()))
 }
 
 /// Errors when the profile has no GDWeave: its proxy DLL at the game folder's root, and its
@@ -635,6 +714,13 @@ pub(crate) fn build_spec(
     }
     if injection == Some(Injection::Lovely) {
         game_args.extend([LOVELY_MOD_DIR_FLAG.to_string(), in_runtime(LOVELY_DIR)]);
+    }
+    if injection == Some(Injection::GodotML) {
+        game_args.extend([
+            GODOTML_ENABLE_FLAG.to_string(),
+            GODOTML_MODS_FLAG.to_string(),
+            in_runtime(GODOTML_MODS_DIR),
+        ]);
     }
     if injection == Some(Injection::GDWeave) {
         // GDWeave keeps only what comes before a second `=`.
@@ -867,6 +953,53 @@ mod tests {
                 native_path(&Path::new("/rt").join("mods")).as_str()
             ]
         );
+    }
+
+    #[test]
+    fn godotml_gets_its_mod_folder() {
+        let d = def("[launch]\nexe = \"Brotato.exe\"\n\
+             [loader]\nkind = \"godotml\"\nsource = \"thunderstore\"\ninject = \"args\"\n\
+             [thunderstore]\ncommunity = \"brotato\"\n");
+        let spec = build_spec(
+            &d,
+            Path::new("/game"),
+            Path::new("/rt"),
+            &Profile::new("Default"),
+            Some(Injection::GodotML),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            spec.args,
+            [
+                "--enable-mods",
+                "--mods-path",
+                native_path(&Path::new("/rt").join("mods")).as_str()
+            ]
+        );
+    }
+
+    #[test]
+    fn godotml_must_be_built_in() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = def("[launch]\nexe = \"Game.exe\"\n\
+             [loader]\nkind = \"godotml\"\nsource = \"thunderstore\"\ninject = \"args\"\n\
+             [thunderstore]\ncommunity = \"g\"\n");
+        let pck = tmp.path().join("Game.pck");
+        std::fs::write(&pck, b"GDPC res://addons/mod_loader/mod_loader.gd").unwrap();
+        assert!(
+            !godotml_built_in(&d, tmp.path()),
+            "its files alone are not enough"
+        );
+        // Found across a read boundary, as the project settings' autoload.
+        let mut big = vec![0u8; (1 << 20) - 10];
+        big.extend_from_slice(b"autoload/ModLoader\0*res://addons/mod_loader/mod_loader.gd");
+        std::fs::write(&pck, &big).unwrap();
+        assert!(godotml_built_in(&d, tmp.path()));
+        std::fs::remove_file(&pck).unwrap();
+        // Or in the exe, when the pack is embedded.
+        std::fs::write(tmp.path().join("Game.exe"), &big).unwrap();
+        assert!(godotml_built_in(&d, tmp.path()));
     }
 
     #[test]

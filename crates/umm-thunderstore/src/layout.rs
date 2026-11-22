@@ -143,6 +143,16 @@ pub fn plan(
     if game.package_loader == umm_gamedef::LOVELY_KIND && loader.is_none() {
         return lovely_mod(files, full_name);
     }
+    if let Some(l) = loader.filter(|l| l.loader == umm_gamedef::GODOTML_KIND) {
+        return godotml_pack(files, full_name, &l.root_folder);
+    }
+    if game.package_loader == umm_gamedef::GODOTML_KIND && loader.is_none() {
+        // As r2modman's "package-zip" tracking: the whole package, as one zip.
+        return Ok(BTreeMap::from([(
+            format!("{}/{full_name}.ts.zip", umm_gamedef::GODOTML_MODS_DIR),
+            zip.to_vec(),
+        )]));
+    }
     if let Some(l) = loader.filter(|l| l.loader == umm_gamedef::GDWEAVE_KIND) {
         return gdweave_pack(files, full_name, &l.root_folder);
     }
@@ -403,6 +413,38 @@ fn lovely_mod(
         return Err(TsError::Data {
             what: full_name.into(),
             message: "the package has no files to install".into(),
+        });
+    }
+    Ok(out)
+}
+
+/// Lays out the Godot Mod Loader package as r2modman does: its `addons/mod_loader/` and
+/// `addons/JSON_Schema_Validator/` folders (under the package's root folder). The rest is
+/// left out.
+fn godotml_pack(
+    files: BTreeMap<String, Vec<u8>>,
+    full_name: &str,
+    root_folder: &str,
+) -> Result<BTreeMap<String, Vec<u8>>> {
+    let root = match root_folder.trim_matches('/') {
+        "" => String::new(),
+        r => format!("{}/", r.to_ascii_lowercase()),
+    };
+    let mut out = BTreeMap::new();
+    for (path, body) in files {
+        let lower = path.to_ascii_lowercase();
+        let Some(rel) = lower.strip_prefix(&root) else {
+            continue;
+        };
+        if rel.starts_with("addons/mod_loader/") || rel.starts_with("addons/json_schema_validator/")
+        {
+            out.insert(path[path.len() - rel.len()..].to_string(), body);
+        }
+    }
+    if !out.keys().any(|k| k.starts_with("addons/mod_loader/")) {
+        return Err(TsError::Data {
+            what: format!("{full_name} (mod loader)"),
+            message: "no addons/mod_loader/ in the package".into(),
         });
     }
     Ok(out)
@@ -831,6 +873,55 @@ pub(crate) mod tests {
                 "mods/Steamodded-smods/src/core.lua",
             ]
         );
+    }
+
+    #[test]
+    fn godotml_packages_and_mods() {
+        let mut brotato = rules();
+        brotato.package_loader = "godotml".into();
+        let entry = ModloaderPackage {
+            package_id: "GodotModding-GodotModLoader".into(),
+            root_folder: String::new(),
+            loader: "godotml".into(),
+        };
+        let keys = |m: &BTreeMap<String, Vec<u8>>| m.keys().cloned().collect::<Vec<_>>();
+        let pack = zip_of(&[
+            ("manifest.json", "{}"),
+            ("addons/mod_loader/mod_loader.gd", "l"),
+            ("addons/JSON_Schema_Validator/v.gd", "v"),
+            ("README.md", "r"),
+        ]);
+        let out = plan(&pack, "GodotModding-GodotModLoader", &brotato, Some(&entry)).unwrap();
+        assert_eq!(
+            keys(&out),
+            [
+                "addons/JSON_Schema_Validator/v.gd",
+                "addons/mod_loader/mod_loader.gd"
+            ]
+        );
+        let empty = zip_of(&[("manifest.json", "{}")]);
+        assert!(plan(
+            &empty,
+            "GodotModding-GodotModLoader",
+            &brotato,
+            Some(&entry)
+        )
+        .is_err());
+
+        // A mod: the package zip itself, whatever the install rules.
+        let zip = zip_of(&[
+            ("manifest.json", "{}"),
+            ("mods-unpacked/Me-Mine/mod_main.gd", "m"),
+        ]);
+        for rules in [brotato.install_rules.clone(), Vec::new()] {
+            let game = R2modmanGame {
+                install_rules: rules,
+                ..brotato.clone()
+            };
+            let out = plan(&zip, "Me-Mine", &game, None).unwrap();
+            assert_eq!(keys(&out), ["mods/Me-Mine.ts.zip"]);
+            assert_eq!(out["mods/Me-Mine.ts.zip"], zip);
+        }
     }
 
     #[test]

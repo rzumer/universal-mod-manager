@@ -371,7 +371,11 @@ impl From<SyncReport> for SyncDto {
 
 /// Payload of the `session` event.
 #[derive(Serialize, Clone)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum SessionEvent {
     Recovered {
         game: String,
@@ -833,4 +837,21 @@ pub struct LinkDto {
 pub struct TsProgressDto {
     pub game: String,
     pub message: String,
+}
+
+#[cfg(test)]
+mod session_event_tests {
+    use super::*;
+
+    #[test]
+    fn fields_are_camel_case_like_the_interface_reads_them() {
+        let e = SessionEvent::Deployed {
+            game: "g".into(),
+            game_files: 3,
+            runtime: None,
+        };
+        let v = serde_json::to_value(e).unwrap();
+        assert_eq!(v["kind"], "deployed");
+        assert_eq!(v["gameFiles"], 3);
+    }
 }

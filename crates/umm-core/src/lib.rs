@@ -3,6 +3,7 @@
 mod doctor;
 mod downloads;
 mod fomod;
+mod godotml;
 mod launch;
 mod link;
 mod manual;
@@ -18,6 +19,10 @@ mod ts;
 pub use doctor::{Finding, Level};
 pub use downloads::{downloads_dir, DownloadWatch};
 pub use fomod::{FomodGroupView, FomodOptionView, FomodStepView, FomodView};
+pub use godotml::{
+    setup_cache as godotml_setup_cache, SetupRunner, SETUP_ARGS as GODOTML_SETUP_ARGS,
+    SETUP_OWNER as GODOTML_SETUP_OWNER,
+};
 pub use launch::{LaunchEvent, LaunchOutcome};
 pub use link::{
     parse_link, system_registry, InstallLink, LinkHandler, SchemeRegistry, LINK_SCHEME,
@@ -137,6 +142,8 @@ pub struct Session {
     ts: Mutex<ts::TsCache>,
     /// Nexus games looked up by domain name.
     nexus_games: Mutex<std::collections::HashMap<String, umm_nexus::graph::Game>>,
+    /// Runs the Godot Mod Loader's setup; `None` for the real thing.
+    godotml_runner: Mutex<Option<godotml::SetupRunner>>,
 }
 
 impl Session {
@@ -153,6 +160,7 @@ impl Session {
             ecosystem: Mutex::new(None),
             ts: Mutex::new(ts::TsCache::new()),
             nexus_games: Mutex::new(Default::default()),
+            godotml_runner: Mutex::new(None),
         })
     }
 
@@ -536,6 +544,7 @@ impl Session {
             if !discard_if_game_missing {
                 return Err(DeployError::GameRootMissing(journal.game_root).into());
             }
+            let _ = fs::remove_file(game.generated_dir().join("godotml-hooks.owned"));
             if !journal.backup_in_game && journal.backup_root.exists() {
                 fs::remove_dir_all(&journal.backup_root)
                     .ctx(|| format!("removing {}", journal.backup_root.display()))?;
@@ -544,6 +553,9 @@ impl Session {
                 .ctx(|| format!("removing {}", game.journal_path().display()))?;
             return Ok(Some(RevertReport::default()));
         }
+        // The Godot Mod Loader's hook pack goes back to the profile. A failure leaves it, and
+        // the mark, for the next revert: the mods still go.
+        let _ = self.take_godotml_hooks(&game, &journal.game_root);
         Ok(Some(revert(&game, &mut journal, faults)?))
     }
 
