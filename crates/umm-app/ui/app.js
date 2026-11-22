@@ -676,6 +676,7 @@ function filesTab() {
     godotml: "mods/ and addons/",
     "return-of-modding": "ReturnOfModding/",
     umm: "UMM/",
+    northstar: "R2Northstar/",
   }[S.details.game.loader];
   const runtimeNote =
     runtimeDirs && ["doorstop", "args"].includes(S.details.game.inject)
@@ -2319,6 +2320,9 @@ async function revertNow() {
   const r = await attempt(() => api.revert(S.gameId));
   if (r) {
     S.lastReport[S.gameId] = r;
+    // Into this game's activity, as a session's own restore is.
+    if (S.session.game !== S.gameId) S.session = { game: S.gameId, phase: "idle", log: [] };
+    logLine(`Restored the game folder: ${plural(r.restored, "original file")} back, ${plural(r.removed, "mod file")} removed`, "ok");
     toast("Game folder restored", "ok");
   }
   await refreshAll();

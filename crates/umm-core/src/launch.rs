@@ -13,6 +13,7 @@ use umm_gamedef::{
     DOORSTOP_TARGET_FLAG, GDWEAVE_DIR, GDWEAVE_FOLDER_FLAG, GDWEAVE_PROXY, GODOTML_AUTOLOAD,
     GODOTML_ENABLE_FLAG, GODOTML_MODS_DIR, GODOTML_MODS_FLAG, LOVELY_DIR, LOVELY_MOD_DIR_FLAG,
     LOVELY_PROXIES, MELONLOADER_BASEDIR_FLAG, MELONLOADER_GENERATED, MELONLOADER_REGENERATE_FLAG,
+    NORTHSTAR_DIR, NORTHSTAR_DLL, NORTHSTAR_FLAG, NORTHSTAR_PROFILE_FLAG, NORTHSTAR_PROXY,
     ROM_PROXIES, ROM_ROOT_FLAG, SHIMLOADER_DIRS,
 };
 use umm_launch::{LaunchSpec, Tracking};
@@ -129,6 +130,19 @@ impl Session {
             Some(RuntimeLoader::GDWeave) => {
                 check_gdweave(&plan.files)?;
                 (Some(Injection::GDWeave), None)
+            }
+            Some(RuntimeLoader::Northstar) => {
+                let has = |p: &str| {
+                    plan.files
+                        .iter()
+                        .any(|f| f.target.as_str().eq_ignore_ascii_case(p))
+                };
+                if !has(NORTHSTAR_PROXY) || !has(NORTHSTAR_DLL) {
+                    return Err(CoreError::Invalid(
+                        "the profile has no Northstar; install it from the Thunderstore tab (it also comes with any mod that needs it)".into(),
+                    ));
+                }
+                (Some(Injection::Northstar), None)
             }
             Some(RuntimeLoader::ReturnOfModding) => {
                 place_rom_proxy(&def.def, &mut plan.files)?;
@@ -482,6 +496,7 @@ pub(crate) enum Injection {
     GDWeave,
     GodotML,
     ReturnOfModding,
+    Northstar,
 }
 
 /// Puts Return of Modding's proxy DLL next to the game's exe (Hades II keeps its own in
@@ -754,6 +769,20 @@ pub(crate) fn build_spec(
     if injection == Some(Injection::Lovely) {
         game_args.extend([LOVELY_MOD_DIR_FLAG.to_string(), in_runtime(LOVELY_DIR)]);
     }
+    if injection == Some(Injection::Northstar) {
+        // Northstar reads its profile up to the first space, unless quoted in a way Windows
+        // argument quoting does not produce.
+        let dir = in_runtime(NORTHSTAR_DIR);
+        if dir.contains([' ', '"']) {
+            return Err(CoreError::Invalid(format!(
+                "Northstar cannot use a profile folder whose path has a space in it ({dir}); move UMM's data folder"
+            )));
+        }
+        game_args.extend([
+            NORTHSTAR_FLAG.to_string(),
+            format!("{NORTHSTAR_PROFILE_FLAG}{dir}"),
+        ]);
+    }
     if injection == Some(Injection::ReturnOfModding) {
         // The loader adds `ReturnOfModding/` to the folder it is given.
         game_args.extend([ROM_ROOT_FLAG.to_string(), native_path(runtime_dir)]);
@@ -1008,6 +1037,35 @@ mod tests {
                 native_path(&Path::new("/rt").join("mods")).as_str()
             ]
         );
+    }
+
+    #[test]
+    fn northstar_gets_its_profile_folder() {
+        let d = def("[launch]\nexe = \"Titanfall2.exe\"\n\
+             [loader]\nkind = \"northstar\"\nsource = \"thunderstore\"\ninject = \"args\"\n\
+             [thunderstore]\ncommunity = \"northstar\"\n");
+        let spec = |rt: &str| {
+            build_spec(
+                &d,
+                Path::new("/game"),
+                Path::new(rt),
+                &Profile::new("Default"),
+                Some(Injection::Northstar),
+                None,
+            )
+        };
+        assert_eq!(
+            spec("/rt").unwrap().args,
+            [
+                "-northstar".to_string(),
+                format!(
+                    "-profile={}",
+                    native_path(&Path::new("/rt").join("R2Northstar"))
+                )
+            ]
+        );
+        let err = spec("/my data/rt").unwrap_err().to_string();
+        assert!(err.contains("space"), "{err}");
     }
 
     #[test]

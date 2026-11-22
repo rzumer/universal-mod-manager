@@ -12,7 +12,8 @@ const games = {
     name: "Example Unity Game",
     install: "D:\\SteamLibrary\\steamapps\\common\\Example Game",
     foundVia: "steam",
-    deployed: false,
+    // `?deployed` leaves mods deployed, as after a crash.
+    deployed: new URLSearchParams(location.search).has("deployed"),
     running: false,
     canLaunch: true,
     loader: "bepinex",
@@ -368,7 +369,11 @@ const handlers = {
     })();
   },
   stop_waiting: () => {},
-  revert: () => null,
+  revert: ({ game }) => {
+    if (!games[game].deployed) return null;
+    games[game].deployed = false;
+    return { restored: 1, removed: 4, quarantined: [], keptGameVersions: [], dirsLeft: [], errors: [] };
+  },
   doctor: ({ game }) =>
     games[game].install
       ? [

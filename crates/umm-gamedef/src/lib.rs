@@ -508,6 +508,18 @@ pub const ROM_ROOT_FLAG: &str = "--rom_modding_root_folder";
 /// for Hell2Modding.
 pub const ROM_PROXIES: &[&str] = &["version.dll", "d3d12.dll"];
 
+/// Loader kind for Northstar (Titanfall 2).
+pub const NORTHSTAR_KIND: &str = "northstar";
+/// Its profile folder (`Northstar.dll`, mods, plugins, saves) in the runtime folder, and the
+/// flags starting it from there (`-profile=<folder>`, one argument).
+pub const NORTHSTAR_DIR: &str = "R2Northstar";
+pub const NORTHSTAR_FLAG: &str = "-northstar";
+pub const NORTHSTAR_PROFILE_FLAG: &str = "-profile=";
+/// The files that must be in the profile for Northstar to start: its proxy, which the game
+/// loads, and the DLL the proxy loads from the profile.
+pub const NORTHSTAR_PROXY: &str = "bin/x64_retail/wsock32.dll";
+pub const NORTHSTAR_DLL: &str = "R2Northstar/Northstar.dll";
+
 /// A loader that is pointed at a per-profile runtime folder outside the game, so that only
 /// its proxy goes into the game folder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -526,6 +538,8 @@ pub enum RuntimeLoader {
     GodotML,
     /// Return of Modding, given the folder holding its own as a launch argument.
     ReturnOfModding,
+    /// Northstar, given its profile folder as a launch argument.
+    Northstar,
 }
 
 impl RuntimeLoader {
@@ -539,6 +553,7 @@ impl RuntimeLoader {
             RuntimeLoader::GDWeave => &[GDWEAVE_DIR],
             RuntimeLoader::GodotML => &[GODOTML_MODS_DIR, GODOTML_LOADER_DIR],
             RuntimeLoader::ReturnOfModding => &[ROM_DIR],
+            RuntimeLoader::Northstar => &[NORTHSTAR_DIR],
         }
     }
 }
@@ -554,6 +569,7 @@ pub fn thunderstore_inject(kind: &str) -> Option<Inject> {
         GODOTML_KIND => Some(Inject::Args),
         UMM_KIND => Some(Inject::Doorstop),
         ROM_KIND => Some(Inject::Args),
+        NORTHSTAR_KIND => Some(Inject::Args),
         _ => None,
     }
 }
@@ -569,6 +585,7 @@ pub fn loader_name(kind: &str) -> &str {
         GODOTML_KIND => "Godot Mod Loader",
         UMM_KIND => "Unity Mod Manager",
         ROM_KIND => "Return of Modding",
+        NORTHSTAR_KIND => "Northstar",
         other => other,
     }
 }
@@ -595,6 +612,7 @@ impl GameDef {
             Inject::Args if l.kind == GDWEAVE_KIND => Some(RuntimeLoader::GDWeave),
             Inject::Args if l.kind == GODOTML_KIND => Some(RuntimeLoader::GodotML),
             Inject::Args if l.kind == ROM_KIND => Some(RuntimeLoader::ReturnOfModding),
+            Inject::Args if l.kind == NORTHSTAR_KIND => Some(RuntimeLoader::Northstar),
             _ => None,
         }
     }
@@ -769,10 +787,11 @@ impl GameDef {
                         || loader.kind == GDWEAVE_KIND
                         || loader.kind == GODOTML_KIND
                         || loader.kind == ROM_KIND
+                        || loader.kind == NORTHSTAR_KIND
                         || is_melonloader(&loader.kind) => {}
                 Inject::Args => {
                     return Err(GameDefError::Unsupported(format!(
-                        "loader kind `{}` cannot be injected with arguments (supported: shimloader, melonloader, recursive-melonloader, lovely, gdweave, godotml, return-of-modding); use inject = \"files\"",
+                        "loader kind `{}` cannot be injected with arguments (supported: shimloader, melonloader, recursive-melonloader, lovely, gdweave, godotml, return-of-modding, northstar); use inject = \"files\"",
                         loader.kind
                     )))
                 }
