@@ -146,7 +146,7 @@ impl Session {
         self.add_steam_app(&app, setup)
     }
 
-    /// Writes a drafted game definition to `gamedefs/<id>.toml`. Never overwrites a file, and
+    /// Writes a drafted game definition to `games/<id>/game.toml`. Never overwrites a file, and
     /// refuses an app that a definition already covers.
     pub fn add_steam_app(&self, app: &SteamApp, setup: Option<LoaderSetup>) -> Result<Draft> {
         let (defs, _) = self.defs();

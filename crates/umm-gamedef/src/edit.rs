@@ -89,8 +89,6 @@ pub fn set_setup(text: &str, origin: &Path, def: &GameDef) -> Result<String, Gam
 
 /// The text of a new `game.toml` for `def`, under a header of comment lines.
 pub fn new_file(def: &GameDef, header: &[String]) -> String {
-    let mut d = def.clone();
-    d.id = String::new(); // the folder name is the id
     let mut out = String::new();
     for line in header {
         out.push_str(&format!("# {line}\n"));
@@ -98,7 +96,7 @@ pub fn new_file(def: &GameDef, header: &[String]) -> String {
     if !header.is_empty() {
         out.push('\n');
     }
-    out.push_str(&toml::to_string_pretty(&d).expect("game definitions serialize"));
+    out.push_str(&toml::to_string_pretty(def).expect("game definitions serialize"));
     out
 }
 
@@ -171,13 +169,8 @@ mod tests {
     #[test]
     fn the_folder_is_the_id() {
         let p = Path::new("game.toml");
-        assert!(GameDef::parse_game(TEXT, p, "trip").is_ok());
-        let wrong = format!("id = \"other\"\n{TEXT}");
-        assert!(matches!(
-            GameDef::parse_game(&wrong, p, "trip"),
-            Err(GameDefError::IdMismatch { .. })
-        ));
         let def = GameDef::parse_game(TEXT, p, "trip").unwrap();
+        assert_eq!(def.id, "trip");
         assert!(!new_file(&def, &[]).lines().any(|l| l.starts_with("id =")));
     }
 }

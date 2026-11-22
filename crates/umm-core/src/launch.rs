@@ -666,9 +666,8 @@ mod tests {
     use super::*;
 
     fn def(extra: &str) -> GameDef {
-        let text =
-            format!("schema = 1\nid = \"g\"\nname = \"G\"\n[detect]\nsteam_app_id = 480\n{extra}");
-        GameDef::parse(&text, Path::new("t")).unwrap()
+        let text = format!("schema = 1\nname = \"G\"\n[detect]\nsteam_app_id = 480\n{extra}");
+        GameDef::parse_game(&text, Path::new("game.toml"), "g").unwrap()
     }
 
     #[test]
@@ -914,14 +913,21 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_definitions() {
-        let bad = "schema = 1\nid = \"g\"\nname = \"G\"\n[launch]\nexe = \"Game.exe\"\nsteam_relaunch = \"via_steam\"\n";
+        let p = Path::new("game.toml");
+        let bad = "schema = 1\nname = \"G\"\n[launch]\nexe = \"Game.exe\"\nsteam_relaunch = \"via_steam\"\n";
         assert!(
-            GameDef::parse(bad, Path::new("t")).is_err(),
+            matches!(
+                GameDef::parse_game(bad, p, "g"),
+                Err(umm_gamedef::GameDefError::Unsupported(_))
+            ),
             "via_steam without app id"
         );
-        let bad = "schema = 1\nid = \"g\"\nname = \"G\"\n[loader]\nkind = \"asi\"\ninject = \"doorstop\"\n";
+        let bad = "schema = 1\nname = \"G\"\n[loader]\nkind = \"asi\"\ninject = \"doorstop\"\n";
         assert!(
-            GameDef::parse(bad, Path::new("t")).is_err(),
+            matches!(
+                GameDef::parse_game(bad, p, "g"),
+                Err(umm_gamedef::GameDefError::Unsupported(_))
+            ),
             "doorstop for a non-Unity loader"
         );
     }

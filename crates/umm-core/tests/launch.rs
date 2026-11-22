@@ -66,7 +66,7 @@ fn setup(test: &str, extra: &str, args: &[&str]) -> Fx {
     all_args.extend(args.iter().map(|a| a.to_string()));
     let args_toml: Vec<String> = all_args.iter().map(|a| format!("'{a}'")).collect();
     let def = format!(
-        "schema = 1\nid = \"{GAME}\"\nname = \"Launch Game\"\n{extra}\n\
+        "schema = 1\nname = \"Launch Game\"\n{extra}\n\
          [launch]\nexe = \"{exe}\"\nargs = [{}]\n\
          [[install]]\nmatch = \"plugins/**\"\ntarget = \"BepInEx/plugins/{{mod}}/\"\n\
          [[install]]\nmatch = \"**\"\ntarget = \"\"\n",

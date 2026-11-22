@@ -31,9 +31,8 @@ pub const IN_GAME_BACKUP_DIR: &str = ".umm-backup";
 #[serde(deny_unknown_fields)]
 pub struct GameDef {
     pub schema: u32,
-    /// The game's folder name under `games/`. Files there may leave it out; a file that
-    /// states it must match the folder.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    /// The game's folder name under `games/`. Not part of the file.
+    #[serde(skip)]
     pub id: String,
     pub name: String,
     #[serde(default)]
@@ -190,14 +189,6 @@ pub enum GameDefError {
     Target(String, RelPathError),
     #[error("loader source must look like `mod:<id>`, or be `thunderstore` with a [thunderstore] table; got `{0}`")]
     LoaderSource(String),
-    #[error(
-        "{path} says `id = \"{id}\"` but is in the folder `{folder}`; the folder name is the id"
-    )]
-    IdMismatch {
-        path: PathBuf,
-        id: String,
-        folder: String,
-    },
     #[error("{0}")]
     Unsupported(String),
 }
@@ -446,28 +437,12 @@ pub fn slug(s: &str) -> Option<String> {
 }
 
 impl GameDef {
-    pub fn parse(text: &str, origin: &Path) -> Result<Self, GameDefError> {
-        let def: GameDef = toml::from_str(text).map_err(|source| GameDefError::Parse {
-            path: origin.to_path_buf(),
-            source: Box::new(source),
-        })?;
-        def.validate()?;
-        Ok(def)
-    }
-
     /// Parses a game's `game.toml`; `id` is its folder's name.
     pub fn parse_game(text: &str, origin: &Path, id: &str) -> Result<Self, GameDefError> {
         let mut def: GameDef = toml::from_str(text).map_err(|source| GameDefError::Parse {
             path: origin.to_path_buf(),
             source: Box::new(source),
         })?;
-        if !def.id.is_empty() && def.id != id {
-            return Err(GameDefError::IdMismatch {
-                path: origin.to_path_buf(),
-                id: def.id,
-                folder: id.to_string(),
-            });
-        }
         def.id = id.to_string();
         def.validate()?;
         Ok(def)
@@ -687,7 +662,6 @@ mod tests {
 
     const DEF: &str = r#"
 schema = 1
-id = "example"
 name = "Example"
 
 [detect]
@@ -718,7 +692,7 @@ paths = ["BepInEx/config/**"]
 "#;
 
     fn compiled() -> CompiledDef {
-        GameDef::parse(DEF, Path::new("test.toml"))
+        GameDef::parse_game(DEF, Path::new("game.toml"), "example")
             .unwrap()
             .compile()
             .unwrap()
@@ -757,20 +731,28 @@ paths = ["BepInEx/config/**"]
     }
 
     #[test]
+    fn the_example_definition_loads() {
+        let text = include_str!("../../../examples/example-unity-bepinex.toml");
+        let def = GameDef::parse_game(text, Path::new("game.toml"), "example-unity-game").unwrap();
+        assert!(def.loader.as_ref().unwrap().from_thunderstore());
+        assert_eq!(def.nexus.unwrap().domain, "examplegame");
+    }
+
+    #[test]
     fn rejects_bad_definitions() {
         let bad_target = DEF.replace("target = \"\"", "target = \"../escape\"");
+        let p = Path::new("game.toml");
         assert!(matches!(
-            GameDef::parse(&bad_target, Path::new("t")),
+            GameDef::parse_game(&bad_target, p, "example"),
             Err(GameDefError::Target(..))
         ));
-        let bad_id = DEF.replace("id = \"example\"", "id = \"Bad Id\"");
         assert!(matches!(
-            GameDef::parse(&bad_id, Path::new("t")),
+            GameDef::parse_game(DEF, p, "Bad Id"),
             Err(GameDefError::Id(_))
         ));
         let typo = DEF.replace("[protect]", "[protekt]");
         assert!(matches!(
-            GameDef::parse(&typo, Path::new("t")),
+            GameDef::parse_game(&typo, p, "example"),
             Err(GameDefError::Parse { .. })
         ));
     }

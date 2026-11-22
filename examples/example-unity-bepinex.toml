@@ -1,27 +1,45 @@
 # Example game definition for a Unity game modded with BepInEx 5.
-# Copy into <data folder>/gamedefs/ and edit the ids and names.
+#
+# UMM usually writes this file for you (Add from Steam, or Add manually). To write one by hand,
+# save it as <data folder>/games/<id>/game.toml (on Windows the data folder is %APPDATA%\umm),
+# then use Reload game definitions. The folder's name is the game's id (lower-case letters,
+# digits, `-` and `_`); the file itself does not name it. UMM edits the file in place when you
+# change the game's settings (install folder, loader setup, Nexus Mods game) and keeps your
+# comments.
 schema = 1
-id = "example-unity-game"
 name = "Example Unity Game"
 
 [detect]                          # tried in order; the first hit wins
+# path = 'D:\Games\Example Game'  # set by UMM when you pick the folder; skips detection
 steam_app_id = 123456             # reads steamapps/appmanifest_<id>.acf in every library
 steam_dir = "Example Game"        # fallback: folder under steamapps/common
+# registry = 'HKLM\SOFTWARE\Vendor\Example Game:InstallPath'
 marker = "ExampleGame.exe"        # must exist for a folder to count as the install
 
 [launch]
 exe = "ExampleGame.exe"
-steam_relaunch = "appid_file"
+args = []
+steam_relaunch = "appid_file"     # puts steam_appid.txt in the game folder while playing, so
+                                  # the game does not restart through Steam (needs steam_app_id);
+                                  # "via_steam" starts it through Steam instead
 process_names = ["ExampleGame.exe"]
 
 [loader]
 kind = "bepinex"
-source = "mod:bepinex-pack"       # import the BepInEx pack with `--id bepinex-pack`
+source = "thunderstore"           # the BepInEx pack is one of the game's Thunderstore packages;
+                                  # or "mod:<id>" for a pack you imported yourself
 inject = "doorstop"               # only winhttp.dll + doorstop_config.ini go in the game folder;
                                   # the BepInEx tree lives in UMM's per-profile runtime folder
 
+[thunderstore]                    # where the game's mods come from: thunderstore.io/c/<community>/
+community = "example-game"
+
+[nexus]                           # the game on Nexus Mods: nexusmods.com/<domain>/mods/
+domain = "examplegame"
+
 # Rules are tried in order. The folders before a pattern's first wildcard are replaced by
-# the target, and `{mod}` becomes the mod's id.
+# the target, and `{mod}` becomes the mod's id. With a loader set up from Thunderstore,
+# UMM writes these rules itself.
 [[install]]
 match = "BepInEx/plugins/**"
 target = "BepInEx/plugins/{mod}/"

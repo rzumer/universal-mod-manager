@@ -41,7 +41,7 @@ fn setup(exe: &str) -> Fx {
     fs::write(
         def_file(&session, "ipc-game"),
         format!(
-            "schema = 1\nid = \"ipc-game\"\nname = \"IPC Game\"\n[detect]\nmarker = \"{exe}\"\n\
+            "schema = 1\nname = \"IPC Game\"\n[detect]\nmarker = \"{exe}\"\n\
              [launch]\nexe = \"{exe}\"\n"
         ),
     )

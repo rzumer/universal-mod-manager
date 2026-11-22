@@ -127,7 +127,7 @@ fn game(data: &Path, root: &Path, http: Arc<FakeHttp>) -> Session {
     fs::write(root.join("Game.exe"), "exe").unwrap();
     fs::write(
         def_file(&s, "test-quest"),
-        "schema = 1\nid = \"test-quest\"\nname = \"Test Quest\"\n\
+        "schema = 1\nname = \"Test Quest\"\n\
          [detect]\nsteam_app_id = 4242\n[launch]\nexe = \"Game.exe\"\n\
          [loader]\nkind = \"bepinex\"\nsource = \"thunderstore\"\ninject = \"doorstop\"\n\
          [thunderstore]\ncommunity = \"test-quest\"\n\

@@ -245,7 +245,6 @@ mod tests {
 
     const UNREAL: &str = r#"
 schema = 1
-id = "trip"
 name = "Unreal Trip"
 
 [[install]]
@@ -263,7 +262,7 @@ target = ""
     };
 
     fn def() -> GameDef {
-        GameDef::parse(UNREAL, Path::new("t.toml")).unwrap()
+        GameDef::parse_game(UNREAL, Path::new("game.toml"), "trip").unwrap()
     }
 
     #[test]
@@ -412,11 +411,11 @@ target = ""
             "{UNREAL}\n[loader]\nkind = \"bepinex\"\nsource = \"thunderstore\"\ninject = \"doorstop\"\n"
         );
         assert!(matches!(
-            GameDef::parse(&text, Path::new("t")),
+            GameDef::parse_game(&text, Path::new("game.toml"), "trip"),
             Err(GameDefError::LoaderSource(_))
         ));
         let ok = format!("{text}\n[thunderstore]\ncommunity = \"trip\"\n");
-        let d = GameDef::parse(&ok, Path::new("t")).unwrap();
+        let d = GameDef::parse_game(&ok, Path::new("game.toml"), "trip").unwrap();
         assert_eq!(d.setup(), Some(LoaderSetup::Thunderstore));
     }
 }

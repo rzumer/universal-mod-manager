@@ -17,7 +17,6 @@ const GAME: &str = "test-game";
 
 const DEF: &str = r#"
 schema = 1
-id = "test-game"
 name = "Test Game"
 
 [detect]
