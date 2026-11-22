@@ -677,6 +677,7 @@ function filesTab() {
     "return-of-modding": "ReturnOfModding/",
     umm: "UMM/",
     northstar: "R2Northstar/",
+    mio: "mods/ and modconfig/",
   }[S.details.game.loader];
   const runtimeNote =
     runtimeDirs && ["doorstop", "args"].includes(S.details.game.inject)

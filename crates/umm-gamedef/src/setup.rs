@@ -5,7 +5,7 @@
 
 use crate::{
     loader_name, thunderstore_inject, GameDef, GameDefError, Inject, InstallRule, Loader,
-    Thunderstore, BEPINEX_KIND, GDWEAVE_KIND, GODOTML_KIND, LOVELY_KIND, NORTHSTAR_KIND,
+    Thunderstore, BEPINEX_KIND, GDWEAVE_KIND, GODOTML_KIND, LOVELY_KIND, MIO_KIND, NORTHSTAR_KIND,
     RECURSIVE_MELONLOADER_KIND, ROM_KIND, SHIMLOADER_KIND, THUNDERSTORE_SOURCE, UMM_KIND,
 };
 use serde::{Deserialize, Serialize};
@@ -167,6 +167,19 @@ pub fn northstar_rules() -> Vec<InstallRule> {
     ]
 }
 
+/// Install rules for MIO Mod Loader mods imported from files rather than Thunderstore: the
+/// loader's proxy and folder keep their place at the game folder's root, a `mods/` folder
+/// stays one, and anything else is a mod in its own folder under `mods/` (the loader reads
+/// one folder per mod, with its `mod.json`).
+pub fn mio_rules() -> Vec<InstallRule> {
+    vec![
+        rule("winhttp.dll", ""),
+        rule("mio-mod-loader/**", "mio-mod-loader/"),
+        rule("mods/**", "mods/"),
+        rule("**", "mods/{mod}/"),
+    ]
+}
+
 const BEPINEX_CONFIG: &str = "BepInEx/config/**";
 const SHIMLOADER_CONFIG: &str = "shimloader/cfg/**";
 const MELONLOADER_CONFIG: &str = "UserData/**";
@@ -175,8 +188,10 @@ const GDWEAVE_CONFIG: &str = "GDWeave/configs/**";
 const ROM_CONFIG: &str = "ReturnOfModding/config/**";
 /// Unity Mod Manager's settings, and each mod's `Settings.xml`.
 const UMM_CONFIG: &str = "UMM/**/*.xml";
+const MIO_CONFIG: &str = "modconfig/**";
 const LOADER_CONFIGS: &[&str] = &[
     UMM_CONFIG,
+    MIO_CONFIG,
     ROM_CONFIG,
     BEPINEX_CONFIG,
     SHIMLOADER_CONFIG,
@@ -284,6 +299,8 @@ impl GameDef {
                     (rom_rules(), Some(ROM_CONFIG))
                 } else if kind == UMM_KIND {
                     (umm_rules(), Some(UMM_CONFIG))
+                } else if kind == MIO_KIND {
+                    (mio_rules(), Some(MIO_CONFIG))
                 } else if kind == NORTHSTAR_KIND {
                     // Its saves and settings are written in the runtime folder.
                     (northstar_rules(), None)

@@ -520,6 +520,18 @@ pub const NORTHSTAR_PROFILE_FLAG: &str = "-profile=";
 pub const NORTHSTAR_PROXY: &str = "bin/x64_retail/wsock32.dll";
 pub const NORTHSTAR_DLL: &str = "R2Northstar/Northstar.dll";
 
+/// Loader kind for the MIO Mod Loader (MIO: Memories in Orbit).
+pub const MIO_KIND: &str = "mio";
+/// Its proxy and its own folder, which it loads from the game's folder; the mods and their
+/// settings, in the runtime folder, with the flags pointing it there (each one argument,
+/// then the path).
+pub const MIO_PROXY: &str = "winhttp.dll";
+pub const MIO_LOADER: &str = "mio-mod-loader/MioModLoader.dll";
+pub const MIO_MODS_DIR: &str = "mods";
+pub const MIO_CONFIG_DIR: &str = "modconfig";
+pub const MIO_MODS_FLAG: &str = "--mods-path";
+pub const MIO_CONFIG_FLAG: &str = "--mods-config-path";
+
 /// A loader that is pointed at a per-profile runtime folder outside the game, so that only
 /// its proxy goes into the game folder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -540,6 +552,8 @@ pub enum RuntimeLoader {
     ReturnOfModding,
     /// Northstar, given its profile folder as a launch argument.
     Northstar,
+    /// The MIO Mod Loader, given its mod and settings folders as launch arguments.
+    Mio,
 }
 
 impl RuntimeLoader {
@@ -554,6 +568,7 @@ impl RuntimeLoader {
             RuntimeLoader::GodotML => &[GODOTML_MODS_DIR, GODOTML_LOADER_DIR],
             RuntimeLoader::ReturnOfModding => &[ROM_DIR],
             RuntimeLoader::Northstar => &[NORTHSTAR_DIR],
+            RuntimeLoader::Mio => &[MIO_MODS_DIR, MIO_CONFIG_DIR],
         }
     }
 }
@@ -570,6 +585,7 @@ pub fn thunderstore_inject(kind: &str) -> Option<Inject> {
         UMM_KIND => Some(Inject::Doorstop),
         ROM_KIND => Some(Inject::Args),
         NORTHSTAR_KIND => Some(Inject::Args),
+        MIO_KIND => Some(Inject::Args),
         _ => None,
     }
 }
@@ -586,6 +602,7 @@ pub fn loader_name(kind: &str) -> &str {
         UMM_KIND => "Unity Mod Manager",
         ROM_KIND => "Return of Modding",
         NORTHSTAR_KIND => "Northstar",
+        MIO_KIND => "MIO Mod Loader",
         other => other,
     }
 }
@@ -613,6 +630,7 @@ impl GameDef {
             Inject::Args if l.kind == GODOTML_KIND => Some(RuntimeLoader::GodotML),
             Inject::Args if l.kind == ROM_KIND => Some(RuntimeLoader::ReturnOfModding),
             Inject::Args if l.kind == NORTHSTAR_KIND => Some(RuntimeLoader::Northstar),
+            Inject::Args if l.kind == MIO_KIND => Some(RuntimeLoader::Mio),
             _ => None,
         }
     }
@@ -788,10 +806,11 @@ impl GameDef {
                         || loader.kind == GODOTML_KIND
                         || loader.kind == ROM_KIND
                         || loader.kind == NORTHSTAR_KIND
+                        || loader.kind == MIO_KIND
                         || is_melonloader(&loader.kind) => {}
                 Inject::Args => {
                     return Err(GameDefError::Unsupported(format!(
-                        "loader kind `{}` cannot be injected with arguments (supported: shimloader, melonloader, recursive-melonloader, lovely, gdweave, godotml, return-of-modding, northstar); use inject = \"files\"",
+                        "loader kind `{}` cannot be injected with arguments (supported: shimloader, melonloader, recursive-melonloader, lovely, gdweave, godotml, return-of-modding, northstar, mio); use inject = \"files\"",
                         loader.kind
                     )))
                 }

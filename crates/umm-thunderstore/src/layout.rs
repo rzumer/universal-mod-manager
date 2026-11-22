@@ -143,6 +143,12 @@ pub fn plan(
     if game.package_loader == umm_gamedef::LOVELY_KIND && loader.is_none() {
         return lovely_mod(files, full_name);
     }
+    if let Some(l) = loader.filter(|l| l.loader == umm_gamedef::MIO_KIND) {
+        return mio_pack(files, full_name, &l.root_folder);
+    }
+    if game.package_loader == umm_gamedef::MIO_KIND && loader.is_none() {
+        return mio_mod(files, full_name);
+    }
     if loader.is_some_and(|l| l.loader == umm_gamedef::UMM_KIND) {
         return umm_pack(files, full_name);
     }
@@ -425,6 +431,81 @@ fn lovely_mod(
         });
     }
     Ok(out)
+}
+
+/// Lays out the MIO Mod Loader package as r2modman does: its proxy and `mio-mod-loader/`
+/// (under the package's root folder) go to the game folder's root. The rest is left out.
+fn mio_pack(
+    files: BTreeMap<String, Vec<u8>>,
+    full_name: &str,
+    root_folder: &str,
+) -> Result<BTreeMap<String, Vec<u8>>> {
+    let root = match root_folder.trim_matches('/') {
+        "" => String::new(),
+        r => format!("{}/", r.to_ascii_lowercase()),
+    };
+    let mut out = BTreeMap::new();
+    for (path, body) in files {
+        let lower = path.to_ascii_lowercase();
+        let Some(rel) = lower.strip_prefix(&root) else {
+            continue;
+        };
+        if rel == "winhttp.dll" || rel.starts_with("mio-mod-loader/") {
+            out.insert(path[path.len() - rel.len()..].to_string(), body);
+        }
+    }
+    if !out.contains_key(umm_gamedef::MIO_PROXY)
+        || !out
+            .keys()
+            .any(|k| k.eq_ignore_ascii_case(umm_gamedef::MIO_LOADER))
+    {
+        return Err(TsError::Data {
+            what: format!("{full_name} (mod loader)"),
+            message: "no winhttp.dll and mio-mod-loader/ in the package".into(),
+        });
+    }
+    Ok(out)
+}
+
+/// Lays out a mod for the MIO Mod Loader as r2modman does: the folder holding its
+/// `mod.json` (the shallowest; the package's root included) goes to `mods/<Owner-Name>/`.
+fn mio_mod(files: BTreeMap<String, Vec<u8>>, full_name: &str) -> Result<BTreeMap<String, Vec<u8>>> {
+    let folder = files
+        .keys()
+        .filter_map(|k| {
+            let (dir, name) = k.rsplit_once('/').unwrap_or(("", k));
+            name.eq_ignore_ascii_case("mod.json").then_some(dir)
+        })
+        .min_by_key(|d| {
+            (
+                if d.is_empty() {
+                    0
+                } else {
+                    d.matches('/').count() + 1
+                },
+                d.to_string(),
+            )
+        })
+        .map(str::to_string)
+        .ok_or_else(|| TsError::Data {
+            what: full_name.into(),
+            message: "no mod.json in the package".into(),
+        })?;
+    let prefix = if folder.is_empty() {
+        String::new()
+    } else {
+        format!("{folder}/")
+    };
+    Ok(files
+        .into_iter()
+        .filter_map(|(path, body)| {
+            let rel = path.strip_prefix(&prefix)?;
+            Some((
+                format!("{}/{full_name}/{rel}", umm_gamedef::MIO_MODS_DIR),
+                body,
+            ))
+        })
+        .collect())
 }
 
 /// Lays out the Unity Mod Manager package as r2modman does: `UMM/Core/` and Unity Doorstop's
@@ -983,6 +1064,72 @@ pub(crate) mod tests {
                 "mods/Steamodded-smods/src/core.lua",
             ]
         );
+    }
+
+    #[test]
+    fn mio_packages_and_mods() {
+        let mut mio = rules();
+        mio.package_loader = "mio".into();
+        mio.install_rules.clear();
+        let entry = ModloaderPackage {
+            package_id: "MIO_Modding-MioModLoader".into(),
+            root_folder: "MioModLoader".into(),
+            loader: "mio".into(),
+        };
+        let keys = |m: &BTreeMap<String, Vec<u8>>| m.keys().cloned().collect::<Vec<_>>();
+        let pack = zip_of(&[
+            ("manifest.json", "{}"),
+            ("MioModLoader/winhttp.dll", "p"),
+            ("MioModLoader/mio-mod-loader/MioModLoader.dll", "l"),
+            (
+                "MioModLoader/mio-mod-loader/dotnet/host/fxr/hostfxr.dll",
+                "d",
+            ),
+            ("MioModLoader/INSTALL.txt", "i"),
+        ]);
+        let out = plan(&pack, "MIO_Modding-MioModLoader", &mio, Some(&entry)).unwrap();
+        assert_eq!(
+            keys(&out),
+            [
+                "mio-mod-loader/MioModLoader.dll",
+                "mio-mod-loader/dotnet/host/fxr/hostfxr.dll",
+                "winhttp.dll"
+            ]
+        );
+        let empty = zip_of(&[("MioModLoader/winhttp.dll", "p")]);
+        assert!(plan(&empty, "MIO_Modding-MioModLoader", &mio, Some(&entry)).is_err());
+
+        // The folder with the mod's mod.json, wherever it is; Thunderstore's own files only
+        // when they are in it.
+        for (prefix, expected) in [
+            (
+                "",
+                vec![
+                    "mods/Me-Mine/Mine.dll",
+                    "mods/Me-Mine/icon.png",
+                    "mods/Me-Mine/manifest.json",
+                    "mods/Me-Mine/mod.json",
+                ],
+            ),
+            (
+                "Mine/",
+                vec!["mods/Me-Mine/Mine.dll", "mods/Me-Mine/mod.json"],
+            ),
+        ] {
+            let zip = zip_of(&[
+                ("manifest.json", "{}"),
+                ("icon.png", "i"),
+                (&format!("{prefix}mod.json"), "{}"),
+                (&format!("{prefix}Mine.dll"), "d"),
+            ]);
+            assert_eq!(
+                keys(&plan(&zip, "Me-Mine", &mio, None).unwrap()),
+                expected,
+                "{prefix}"
+            );
+        }
+        let none = zip_of(&[("manifest.json", "{}"), ("Mine.dll", "d")]);
+        assert!(plan(&none, "Me-Mine", &mio, None).is_err());
     }
 
     #[test]

@@ -13,6 +13,7 @@ use umm_gamedef::{
     DOORSTOP_TARGET_FLAG, GDWEAVE_DIR, GDWEAVE_FOLDER_FLAG, GDWEAVE_PROXY, GODOTML_AUTOLOAD,
     GODOTML_ENABLE_FLAG, GODOTML_MODS_DIR, GODOTML_MODS_FLAG, LOVELY_DIR, LOVELY_MOD_DIR_FLAG,
     LOVELY_PROXIES, MELONLOADER_BASEDIR_FLAG, MELONLOADER_GENERATED, MELONLOADER_REGENERATE_FLAG,
+    MIO_CONFIG_DIR, MIO_CONFIG_FLAG, MIO_LOADER, MIO_MODS_DIR, MIO_MODS_FLAG, MIO_PROXY,
     NORTHSTAR_DIR, NORTHSTAR_DLL, NORTHSTAR_FLAG, NORTHSTAR_PROFILE_FLAG, NORTHSTAR_PROXY,
     ROM_PROXIES, ROM_ROOT_FLAG, SHIMLOADER_DIRS,
 };
@@ -131,6 +132,19 @@ impl Session {
                 check_gdweave(&plan.files)?;
                 (Some(Injection::GDWeave), None)
             }
+            Some(RuntimeLoader::Mio) => {
+                let has = |p: &str| {
+                    plan.files
+                        .iter()
+                        .any(|f| f.target.as_str().eq_ignore_ascii_case(p))
+                };
+                if !has(MIO_PROXY) || !has(MIO_LOADER) {
+                    return Err(CoreError::Invalid(
+                        "the profile has no MIO Mod Loader; install it from the Thunderstore tab (it also comes with any mod that needs it)".into(),
+                    ));
+                }
+                (Some(Injection::Mio), None)
+            }
             Some(RuntimeLoader::Northstar) => {
                 let has = |p: &str| {
                     plan.files
@@ -190,6 +204,7 @@ impl Session {
                     | Injection::Lovely
                     | Injection::GDWeave
                     | Injection::ReturnOfModding
+                    | Injection::Mio
             )
         );
         if let (true, Some(launch)) = (proxied, &def.def.launch) {
@@ -497,6 +512,7 @@ pub(crate) enum Injection {
     GodotML,
     ReturnOfModding,
     Northstar,
+    Mio,
 }
 
 /// Puts Return of Modding's proxy DLL next to the game's exe (Hades II keeps its own in
@@ -769,6 +785,14 @@ pub(crate) fn build_spec(
     if injection == Some(Injection::Lovely) {
         game_args.extend([LOVELY_MOD_DIR_FLAG.to_string(), in_runtime(LOVELY_DIR)]);
     }
+    if injection == Some(Injection::Mio) {
+        game_args.extend([
+            MIO_MODS_FLAG.to_string(),
+            in_runtime(MIO_MODS_DIR),
+            MIO_CONFIG_FLAG.to_string(),
+            in_runtime(MIO_CONFIG_DIR),
+        ]);
+    }
     if injection == Some(Injection::Northstar) {
         // Northstar reads its profile up to the first space, unless quoted in a way Windows
         // argument quoting does not produce.
@@ -1035,6 +1059,31 @@ mod tests {
             [
                 "--mod-dir",
                 native_path(&Path::new("/rt").join("mods")).as_str()
+            ]
+        );
+    }
+
+    #[test]
+    fn mio_gets_its_mod_and_settings_folders() {
+        let d = def("[launch]\nexe = \"mio.exe\"\n\
+             [loader]\nkind = \"mio\"\nsource = \"thunderstore\"\ninject = \"args\"\n\
+             [thunderstore]\ncommunity = \"mio\"\n");
+        let spec = build_spec(
+            &d,
+            Path::new("/game"),
+            Path::new("/rt"),
+            &Profile::new("Default"),
+            Some(Injection::Mio),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            spec.args,
+            [
+                "--mods-path",
+                native_path(&Path::new("/rt").join("mods")).as_str(),
+                "--mods-config-path",
+                native_path(&Path::new("/rt").join("modconfig")).as_str()
             ]
         );
     }
