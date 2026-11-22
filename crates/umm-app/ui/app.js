@@ -656,6 +656,7 @@ function filesTab() {
     melonloader: "MelonLoader/, Mods/, Plugins/, UserData/ and UserLibs/",
     "recursive-melonloader": "MelonLoader/, Mods/, Plugins/, UserData/ and UserLibs/",
     lovely: "mods/",
+    gdweave: "GDWeave/",
   }[S.details.game.loader];
   const runtimeNote =
     runtimeDirs && ["doorstop", "args"].includes(S.details.game.inject)

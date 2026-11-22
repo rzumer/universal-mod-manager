@@ -10,8 +10,9 @@ use umm_gamedef::{
     detect::steam_roots, loader_name, BepInExBuild, DoorstopLoader, GameDef, RelPath,
     RuntimeLoader, SteamRelaunch, BEPINEX_KIND, CORECLR_PATH, CORLIB_DIR, DOORSTOP3_ENABLED_FLAG,
     DOORSTOP3_TARGET_FLAG, DOORSTOP_CORECLR_FLAG, DOORSTOP_CORLIB_FLAG, DOORSTOP_ENABLED_FLAG,
-    DOORSTOP_TARGET_FLAG, LOVELY_DIR, LOVELY_MOD_DIR_FLAG, LOVELY_PROXIES,
-    MELONLOADER_BASEDIR_FLAG, MELONLOADER_GENERATED, MELONLOADER_REGENERATE_FLAG, SHIMLOADER_DIRS,
+    DOORSTOP_TARGET_FLAG, GDWEAVE_DIR, GDWEAVE_FOLDER_FLAG, GDWEAVE_PROXY, LOVELY_DIR,
+    LOVELY_MOD_DIR_FLAG, LOVELY_PROXIES, MELONLOADER_BASEDIR_FLAG, MELONLOADER_GENERATED,
+    MELONLOADER_REGENERATE_FLAG, SHIMLOADER_DIRS,
 };
 use umm_launch::{LaunchSpec, Tracking};
 use umm_store::fsutil::{hash_file, write_atomic, IoCtx};
@@ -122,6 +123,10 @@ impl Session {
                 check_lovely(&plan.files)?;
                 (Some(Injection::Lovely), None)
             }
+            Some(RuntimeLoader::GDWeave) => {
+                check_gdweave(&plan.files)?;
+                (Some(Injection::GDWeave), None)
+            }
             Some(RuntimeLoader::MelonLoader) => {
                 check_melonloader(&plan.files)?;
                 // Whether assemblies need generating is known once the folder is synced.
@@ -131,7 +136,12 @@ impl Session {
         };
         let proxied = matches!(
             injection,
-            Some(Injection::Doorstop(_) | Injection::MelonLoader { .. } | Injection::Lovely)
+            Some(
+                Injection::Doorstop(_)
+                    | Injection::MelonLoader { .. }
+                    | Injection::Lovely
+                    | Injection::GDWeave
+            )
         );
         if let (true, Some(launch)) = (proxied, &def.def.launch) {
             if let Ok(exe) = RelPath::parse(&launch.exe) {
@@ -425,6 +435,26 @@ pub(crate) enum Injection {
         regenerate: bool,
     },
     Lovely,
+    GDWeave,
+}
+
+/// Errors when the profile has no GDWeave: its proxy DLL at the game folder's root, and its
+/// core in its folder.
+fn check_gdweave(files: &[PlannedFile]) -> Result<()> {
+    let proxy = files
+        .iter()
+        .any(|f| f.target.as_str().eq_ignore_ascii_case(GDWEAVE_PROXY));
+    let core = format!("{}/core/", GDWEAVE_DIR.to_lowercase());
+    let core = files
+        .iter()
+        .any(|f| f.target.as_str().to_lowercase().starts_with(&core));
+    if proxy && core {
+        Ok(())
+    } else {
+        Err(CoreError::Invalid(
+            "the profile has no GDWeave; install it from the Thunderstore tab (it also comes with any mod that needs it)".into(),
+        ))
+    }
 }
 
 /// Errors when the profile has no Lovely (its proxy DLL at the game folder's root).
@@ -605,6 +635,16 @@ pub(crate) fn build_spec(
     }
     if injection == Some(Injection::Lovely) {
         game_args.extend([LOVELY_MOD_DIR_FLAG.to_string(), in_runtime(LOVELY_DIR)]);
+    }
+    if injection == Some(Injection::GDWeave) {
+        // GDWeave keeps only what comes before a second `=`.
+        let dir = in_runtime(GDWEAVE_DIR);
+        if dir.contains('=') {
+            return Err(CoreError::Invalid(format!(
+                "GDWeave cannot use a folder whose path has `=` in it ({dir}); move UMM's data folder"
+            )));
+        }
+        game_args.push(format!("{GDWEAVE_FOLDER_FLAG}{dir}"));
     }
     if let Some(Injection::MelonLoader { regenerate }) = injection {
         game_args.extend([
@@ -826,6 +866,29 @@ mod tests {
                 "--mod-dir",
                 native_path(&Path::new("/rt").join("mods")).as_str()
             ]
+        );
+    }
+
+    #[test]
+    fn gdweave_gets_its_folder() {
+        let d = def("[launch]\nexe = \"webfishing.exe\"\n\
+             [loader]\nkind = \"gdweave\"\nsource = \"thunderstore\"\ninject = \"args\"\n\
+             [thunderstore]\ncommunity = \"webfishing\"\n");
+        let spec = build_spec(
+            &d,
+            Path::new("/game"),
+            Path::new("/rt"),
+            &Profile::new("Default"),
+            Some(Injection::GDWeave),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            spec.args,
+            [format!(
+                "--gdweave-folder-override={}",
+                native_path(&Path::new("/rt").join("GDWeave"))
+            )]
         );
     }
 

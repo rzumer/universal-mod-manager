@@ -452,6 +452,15 @@ pub const LOVELY_MOD_DIR_FLAG: &str = "--mod-dir";
 /// Lovely's proxy DLLs: `version.dll` up to 0.9, `winmm.dll` from 0.10.
 pub const LOVELY_PROXIES: &[&str] = &["version.dll", "winmm.dll"];
 
+/// Loader kind for GDWeave, the Godot loader WEBFISHING mods use.
+pub const GDWEAVE_KIND: &str = "gdweave";
+/// GDWeave's folder (its core, mods, configs and log) in the runtime folder, and the flag
+/// pointing it there (`--gdweave-folder-override=<folder>`, one argument).
+pub const GDWEAVE_DIR: &str = "GDWeave";
+pub const GDWEAVE_FOLDER_FLAG: &str = "--gdweave-folder-override=";
+/// GDWeave's proxy DLL.
+pub const GDWEAVE_PROXY: &str = "winmm.dll";
+
 /// A loader that is pointed at a per-profile runtime folder outside the game, so that only
 /// its proxy goes into the game folder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -464,6 +473,8 @@ pub enum RuntimeLoader {
     MelonLoader,
     /// Lovely, given its mod folder as a launch argument.
     Lovely,
+    /// GDWeave, given its folder as a launch argument.
+    GDWeave,
 }
 
 impl RuntimeLoader {
@@ -474,6 +485,7 @@ impl RuntimeLoader {
             RuntimeLoader::Shimloader => &[SHIMLOADER_DIR],
             RuntimeLoader::MelonLoader => MELONLOADER_DIRS,
             RuntimeLoader::Lovely => &[LOVELY_DIR],
+            RuntimeLoader::GDWeave => &[GDWEAVE_DIR],
         }
     }
 }
@@ -485,6 +497,7 @@ pub fn thunderstore_inject(kind: &str) -> Option<Inject> {
         SHIMLOADER_KIND => Some(Inject::Args),
         k if is_melonloader(k) => Some(Inject::Args),
         LOVELY_KIND => Some(Inject::Args),
+        GDWEAVE_KIND => Some(Inject::Args),
         _ => None,
     }
 }
@@ -496,6 +509,7 @@ pub fn loader_name(kind: &str) -> &str {
         SHIMLOADER_KIND => "Shimloader",
         k if is_melonloader(k) => "MelonLoader",
         LOVELY_KIND => "Lovely",
+        GDWEAVE_KIND => "GDWeave",
         other => other,
     }
 }
@@ -519,6 +533,7 @@ impl GameDef {
             Inject::Args if l.kind == SHIMLOADER_KIND => Some(RuntimeLoader::Shimloader),
             Inject::Args if is_melonloader(&l.kind) => Some(RuntimeLoader::MelonLoader),
             Inject::Args if l.kind == LOVELY_KIND => Some(RuntimeLoader::Lovely),
+            Inject::Args if l.kind == GDWEAVE_KIND => Some(RuntimeLoader::GDWeave),
             _ => None,
         }
     }
@@ -690,10 +705,11 @@ impl GameDef {
                 Inject::Args
                     if loader.kind == SHIMLOADER_KIND
                         || loader.kind == LOVELY_KIND
+                        || loader.kind == GDWEAVE_KIND
                         || is_melonloader(&loader.kind) => {}
                 Inject::Args => {
                     return Err(GameDefError::Unsupported(format!(
-                        "loader kind `{}` cannot be injected with arguments (supported: shimloader, melonloader, recursive-melonloader, lovely); use inject = \"files\"",
+                        "loader kind `{}` cannot be injected with arguments (supported: shimloader, melonloader, recursive-melonloader, lovely, gdweave); use inject = \"files\"",
                         loader.kind
                     )))
                 }

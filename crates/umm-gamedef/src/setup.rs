@@ -5,8 +5,8 @@
 
 use crate::{
     loader_name, thunderstore_inject, GameDef, GameDefError, Inject, InstallRule, Loader,
-    Thunderstore, BEPINEX_KIND, LOVELY_KIND, RECURSIVE_MELONLOADER_KIND, SHIMLOADER_KIND,
-    THUNDERSTORE_SOURCE,
+    Thunderstore, BEPINEX_KIND, GDWEAVE_KIND, LOVELY_KIND, RECURSIVE_MELONLOADER_KIND,
+    SHIMLOADER_KIND, THUNDERSTORE_SOURCE,
 };
 use serde::{Deserialize, Serialize};
 
@@ -107,15 +107,29 @@ pub fn lovely_rules() -> Vec<InstallRule> {
     ]
 }
 
+/// Install rules for GDWeave mods imported from files rather than Thunderstore: GDWeave's
+/// proxy stays at the game folder's root and its own folder keeps its place; anything else
+/// is a mod in its own folder under `GDWeave/mods/` (GDWeave reads one folder per mod).
+pub fn gdweave_rules() -> Vec<InstallRule> {
+    vec![
+        rule("winmm.dll", ""),
+        rule("GDWeave/**", "GDWeave/"),
+        rule("mods/**", "GDWeave/mods/"),
+        rule("**", "GDWeave/mods/{mod}/"),
+    ]
+}
+
 const BEPINEX_CONFIG: &str = "BepInEx/config/**";
 const SHIMLOADER_CONFIG: &str = "shimloader/cfg/**";
 const MELONLOADER_CONFIG: &str = "UserData/**";
 const LOVELY_CONFIG: &str = "mods/lovely/**";
+const GDWEAVE_CONFIG: &str = "GDWeave/configs/**";
 const LOADER_CONFIGS: &[&str] = &[
     BEPINEX_CONFIG,
     SHIMLOADER_CONFIG,
     MELONLOADER_CONFIG,
     LOVELY_CONFIG,
+    GDWEAVE_CONFIG,
 ];
 
 impl GameDef {
@@ -208,6 +222,8 @@ impl GameDef {
                     (shimloader_rules(), SHIMLOADER_CONFIG)
                 } else if kind == LOVELY_KIND {
                     (lovely_rules(), LOVELY_CONFIG)
+                } else if kind == GDWEAVE_KIND {
+                    (gdweave_rules(), GDWEAVE_CONFIG)
                 } else if crate::is_melonloader(kind) {
                     (
                         melonloader_rules(kind == RECURSIVE_MELONLOADER_KIND),

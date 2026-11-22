@@ -143,6 +143,12 @@ pub fn plan(
     if game.package_loader == umm_gamedef::LOVELY_KIND && loader.is_none() {
         return lovely_mod(files, full_name);
     }
+    if let Some(l) = loader.filter(|l| l.loader == umm_gamedef::GDWEAVE_KIND) {
+        return gdweave_pack(files, full_name, &l.root_folder);
+    }
+    if game.package_loader == umm_gamedef::GDWEAVE_KIND && loader.is_none() {
+        return gdweave_mod(files, full_name);
+    }
     if let Some(l) = loader {
         let root = format!("{}/", l.root_folder.trim_matches('/').to_lowercase());
         for (path, body) in files {
@@ -400,6 +406,80 @@ fn lovely_mod(
         });
     }
     Ok(out)
+}
+
+/// Lays out the GDWeave package as r2modman does: its proxy DLL and its `GDWeave/` folder
+/// (under the package's root folder) keep their place. The rest is left out.
+fn gdweave_pack(
+    files: BTreeMap<String, Vec<u8>>,
+    full_name: &str,
+    root_folder: &str,
+) -> Result<BTreeMap<String, Vec<u8>>> {
+    let root = match root_folder.trim_matches('/') {
+        "" => String::new(),
+        r => format!("{}/", r.to_ascii_lowercase()),
+    };
+    let proxy = umm_gamedef::GDWEAVE_PROXY;
+    let dir = format!("{}/", umm_gamedef::GDWEAVE_DIR.to_lowercase());
+    let mut out = BTreeMap::new();
+    for (path, body) in files {
+        let Some(rel) = path
+            .to_ascii_lowercase()
+            .strip_prefix(&root)
+            .map(|r| path[path.len() - r.len()..].to_string())
+        else {
+            continue;
+        };
+        let lower = rel.to_ascii_lowercase();
+        if lower == proxy {
+            out.insert(proxy.to_string(), body);
+        } else if let Some(inside) = lower.strip_prefix(&dir) {
+            let inside = &rel[rel.len() - inside.len()..];
+            out.insert(format!("{}/{inside}", umm_gamedef::GDWEAVE_DIR), body);
+        }
+    }
+    let core = format!("{}/core/", umm_gamedef::GDWEAVE_DIR);
+    if !out.contains_key(proxy) || !out.keys().any(|k| k.starts_with(&core)) {
+        return Err(TsError::Data {
+            what: format!("{full_name} (mod loader)"),
+            message: "no winmm.dll and GDWeave/core/ in the package".into(),
+        });
+    }
+    Ok(out)
+}
+
+/// Lays out a mod for a GDWeave game as r2modman does: the folder holding the mod's own
+/// `manifest.json` (not Thunderstore's, at the zip's root), the shallowest one, goes to
+/// `GDWeave/mods/`, keeping its name (GDWeave expects it to match the mod's id).
+fn gdweave_mod(
+    files: BTreeMap<String, Vec<u8>>,
+    full_name: &str,
+) -> Result<BTreeMap<String, Vec<u8>>> {
+    let folder = files
+        .keys()
+        .filter_map(|k| {
+            let (dir, name) = k.rsplit_once('/')?;
+            name.eq_ignore_ascii_case("manifest.json").then_some(dir)
+        })
+        .min_by_key(|d| (d.matches('/').count(), d.to_string()))
+        .map(str::to_string)
+        .ok_or_else(|| TsError::Data {
+            what: full_name.into(),
+            message: "no GDWeave mod folder (a folder with its own manifest.json) in the package"
+                .into(),
+        })?;
+    let name = folder.rsplit('/').next().unwrap_or(&folder).to_string();
+    let prefix = format!("{folder}/");
+    Ok(files
+        .into_iter()
+        .filter_map(|(path, body)| {
+            let rel = path.strip_prefix(&prefix)?;
+            Some((
+                format!("{}/mods/{name}/{rel}", umm_gamedef::GDWEAVE_DIR),
+                body,
+            ))
+        })
+        .collect())
 }
 
 /// Lays out Shimloader's pack as r2modman does: the proxy DLL at the zip's root, UE4SS and
@@ -751,6 +831,60 @@ pub(crate) mod tests {
                 "mods/Steamodded-smods/src/core.lua",
             ]
         );
+    }
+
+    #[test]
+    fn gdweave_packages_and_mods() {
+        let mut webfishing = rules();
+        webfishing.package_loader = "gdweave".into();
+        webfishing.install_rules.clear();
+        let entry = ModloaderPackage {
+            package_id: "NotNet-GDWeave".into(),
+            root_folder: String::new(),
+            loader: "gdweave".into(),
+        };
+        let keys = |m: &BTreeMap<String, Vec<u8>>| m.keys().cloned().collect::<Vec<_>>();
+        let pack = zip_of(&[
+            ("manifest.json", "{}"),
+            ("README.md", "r"),
+            ("winmm.dll", "p"),
+            ("GDWeave/core/GDWeave.dll", "c"),
+            ("GDWeave/mods/.keep", ""),
+        ]);
+        let out = plan(&pack, "NotNet-GDWeave", &webfishing, Some(&entry)).unwrap();
+        assert_eq!(
+            keys(&out),
+            [
+                "GDWeave/core/GDWeave.dll",
+                "GDWeave/mods/.keep",
+                "winmm.dll"
+            ]
+        );
+        let no_core = zip_of(&[("manifest.json", "{}"), ("winmm.dll", "p")]);
+        assert!(plan(&no_core, "NotNet-GDWeave", &webfishing, Some(&entry)).is_err());
+
+        // The mod's folder, wherever it is in the zip; Thunderstore's own files left out.
+        for prefix in ["GDWeave/mods/", "", "stuff/"] {
+            let zip = zip_of(&[
+                ("manifest.json", "{}"),
+                ("icon.png", "i"),
+                (&format!("{prefix}Lure/manifest.json"), "{\"Id\":\"Lure\"}"),
+                (&format!("{prefix}Lure/Lure.dll"), "d"),
+                (&format!("{prefix}Lure/assets/a.pck"), "p"),
+            ]);
+            let out = plan(&zip, "Sulayre-Lure", &webfishing, None).unwrap();
+            assert_eq!(
+                keys(&out),
+                [
+                    "GDWeave/mods/Lure/Lure.dll",
+                    "GDWeave/mods/Lure/assets/a.pck",
+                    "GDWeave/mods/Lure/manifest.json",
+                ],
+                "{prefix}"
+            );
+        }
+        let none = zip_of(&[("manifest.json", "{}"), ("Lure.dll", "d")]);
+        assert!(plan(&none, "Sulayre-Lure", &webfishing, None).is_err());
     }
 
     #[test]
