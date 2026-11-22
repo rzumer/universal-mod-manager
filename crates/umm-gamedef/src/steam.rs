@@ -309,9 +309,9 @@ pub fn draft_from(
             steam_dir: Some(app.install_dir.clone()),
             ..Default::default()
         },
-        // Started outside Steam, Steamworks games restart through Steam and escape
-        // tracking; steam_appid.txt during the session prevents that.
-        relaunch: SteamRelaunch::AppidFile,
+        // Started by Steam, as players expect: their Steam launch options, Steam Cloud and
+        // DRM all apply. UMM finds the game by its process names.
+        relaunch: SteamRelaunch::ViaSteam,
     };
     build(origin, found, &found.exe, setup, community)
 }
@@ -444,12 +444,24 @@ fn build(
         ));
         None
     } else {
-        let name = exe.rsplit('/').next().unwrap_or(exe).to_string();
+        let file = |p: &str| p.rsplit('/').next().unwrap_or(p).to_string();
+        let mut process_names = vec![file(exe)];
+        // An Unreal game's launcher hands off to the real exe in <Project>/Binaries/Win64 and
+        // exits: started through Steam, only the real one tells UMM the game is still running.
+        if let Some(p) = &found.unreal_project {
+            let bin = format!("{}/", crate::unreal_binaries_dir(p));
+            for e in found.exes.iter().filter(|e| e.starts_with(&bin)) {
+                let name = file(e);
+                if !process_names.iter().any(|n| n.eq_ignore_ascii_case(&name)) {
+                    process_names.push(name);
+                }
+            }
+        }
         Some(Launch {
             exe: exe.to_string(),
             args: Vec::new(),
             steam_relaunch: origin.relaunch,
-            process_names: vec![name],
+            process_names,
         })
     };
 
@@ -628,6 +640,17 @@ mod tests {
         assert_eq!(unreal.engine, Engine::Unreal);
         assert_eq!(unreal.def.launch.as_ref().unwrap().exe, "Trip.exe");
         assert_eq!(unreal.def.install[0].target, "Trip/Content/Paks/~mods/");
+        let launch = unreal.def.launch.as_ref().unwrap();
+        assert_eq!(
+            launch.steam_relaunch,
+            SteamRelaunch::ViaSteam,
+            "started by Steam"
+        );
+        assert_eq!(
+            launch.process_names,
+            ["Trip.exe", "Trip-Win64-Shipping.exe"],
+            "the launcher and the real exe it hands off to"
+        );
 
         let plain = draft_for(&apps, 1004);
         assert_eq!(plain.engine, Engine::Unknown);

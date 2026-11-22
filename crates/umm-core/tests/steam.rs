@@ -250,6 +250,11 @@ fn a_game_can_be_added_manually_from_its_folder() {
     let launch = st.def.launch.as_ref().unwrap();
     assert_eq!(launch.exe, "TestQuest.exe");
     assert_eq!(launch.steam_relaunch, umm_gamedef::SteamRelaunch::None);
+    let file = std::fs::read_to_string(s.data().game("test-quest").def_path()).unwrap();
+    assert!(
+        !file.contains("steam_relaunch"),
+        "not a Steam game:\n{file}"
+    );
 
     // The same name again gets the folder's name appended; bad input is refused.
     let again = s

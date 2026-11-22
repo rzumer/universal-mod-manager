@@ -32,7 +32,8 @@ impl Tracking {
     pub fn names(names: Vec<String>) -> Self {
         Tracking::Names {
             names,
-            appear_timeout: Duration::from_secs(60),
+            // Steam may have to start, update or ask about cloud saves first.
+            appear_timeout: Duration::from_secs(180),
             grace: Duration::from_secs(5),
         }
     }

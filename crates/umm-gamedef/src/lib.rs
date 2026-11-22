@@ -77,7 +77,8 @@ pub struct Launch {
     pub exe: String,
     #[serde(default)]
     pub args: Vec<String>,
-    #[serde(default)]
+    /// Left out for games not started through Steam.
+    #[serde(default, skip_serializing_if = "SteamRelaunch::is_none")]
     pub steam_relaunch: SteamRelaunch,
     #[serde(default)]
     pub process_names: Vec<String>,
@@ -90,6 +91,12 @@ pub enum SteamRelaunch {
     ViaSteam,
     #[default]
     None,
+}
+
+impl SteamRelaunch {
+    pub fn is_none(&self) -> bool {
+        *self == SteamRelaunch::None
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

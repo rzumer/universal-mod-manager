@@ -19,10 +19,12 @@ marker = "ExampleGame.exe"        # must exist for a folder to count as the inst
 [launch]
 exe = "ExampleGame.exe"
 args = []
-steam_relaunch = "appid_file"     # puts steam_appid.txt in the game folder while playing, so
-                                  # the game does not restart through Steam (needs steam_app_id);
-                                  # "via_steam" starts it through Steam instead
-process_names = ["ExampleGame.exe"]
+steam_relaunch = "via_steam"      # Steam starts the game, so your Steam launch options, Steam
+                                  # Cloud and DRM apply; UMM finds it by process_names. Or
+                                  # "appid_file": UMM starts the exe, with steam_appid.txt beside
+                                  # it so it does not restart through Steam. Both need
+                                  # steam_app_id; leave it out for games not on Steam.
+process_names = ["ExampleGame.exe"] # every exe that means the game is running
 
 [loader]
 kind = "bepinex"
