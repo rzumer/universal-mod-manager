@@ -11,7 +11,7 @@ use umm_gamedef::GameDef;
 use umm_store::{fsutil, ImportOptions, Layout, ProfileEntry, ThunderstoreMeta};
 use umm_thunderstore::ecosystem::{package_index_url, SteamMatch};
 use umm_thunderstore::index::{compare_versions, split_dependency, Package};
-use umm_thunderstore::{layout, resolve, Ecosystem};
+use umm_thunderstore::{layout, resolve, Ecosystem, TsError};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TsSort {
@@ -129,10 +129,12 @@ impl Session {
         let def = self.def(id)?.def;
         let community = match (&def.loader, def.community()) {
             (Some(l), Some(c)) if l.from_thunderstore() => c.to_string(),
-            _ => return Err(CoreError::Invalid(format!(
+            _ => {
+                return Err(CoreError::Invalid(format!(
                 "{} is not set up with a mod loader from Thunderstore; change its mod loader first",
                 def.name
-            ))),
+            )))
+            }
         };
         let eco = self.ecosystem(false)?;
         if eco.community(&community).is_none() {
@@ -513,7 +515,7 @@ impl Session {
                         progress(&format!("Downloading {} {}", pkg.name, version));
                         let bytes = self.http().get(&pkg.download_url(version)).map_err(|e| {
                             let msg = e.to_string();
-                            net_error = Some(e.into());
+                            net_error = Some(TsError::from(e).into());
                             msg
                         })?;
                         zips.insert(key.clone(), bytes);
@@ -547,7 +549,9 @@ impl Session {
                 Some(z) => z,
                 None => {
                     progress(&format!("Downloading {} {}", pkg.name, step.version));
-                    self.http().get(&pkg.download_url(&step.version))?
+                    self.http()
+                        .get(&pkg.download_url(&step.version))
+                        .map_err(TsError::from)?
                 }
             };
             progress(&format!("Installing {} {}", pkg.name, step.version));
@@ -707,6 +711,7 @@ impl Session {
                         website: Some(pkg.website.clone()).filter(|w| !w.is_empty()),
                         loader: loader.is_some(),
                     }),
+                    nexus: None,
                     replace: true,
                     package_files: layout::package_files(zip)?,
                 },

@@ -13,6 +13,9 @@ umm-deploy.workspace = true
 thiserror.workspace = true
 umm-launch.workspace = true
 umm-thunderstore.workspace = true
+umm-nexus.workspace = true
+md-5 = "0.10"
+dirs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 same-file.workspace = true
@@ -26,3 +29,4 @@ base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
 winreg.workspace = true
+keyring = { version = "3.6", features = ["windows-native"] }

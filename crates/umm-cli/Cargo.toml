@@ -12,5 +12,6 @@ path = "src/main.rs"
 
 [dependencies]
 umm-core.workspace = true
+umm-nexus.workspace = true
 clap.workspace = true
 anyhow.workspace = true

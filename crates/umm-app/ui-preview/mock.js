@@ -45,7 +45,28 @@ const tsPackages = [
   { fullName: "Bob-Quiet_Footsteps", owner: "Bob", name: "Quiet_Footsteps", description: "Makes footsteps quieter in the fog.", categories: ["Audio", "Client-side"], rating: 95, downloads: 402_118, latest: "0.4.0", size: 12_000, deps: ["BepInEx-BepInExPack"] },
   { fullName: "Old-Map_Pins", owner: "Old", name: "Map_Pins", description: "Pins on the map. Replaced by the base game's own pins.", categories: ["Mods"], rating: 40, downloads: 88_000, latest: "1.0.3", size: 30_000, deps: [], deprecated: true },
 ];
-let linkOurs = false;
+const linkOurs = { ror2mm: false, nxm: false };
+const linkOthers = {
+  ror2mm: String.raw`"C:\Users\you\AppData\Local\Programs\r2modman\r2modman.exe" "%1"`,
+  nxm: String.raw`"C:\Program Files\Black Tree Gaming Ltd\Vortex\Vortex.exe" -d "%1"`,
+};
+const q = new URLSearchParams(location.search);
+// `?premium` starts signed in with a Premium account; `?nopick` makes the Unity game unknown
+// to Nexus; `?unrecognised` makes downloads unknown by hash.
+let nexusAccount = q.has("premium") ? { name: "Ann", premium: true } : null;
+const nexusDomains = { "example-unity-game": null, "example-asi-game": null };
+const nexusFiles = [
+  { fileId: 4100, name: "Lantern Light", version: "2.0.1", category: "MAIN", size: 1_800_000, date: 300, description: "Everything in one archive.", old: false, group: 1 },
+  { fileId: 4101, name: "Warm Colours", version: "2.0.1", category: "OPTIONAL", size: 220_000, date: 290, description: "Orange light instead of white.", old: false, group: 2 },
+  { fileId: 3900, name: "Lantern Light", version: "1.9", category: "OLD_VERSION", size: 1_700_000, date: 200, description: null, old: true, group: 1 },
+];
+const nexusMods = [
+  { modId: 77, name: "Lantern Light", summary: "Warmer, brighter lanterns that light the whole road.", author: "Ann", version: "2.0.1", endorsements: 914, downloads: 23_762, updatedAt: "2026-10-03T22:17:02Z", category: "Visuals" },
+  { modId: 12, name: "Quieter Footsteps", summary: "Footsteps at half volume, so the music carries.", author: "Bob", version: "1.2", endorsements: 410, downloads: 9_120, updatedAt: "2025-03-14T00:07:39Z", category: "Audio" },
+  { modId: 31, name: "Road Signs Reworked", summary: "Readable road signs with the real town names.", author: "Cy", version: "0.8", endorsements: 88, downloads: 1_204, updatedAt: "2024-07-06T14:59:11Z", category: "Visuals" },
+  { modId: 45, name: "Lantern Oil Never Runs Out", summary: "For those who would rather not count oil.", author: "Dee", version: "1.0", endorsements: 52, downloads: 3_301, updatedAt: "2023-01-01T00:00:00Z", category: "Cheats" },
+];
+let nexusPending = null;
 let pendingTaken = false;
 const tsModId = (full) => full.toLowerCase().replace(/[^a-z0-9]+/g, "-");
 const tsInstalledVersion = (game, full) => {
@@ -75,6 +96,7 @@ const mods = {
     { id: "hd-textures", name: "HD Textures", version: "1.4", files: 312, size: 2_150_000_000 },
     { id: "quality-of-life", name: "Quality of Life Tweaks", version: "0.9.2", files: 5, size: 95_000 },
     { id: "old-map-mod", name: "Old Map Mod", version: "0.3", files: 2, size: 40_000 },
+    { id: "lantern-light", name: "Lantern Light", version: "1.9", files: 6, size: 1_700_000, nexusUrl: "https://www.nexusmods.com/exampleunitygame/mods/77", nexusMod: 77, nexusFile: 3900 },
   ],
   "example-asi-game": [],
 };
@@ -88,6 +110,7 @@ const profiles = {
         { id: "better-ui", enabled: true },
         { id: "hd-textures", enabled: true },
         { id: "quality-of-life", enabled: false },
+        { id: "lantern-light", enabled: true },
       ],
     },
     Vanilla: { name: "Vanilla", mods: [{ id: "bepinex", enabled: true }] },
@@ -356,11 +379,114 @@ const handlers = {
     return { profile: name, installed: { installed: [{ fullName: "Bob-Quiet_Footsteps", version: "0.4.0", replaced: null }], missing: [] }, notes: [], files: 3, skipped: [] };
   },
   profile_import_file: () => null,
-  link_handler: () => ({ supported: true, ours: linkOurs, other: linkOurs ? null : String.raw`"C:\Users\you\AppData\Local\Programs\r2modman\r2modman.exe" "%1"` }),
+  link_handler: () => ({ supported: true, ours: linkOurs.ror2mm && linkOurs.nxm, others: Object.keys(linkOurs).filter((k) => !linkOurs[k]).map((k) => linkOthers[k]) }),
   set_link_handler: ({ on }) => {
-    linkOurs = on;
+    linkOurs.ror2mm = linkOurs.nxm = on;
     return handlers.link_handler();
   },
+  nexus_resolve_link: ({ url }) => {
+    const m = url.match(/^nxm:\/\/([a-z0-9_-]+)\/mods\/(\d+)\/files\/(\d+)/i);
+    if (!m) throw "not a Nexus Mods download link UMM can use";
+    const f = nexusFiles.find((x) => x.fileId === Number(m[3]));
+    nexusPending = { game: "example-unity-game", modId: Number(m[2]), fileId: Number(m[3]), at: Infinity };
+    return {
+      domain: m[1].toLowerCase(), modName: "Lantern Light", fileName: f?.name || null, version: f?.version || null,
+      expired: /expires=1(&|$)/.test(url), signedIn: !!nexusAccount,
+      games: Object.values(games).map((g) => ({ id: g.id, name: g.name, matches: g.id === "example-unity-game" })),
+    };
+  },
+  nexus_install_link: async ({ game, profile }) => {
+    const p = nexusPending;
+    nexusPending = null;
+    return nexusInstall(game, profile, p.modId, p.fileId);
+  },
+  nexus_account: () => nexusAccount,
+  nexus_sign_in: ({ key }) => {
+    if (key.trim().length < 8) throw "Nexus Mods did not accept the API key; check it, or create a new one";
+    nexusAccount = { name: "Ann", premium: true };
+    return nexusAccount;
+  },
+  nexus_sign_out: () => {
+    nexusAccount = null;
+    return null;
+  },
+  nexus_game: ({ game }) => {
+    const d = nexusDomains[game];
+    const guess = !d && game === "example-unity-game" && !q.has("nopick") ? "exampleunitygame" : null;
+    const domain = d || guess;
+    return { domain, name: domain ? (domain === "exampleunitygame" ? "Example Unity Game" : domain) : null, modCount: domain ? nexusMods.length : null, guessed: !!guess, url: domain ? `https://www.nexusmods.com/${domain}` : null };
+  },
+  nexus_find_games: ({ name }) =>
+    [
+      { domain: "exampleasigame", name: "Example ASI Game", modCount: 12 },
+      { domain: "exampleasigame2", name: "Example ASI Game 2", modCount: 3 },
+      { domain: "exampleunitygame", name: "Example Unity Game", modCount: 4 },
+    ].filter((g) => g.name.toLowerCase().includes(name.toLowerCase().slice(0, 7))),
+  set_nexus_domain: ({ game, domain }) => {
+    const d = domain.trim().toLowerCase();
+    if (d && !/^[a-z0-9_-]+$/.test(d)) throw `\`${d}\` is not a Nexus Mods game name (lower-case letters, digits, - and _)`;
+    nexusDomains[game] = d || null;
+    return handlers.nexus_game({ game });
+  },
+  nexus_search: ({ game, query }) => {
+    let items = nexusMods.filter((m) => m.name.toLowerCase().includes(query.text.toLowerCase()));
+    if (query.installed) items = items.filter((m) => mods[game].some((x) => x.nexusMod === m.modId));
+    const by = { downloads: (m) => -m.downloads, updated: (m) => -Date.parse(m.updatedAt), name: (m) => m.name, endorsements: (m) => -m.endorsements }[query.sort];
+    items = [...items].sort((a, b) => (by(a) < by(b) ? -1 : by(a) > by(b) ? 1 : 0));
+    const domain = handlers.nexus_game({ game }).domain;
+    return {
+      total: items.length,
+      items: items.slice(query.offset, query.offset + query.count).map((m) => ({
+        ...m,
+        thumbnail: null,
+        url: `https://www.nexusmods.com/${domain}/mods/${m.modId}`,
+        installed: mods[game].filter((x) => x.nexusMod === m.modId).map((x) => x.version),
+      })),
+    };
+  },
+  nexus_files: ({ game, modId }) => {
+    const m = nexusMods.find((x) => x.modId === modId);
+    const have = mods[game].filter((x) => x.nexusMod === modId).map((x) => x.nexusFile);
+    const files = modId === 77 ? nexusFiles : [{ fileId: modId * 100, name: m.name, version: m.version, category: "MAIN", size: 150_000, date: 100, description: null, old: false }];
+    const has = (id) => mods[game].some((x) => x.nexusMod === id);
+    const requirements =
+      modId === 31
+        ? [
+            { name: "Lantern Light", modId: 77, notes: "For the lamp-post signs", url: "https://www.nexusmods.com/exampleunitygame/mods/77", installed: has(77) },
+            { name: "Quieter Footsteps", modId: 12, notes: null, url: "https://www.nexusmods.com/exampleunitygame/mods/12", installed: has(12) },
+            { name: "Unity Explorer", modId: null, notes: "Any recent version", url: "https://example.org/unity-explorer", installed: false },
+          ]
+        : [];
+    return { domain: handlers.nexus_game({ game }).domain, modId, name: m.name, files: files.map((f) => ({ ...f, installed: have.includes(f.fileId) })), requirements };
+  },
+  nexus_download_start: ({ game, modId, fileId }) => {
+    nexusPending = { game, modId, fileId, at: Date.now() };
+    return String.raw`C:\Users\you\Downloads`;
+  },
+  nexus_download_poll: () => (nexusPending && Date.now() - nexusPending.at > 2500 ? String.raw`C:\Users\you\Downloads\Lantern Light-77-2-0-1-300.zip` : null),
+  nexus_download_cancel: () => {
+    nexusPending = null;
+    return null;
+  },
+  nexus_download_install: async ({ profile, path, trust }) => {
+    if (!nexusPending) throw "no download is waiting";
+    if (q.has("unrecognised") && !trust) return { installed: null, unrecognised: true };
+    const p = nexusPending;
+    nexusPending = null;
+    return { installed: await nexusInstall(p.game, profile, p.modId, p.fileId), unrecognised: false };
+  },
+  nexus_install_file: ({ game, profile, modId, fileId }) => nexusInstall(game, profile, modId, fileId),
+  nexus_updates: ({ game }) =>
+    mods[game].filter((m) => m.nexusMod).map((m) => {
+      const newer = m.nexusMod === 77 && m.nexusFile === 3900;
+      return { id: m.id, name: m.name, modId: m.nexusMod, version: m.version, state: newer ? "newer" : "current", newFileId: newer ? 4100 : null, newVersion: newer ? "2.0.1" : null };
+    }),
+  nexus_update: ({ game, profile, modId }) => {
+    if (!nexusAccount?.premium) throw "Nexus Mods only lets Premium accounts download from inside an app";
+    return nexusInstall(game, profile, 77, 4100);
+  },
+  open_nexus_page: () => null,
+  open_web_page: () => null,
   take_pending_link: () => {
     const l = new URLSearchParams(location.search).get("link");
     return pendingTaken ? null : ((pendingTaken = true), l);
@@ -405,6 +531,26 @@ const handlers = {
     return { appId: 0, ok: true, id, name, message: `Added ${name} (${SETUP_LABELS[setup]})`, notes };
   },
 };
+
+async function nexusInstall(game, profile, modId, fileId) {
+  const m = nexusMods.find((x) => x.modId === modId);
+  const f = (modId === 77 ? nexusFiles : []).find((x) => x.fileId === fileId) || { fileId, name: m.name, version: m.version, category: "MAIN", size: 150_000, group: fileId };
+  for (const step of ["Checking the file with Nexus Mods", "Unpacking"]) {
+    emit("nexus-progress", { game, message: step });
+    await sleep(600);
+  }
+  const main = f.category === "MAIN" || f.category === "OLD_VERSION";
+  const id = main ? m.name.toLowerCase().replace(/[^a-z0-9]+/g, "-") : `${m.name} ${f.name}`.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  const list = mods[game];
+  const existing = list.find((x) => x.id === id);
+  if (existing) Object.assign(existing, { version: f.version, nexusFile: f.fileId });
+  else {
+    list.push({ id, name: main ? m.name : `${m.name} - ${f.name}`, version: f.version, files: 6, size: f.size, nexusUrl: `https://www.nexusmods.com/exampleunitygame/mods/${modId}`, nexusMod: modId, nexusFile: f.fileId });
+    profiles[game][profile].mods.push({ id, enabled: true });
+  }
+  nexusDomains[game] ||= "exampleunitygame";
+  return { id, name: existing?.name || m.name, version: f.version, replaced: !!existing };
+}
 
 export const backend = {
   async invoke(cmd, args = {}) {

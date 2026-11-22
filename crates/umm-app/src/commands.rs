@@ -10,9 +10,9 @@ use tauri::{AppHandle, Emitter, Runtime, State};
 use tauri_plugin_dialog::DialogExt;
 use umm_core::{Faults, ImportOptions, LoaderSetup, Profile, Session};
 
-type Res<T> = Result<T, String>;
+pub(crate) type Res<T> = Result<T, String>;
 
-async fn blocking<T, F>(state: &State<'_, AppState>, f: F) -> Res<T>
+pub(crate) async fn blocking<T, F>(state: &State<'_, AppState>, f: F) -> Res<T>
 where
     T: Send + 'static,
     F: FnOnce(&Session) -> Result<T, umm_core::CoreError> + Send + 'static,
@@ -150,7 +150,8 @@ pub async fn pick_path<R: Runtime>(app: AppHandle<R>, kind: String) -> Res<Optio
         let picked = if kind == "folder" {
             d.blocking_pick_folder()
         } else {
-            d.add_filter("Mod archive", &["zip"]).blocking_pick_file()
+            d.add_filter("Mod archive", &["zip", "7z", "rar"])
+                .blocking_pick_file()
         };
         picked
             .and_then(|p| p.into_path().ok())
@@ -321,18 +322,24 @@ pub async fn open_package_page(
         ))
     })
     .await?;
-    let program = if cfg!(windows) {
-        "explorer"
+    open_url(&url)
+}
+
+/// Opens a web page in the default browser. Callers check the URL first.
+pub(crate) fn open_url(url: &str) -> Res<()> {
+    // Windows: the URL handler opens the default browser. `explorer <url>` does not do this
+    // for an address with a query string (`?tab=api`); it opens the Documents folder instead.
+    // The URL goes as its own argument, with no shell parsing it.
+    let mut cmd = if cfg!(windows) {
+        let mut c = std::process::Command::new("rundll32");
+        c.arg("url.dll,FileProtocolHandler");
+        c
     } else if cfg!(target_os = "macos") {
-        "open"
+        std::process::Command::new("open")
     } else {
-        "xdg-open"
+        std::process::Command::new("xdg-open")
     };
-    std::process::Command::new(program)
-        .arg(&url)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    cmd.arg(url).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
 /// Closes the app even though a game is running; its mods are reverted on the next start.
@@ -682,7 +689,8 @@ fn current_exe() -> Res<PathBuf> {
     std::env::current_exe().map_err(|e| format!("cannot find UMM's own program: {e}"))
 }
 
-/// Whether UMM handles Thunderstore's install links, or which program does.
+/// Whether UMM handles the mod sites' install links (Thunderstore's and Nexus Mods'), or
+/// which programs do.
 #[tauri::command]
 pub async fn link_handler(state: State<'_, AppState>) -> Res<LinkHandlerDto> {
     let exe = current_exe()?;
@@ -693,20 +701,20 @@ pub async fn link_handler(state: State<'_, AppState>) -> Res<LinkHandlerDto> {
                 LinkHandlerDto {
                     supported: true,
                     ours: h.ours,
-                    other: h.other,
+                    others: h.others,
                 }
             }
             None => LinkHandlerDto {
                 supported: false,
                 ours: false,
-                other: None,
+                others: Vec::new(),
             },
         })
     })
     .await
 }
 
-/// Turns handling of Thunderstore's install links on or off for this user.
+/// Turns handling of every kind of install link on or off for this user.
 #[tauri::command]
 pub async fn set_link_handler(state: State<'_, AppState>, on: bool) -> Res<LinkHandlerDto> {
     let exe = current_exe()?;
@@ -717,7 +725,7 @@ pub async fn set_link_handler(state: State<'_, AppState>, on: bool) -> Res<LinkH
         Ok(LinkHandlerDto {
             supported: true,
             ours: h.ours,
-            other: h.other,
+            others: h.others,
         })
     })
     .await

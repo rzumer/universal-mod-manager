@@ -1,22 +1,32 @@
 //! `Session`: the one API the CLI and the Tauri app both call.
 
 mod doctor;
+mod downloads;
 mod launch;
 mod link;
 mod manual;
+mod nexus;
 mod runtime;
+mod secrets;
 mod setup;
 mod share;
 mod steam;
 mod ts;
 
 pub use doctor::{Finding, Level};
+pub use downloads::{downloads_dir, DownloadWatch};
 pub use launch::{LaunchEvent, LaunchOutcome};
 pub use link::{
     parse_link, system_registry, InstallLink, LinkHandler, SchemeRegistry, LINK_SCHEME,
+    LINK_SCHEMES, NXM_SCHEME,
 };
 pub use manual::FolderInfo;
+pub use nexus::{
+    ExpectedFile, NexusAccount, NexusFile, NexusGame, NexusInstallReport, NexusItem, NexusModFiles,
+    NexusPage, NexusRequirement, NexusSearch, NexusSort, NexusUpdate, NexusUpdateState,
+};
 pub use runtime::SyncReport;
+pub use secrets::{system_secrets, MemorySecrets, SecretStore};
 pub use setup::LoaderChoice;
 pub use share::{ProfileExport, ProfileImport};
 pub use steam::{Draft, Engine, Note, SteamApp, SteamCandidate, SteamList};
@@ -29,6 +39,10 @@ pub use umm_deploy::{
 };
 pub use umm_gamedef::{CompiledDef, GameDef, GameDefError};
 pub use umm_launch::catch_interrupts;
+pub use umm_nexus::graph::{
+    Game as NexusGameInfo, ModFile as NexusModFile, ModSummary as NexusModSummary,
+};
+pub use umm_nexus::{NexusError, NxmLink};
 pub use umm_store::{
     DataDir, GameDir, ImportOptions, ModMeta, Profile, ProfileEntry, StoreError, DEFAULT_PROFILE,
 };
@@ -70,6 +84,11 @@ pub enum CoreError {
     Launch(#[from] umm_launch::LaunchError),
     #[error(transparent)]
     Thunderstore(#[from] TsError),
+    #[error(transparent)]
+    Nexus(#[from] NexusError),
+    /// A downloaded archive Nexus does not know by its hash (re-packed, or not from there).
+    #[error("Nexus Mods does not recognise this file, so UMM cannot tell which download it is")]
+    NexusUnrecognised,
 }
 
 impl From<umm_gamedef::RelPathError> for CoreError {
@@ -107,20 +126,38 @@ pub struct Session {
     http: Arc<dyn Http>,
     ecosystem: Mutex<Option<Arc<Ecosystem>>>,
     ts: Mutex<ts::TsCache>,
+    secrets: Arc<dyn SecretStore>,
+    /// Nexus games looked up by domain name.
+    nexus_games: Mutex<std::collections::HashMap<String, umm_nexus::graph::Game>>,
 }
 
 impl Session {
+    /// Opens the data folder (the default one with `None`), with real network access and the
+    /// system's credential store.
     pub fn open(root: Option<PathBuf>) -> Result<Self> {
-        Self::open_with(root, Arc::new(UreqHttp::default()))
+        let root = root.unwrap_or_else(DataDir::default_root);
+        let secrets: Arc<dyn SecretStore> = Arc::from(system_secrets(&root));
+        Self::open_with_secrets(Some(root), Arc::new(UreqHttp::default()), secrets)
     }
 
-    /// Like [`Session::open`], with the given network access (tests pass a fake).
+    /// Like [`Session::open`], with the given network access (tests pass a fake) and secrets
+    /// kept in memory only.
     pub fn open_with(root: Option<PathBuf>, http: Arc<dyn Http>) -> Result<Self> {
+        Self::open_with_secrets(root, http, Arc::new(MemorySecrets::default()))
+    }
+
+    pub fn open_with_secrets(
+        root: Option<PathBuf>,
+        http: Arc<dyn Http>,
+        secrets: Arc<dyn SecretStore>,
+    ) -> Result<Self> {
         Ok(Self {
             data: DataDir::open(root.unwrap_or_else(DataDir::default_root))?,
             http,
             ecosystem: Mutex::new(None),
             ts: Mutex::new(ts::TsCache::new()),
+            secrets,
+            nexus_games: Mutex::new(Default::default()),
         })
     }
 

@@ -9,8 +9,9 @@ mod profile;
 
 pub use fsutil::{IoCtx, IoError};
 pub use mods::{
-    import_mod, list_mods, load_mod, remove_mod, slugify, verify_mod, FileIssue, FileRecord,
-    ImportOptions, Layout, ModMeta, ThunderstoreMeta, MOD_META_FILE,
+    archive_kind, import_mod, list_mods, load_mod, remove_mod, slugify, verify_mod, ArchiveKind,
+    FileIssue, FileRecord, ImportOptions, Layout, ModMeta, NexusMeta, ThunderstoreMeta,
+    MOD_META_FILE,
 };
 pub use profile::{
     list_profiles, load_profile, save_profile, Profile, ProfileEntry, DEFAULT_PROFILE,
@@ -43,8 +44,10 @@ pub enum StoreError {
     InvalidId(String),
     #[error("the mod contains no files")]
     EmptyMod,
-    #[error("unsupported mod source {0} (expected a folder or a .zip file)")]
+    #[error("unsupported mod source {0} (expected a folder, or a .zip, .7z or .rar file)")]
     Unsupported(PathBuf),
+    #[error("{}: {message}", path.display())]
+    Archive { path: PathBuf, message: String },
     #[error("{0} is a symlink; symlinks are not imported")]
     Symlink(PathBuf),
     #[error("zip: {0}")]

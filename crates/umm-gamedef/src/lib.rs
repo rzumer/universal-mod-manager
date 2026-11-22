@@ -45,6 +45,9 @@ pub struct GameDef {
     /// The game's Thunderstore community, when its mods come from there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thunderstore: Option<Thunderstore>,
+    /// The game on Nexus Mods, when UMM installs its mods from there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nexus: Option<Nexus>,
     #[serde(default)]
     pub install: Vec<InstallRule>,
     /// Game paths that are never replaced, even if a mod ships them.
@@ -95,6 +98,21 @@ pub enum SteamRelaunch {
 pub struct Thunderstore {
     /// The community's label, as in `thunderstore.io/c/<community>/`.
     pub community: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Nexus {
+    /// The game's name in Nexus URLs, as in `nexusmods.com/<domain>/mods/`.
+    pub domain: String,
+}
+
+/// Whether `s` can be a Nexus game domain name (lower-case letters, digits, `-` and `_`).
+pub fn is_nexus_domain(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
 }
 
 /// Loader source meaning "the BepInEx pack installed from Thunderstore", which is stored like
@@ -497,6 +515,12 @@ impl GameDef {
         }
         if !is_valid_id(&self.id) {
             return Err(GameDefError::Id(self.id.clone()));
+        }
+        if let Some(n) = self.nexus.as_ref().filter(|n| !is_nexus_domain(&n.domain)) {
+            return Err(GameDefError::Unsupported(format!(
+                "[nexus] domain `{}` is not a Nexus Mods game name (lower-case letters, digits, - and _)",
+                n.domain
+            )));
         }
         if let Some(loader) = &self.loader {
             if let Some(src) = &loader.source {

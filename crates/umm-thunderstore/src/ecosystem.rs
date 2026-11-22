@@ -235,7 +235,8 @@ pub fn load(
     cache_file: &Path,
     force: bool,
 ) -> Result<(Ecosystem, cache::Freshness)> {
-    let (bytes, fresh) = cache::cached(cache_file, MAX_AGE, force, || http.get(ECOSYSTEM_URL))?;
+    let (bytes, fresh) =
+        cache::cached(cache_file, MAX_AGE, force, || Ok(http.get(ECOSYSTEM_URL)?))?;
     Ok((Ecosystem::parse(&bytes)?, fresh))
 }
 

@@ -28,6 +28,9 @@ pub struct ModMeta {
     /// Set for packages installed from Thunderstore.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thunderstore: Option<ThunderstoreMeta>,
+    /// Set for files installed from Nexus Mods.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nexus: Option<NexusMeta>,
     /// Path inside the mod (`/`-separated) → size and hash.
     pub files: BTreeMap<String, FileRecord>,
 }
@@ -67,6 +70,25 @@ pub struct ThunderstoreMeta {
     pub loader: bool,
 }
 
+/// Where a mod from Nexus Mods came from: one file of one mod there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NexusMeta {
+    /// The game's domain name on Nexus (`stardewvalley`).
+    pub domain: String,
+    /// The game's number on Nexus.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game_id: Option<u64>,
+    pub mod_id: u64,
+    pub file_id: u64,
+    /// The file's name on Nexus ("Main File", "Glow Extras").
+    pub file_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// `MAIN`, `OPTIONAL`, ...
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileRecord {
     pub size: u64,
@@ -85,6 +107,7 @@ pub struct ImportOptions {
     pub keep_top_dirs: Vec<String>,
     pub layout: Layout,
     pub thunderstore: Option<ThunderstoreMeta>,
+    pub nexus: Option<NexusMeta>,
     /// Replace an existing mod with the same id (an update). The old one is removed only once
     /// the new one is fully stored.
     pub replace: bool,
@@ -204,13 +227,13 @@ fn stage_mod(
     let content = staging.join("content");
     if src.is_dir() {
         copy_tree(src, &content)?;
-    } else if src
-        .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("zip"))
-    {
-        extract_zip(src, &content)?;
     } else {
-        return Err(StoreError::Unsupported(src.to_path_buf()));
+        match archive_kind(src) {
+            Some(ArchiveKind::Zip) => extract_zip(src, &content)?,
+            Some(ArchiveKind::SevenZip) => extract_7z(src, &content)?,
+            Some(ArchiveKind::Rar) => extract_rar(src, &content)?,
+            None => return Err(StoreError::Unsupported(src.to_path_buf())),
+        }
     }
     let root = if opts.unwrap {
         unwrap_root(&content, &opts.keep_top_dirs)?
@@ -234,6 +257,7 @@ fn stage_mod(
         imported_unix: fsutil::unix_now(),
         layout: opts.layout,
         thunderstore: opts.thunderstore.clone(),
+        nexus: opts.nexus.clone(),
         files,
     };
     write_toml(&out.join(MOD_META_FILE), &meta)?;
@@ -264,6 +288,105 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
             fs::copy(entry.path(), &out).ctx(|| format!("copying {}", entry.path().display()))?;
             clear_readonly(&out).ctx(|| format!("updating {}", out.display()))?;
         }
+    }
+    Ok(())
+}
+
+/// Archive formats mods come in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveKind {
+    Zip,
+    SevenZip,
+    Rar,
+}
+
+/// The archive format of a file, by its extension.
+pub fn archive_kind(p: &Path) -> Option<ArchiveKind> {
+    let ext = p.extension()?.to_str()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "zip" => Some(ArchiveKind::Zip),
+        "7z" => Some(ArchiveKind::SevenZip),
+        "rar" => Some(ArchiveKind::Rar),
+        _ => None,
+    }
+}
+
+/// Where an archive entry named `name` goes under `dst`; refused if it would leave `dst`.
+/// `None` for the archive's root itself.
+fn entry_path(dst: &Path, name: &str) -> Result<Option<PathBuf>> {
+    let rel = RelPath::parse(name).map_err(|_| StoreError::UnsafeEntry(name.to_string()))?;
+    Ok((!rel.is_root()).then(|| rel.to_path(dst)))
+}
+
+fn archive_err(src: &Path, e: impl std::fmt::Display) -> StoreError {
+    StoreError::Archive {
+        path: src.to_path_buf(),
+        message: e.to_string(),
+    }
+}
+
+fn extract_7z(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst).ctx(|| format!("creating {}", dst.display()))?;
+    let mut reader = sevenz_rust2::ArchiveReader::open(src, sevenz_rust2::Password::empty())
+        .map_err(|e| archive_err(src, e))?;
+    // Errors writing files are kept here: the reader's own error type cannot carry them.
+    let mut failed: Option<StoreError> = None;
+    let result = reader.for_each_entries(|entry, data| {
+        let out = match entry_path(dst, entry.name()) {
+            Ok(Some(out)) => out,
+            Ok(None) => return Ok(true),
+            Err(e) => {
+                failed = Some(e);
+                return Ok(false);
+            }
+        };
+        let mut write = || -> Result<()> {
+            if entry.is_directory() {
+                fs::create_dir_all(&out).ctx(|| format!("creating {}", out.display()))?;
+                return Ok(());
+            }
+            if let Some(parent) = out.parent() {
+                fs::create_dir_all(parent).ctx(|| format!("creating {}", parent.display()))?;
+            }
+            let mut o = File::create(&out).ctx(|| format!("creating {}", out.display()))?;
+            io::copy(data, &mut o).ctx(|| format!("extracting {}", entry.name()))?;
+            Ok(())
+        };
+        match write() {
+            Ok(()) => Ok(true),
+            Err(e) => {
+                failed = Some(e);
+                Ok(false)
+            }
+        }
+    });
+    if let Some(e) = failed {
+        return Err(e);
+    }
+    result.map_err(|e| archive_err(src, e))
+}
+
+fn extract_rar(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst).ctx(|| format!("creating {}", dst.display()))?;
+    let mut archive = unrar::Archive::new(src)
+        .open_for_processing()
+        .map_err(|e| archive_err(src, e))?;
+    while let Some(header) = archive.read_header().map_err(|e| archive_err(src, e))? {
+        let name = header.entry().filename.to_string_lossy().into_owned();
+        let out = entry_path(dst, &name)?;
+        archive = match out {
+            Some(out) if header.entry().is_file() => {
+                if let Some(parent) = out.parent() {
+                    fs::create_dir_all(parent).ctx(|| format!("creating {}", parent.display()))?;
+                }
+                header.extract_to(&out).map_err(|e| archive_err(src, e))?
+            }
+            Some(out) => {
+                fs::create_dir_all(&out).ctx(|| format!("creating {}", out.display()))?;
+                header.skip().map_err(|e| archive_err(src, e))?
+            }
+            None => header.skip().map_err(|e| archive_err(src, e))?,
+        };
     }
     Ok(())
 }
@@ -404,6 +527,61 @@ mod tests {
         let data = DataDir::open(tmp.path().join("data")).unwrap();
         let g = data.game("g");
         (tmp, g)
+    }
+
+    fn seven_zip(path: &Path, entries: &[(&str, &str)]) {
+        let mut w = sevenz_rust2::ArchiveWriter::create(path).unwrap();
+        for (name, body) in entries {
+            w.push_archive_entry(
+                sevenz_rust2::ArchiveEntry::new_file(name),
+                Some(body.as_bytes()),
+            )
+            .unwrap();
+        }
+        w.finish().unwrap();
+    }
+
+    #[test]
+    fn imports_7z_and_rar_archives() {
+        let (tmp, g) = game();
+        let src = tmp.path().join("Glow 1.2.7z");
+        seven_zip(
+            &src,
+            &[("Glow/plugins/glow.dll", "dll"), ("Glow/readme.txt", "hi")],
+        );
+        let meta = import_mod(
+            &g,
+            &src,
+            &ImportOptions {
+                unwrap: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(meta.id, "glow-1-2");
+        assert_eq!(
+            meta.files.keys().collect::<Vec<_>>(),
+            ["plugins/glow.dll", "readme.txt"]
+        );
+        assert!(verify_mod(&g, &meta).unwrap().is_empty());
+
+        // A small archive from the unrar crate's own tests: one file, VERSION.
+        let rar = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/version.rar");
+        let meta = import_mod(&g, &rar, &ImportOptions::default()).unwrap();
+        assert_eq!(meta.files.keys().collect::<Vec<_>>(), ["VERSION"]);
+    }
+
+    #[test]
+    fn archive_entries_outside_the_mod_are_refused() {
+        let (tmp, g) = game();
+        let src = tmp.path().join("evil.7z");
+        seven_zip(&src, &[("../evil.dll", "x")]);
+        assert!(matches!(
+            import_mod(&g, &src, &ImportOptions::default()),
+            Err(StoreError::UnsafeEntry(_))
+        ));
+        assert!(!tmp.path().join("evil.dll").exists());
+        assert!(list_mods(&g).unwrap().is_empty());
     }
 
     #[test]

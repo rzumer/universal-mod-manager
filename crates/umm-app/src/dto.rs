@@ -63,12 +63,18 @@ pub struct ModDto {
     pub imported_unix: u64,
     /// `Owner-Name`, for packages installed from Thunderstore.
     pub thunderstore: Option<String>,
+    /// The mod's page, for files installed from Nexus Mods.
+    pub nexus_url: Option<String>,
 }
 
 impl From<ModMeta> for ModDto {
     fn from(m: ModMeta) -> Self {
         ModDto {
             thunderstore: m.thunderstore.as_ref().map(|t| t.full_name.clone()),
+            nexus_url: m
+                .nexus
+                .as_ref()
+                .map(|n| umm_nexus::mod_url(&n.domain, n.mod_id)),
             files: m.files.len(),
             size: m.files.values().map(|f| f.size).sum(),
             id: m.id,
@@ -634,9 +640,10 @@ impl From<umm_core::ProfileImport> for ImportDto {
 pub struct LinkHandlerDto {
     /// Link handling can be set up on this system.
     pub supported: bool,
+    /// UMM handles every kind of link.
     pub ours: bool,
-    /// Another program's command, when it handles the links.
-    pub other: Option<String>,
+    /// Commands of other programs that handle some of them.
+    pub others: Vec<String>,
 }
 
 #[derive(Serialize)]

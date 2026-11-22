@@ -36,6 +36,34 @@ pub fn set_install_path(
     Ok(doc.to_string())
 }
 
+/// Sets `[nexus] domain`, or removes the section with `None`.
+pub fn set_nexus_domain(
+    text: &str,
+    origin: &Path,
+    domain: Option<&str>,
+) -> Result<String, GameDefError> {
+    let mut doc = parse(text, origin)?;
+    match domain {
+        Some(d) => {
+            if !crate::is_nexus_domain(d) {
+                return Err(GameDefError::Unsupported(format!(
+                    "`{d}` is not a Nexus Mods game name (lower-case letters, digits, - and _)"
+                )));
+            }
+            let t = doc
+                .entry("nexus")
+                .or_insert(toml_edit::table())
+                .as_table_mut()
+                .ok_or_else(|| GameDefError::Unsupported("[nexus] is not a table".into()))?;
+            t.insert("domain", value(d));
+        }
+        None => {
+            doc.remove("nexus");
+        }
+    }
+    Ok(doc.to_string())
+}
+
 /// The sections a mod loader setup decides.
 const SETUP_KEYS: &[&str] = &["loader", "thunderstore", "install", "writable"];
 
@@ -119,6 +147,25 @@ mod tests {
             .detect
             .path
             .is_none());
+    }
+
+    #[test]
+    fn sets_the_nexus_game() {
+        let p = Path::new("game.toml");
+        let t = set_nexus_domain(TEXT, p, Some("trip")).unwrap();
+        assert!(t.contains("# the real name"));
+        let def = GameDef::parse_game(&t, p, "trip").unwrap();
+        assert_eq!(def.nexus.unwrap().domain, "trip");
+        assert!(set_nexus_domain(TEXT, p, Some("Trip Game")).is_err());
+        let back = set_nexus_domain(&t, p, None).unwrap();
+        assert!(GameDef::parse_game(&back, p, "trip")
+            .unwrap()
+            .nexus
+            .is_none());
+        assert!(!back.contains("[nexus]"));
+
+        let bad = format!("{TEXT}\n[nexus]\ndomain = \"../x\"\n");
+        assert!(GameDef::parse_game(&bad, p, "trip").is_err());
     }
 
     #[test]

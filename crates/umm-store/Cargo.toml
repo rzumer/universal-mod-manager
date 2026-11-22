@@ -15,6 +15,9 @@ blake3.workspace = true
 walkdir.workspace = true
 zip.workspace = true
 dirs.workspace = true
+sevenz-rust2 = { version = "=0.20.2", default-features = false, features = ["bzip2", "deflate", "ppmd"] }
+unrar = "0.5"
 
 [dev-dependencies]
 tempfile.workspace = true
+sevenz-rust2 = { version = "=0.20.2", default-features = false, features = ["compress"] }

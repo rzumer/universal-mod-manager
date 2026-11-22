@@ -5,6 +5,7 @@
 
 mod commands;
 mod dto;
+mod nexus;
 #[cfg(test)]
 mod tests;
 
@@ -55,6 +56,25 @@ macro_rules! umm_handlers {
             commands::set_link_handler,
             commands::take_pending_link,
             commands::resolve_link,
+            crate::nexus::nexus_account,
+            crate::nexus::nexus_sign_in,
+            crate::nexus::nexus_sign_out,
+            crate::nexus::nexus_game,
+            crate::nexus::nexus_find_games,
+            crate::nexus::set_nexus_domain,
+            crate::nexus::nexus_search,
+            crate::nexus::nexus_files,
+            crate::nexus::nexus_download_start,
+            crate::nexus::nexus_download_poll,
+            crate::nexus::nexus_download_cancel,
+            crate::nexus::nexus_download_install,
+            crate::nexus::nexus_install_file,
+            crate::nexus::nexus_resolve_link,
+            crate::nexus::nexus_install_link,
+            crate::nexus::nexus_updates,
+            crate::nexus::nexus_update,
+            crate::nexus::open_nexus_page,
+            crate::nexus::open_web_page,
         ]
     };
 }
@@ -70,13 +90,19 @@ pub struct AppState {
     pub active: Arc<Mutex<Option<String>>>,
     /// Set by "stop waiting"; read by the launch thread.
     pub stop: Arc<AtomicBool>,
-    /// A `ror2mm://` link UMM was started with, until the window asks for it.
+    /// A `ror2mm://` or `nxm://` link UMM was started with, until the window asks for it.
     pub pending_link: Arc<Mutex<Option<String>>>,
+    /// A Nexus Mods download the user is making on the website.
+    pub nexus_download: Arc<Mutex<Option<nexus::PendingDownload>>>,
 }
 
 fn link_in(args: impl IntoIterator<Item = String>) -> Option<String> {
-    args.into_iter()
-        .find(|a| a.starts_with(&format!("{}://", umm_core::LINK_SCHEME)))
+    args.into_iter().find(|a| {
+        umm_core::LINK_SCHEMES.iter().any(|s| {
+            a.get(..s.len() + 3)
+                .is_some_and(|p| p.eq_ignore_ascii_case(&format!("{s}://")))
+        })
+    })
 }
 
 fn main() {
@@ -92,10 +118,11 @@ fn main() {
         active: Arc::new(Mutex::new(None)),
         stop: Arc::new(AtomicBool::new(false)),
         pending_link: Arc::new(Mutex::new(link_in(std::env::args()))),
+        nexus_download: Arc::new(Mutex::new(None)),
     };
 
     tauri::Builder::default()
-        // A second start (say, from a link on thunderstore.io) hands its link to the window
+        // A second start (say, from a link on a mod site) hands its link to the window
         // already open instead of opening another.
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             if let Some(w) = app.get_webview_window("main") {

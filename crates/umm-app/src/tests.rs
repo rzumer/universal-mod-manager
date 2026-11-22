@@ -55,6 +55,7 @@ fn setup(exe: &str) -> Fx {
         active: Arc::new(Mutex::new(None)),
         stop: Arc::new(AtomicBool::new(false)),
         pending_link: Arc::new(Mutex::new(None)),
+        nexus_download: Arc::new(Mutex::new(None)),
     };
     let app = mock_builder()
         .manage(state)

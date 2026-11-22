@@ -33,6 +33,15 @@ pub enum TsError {
     Invalid(String),
 }
 
+impl From<umm_net::NetError> for TsError {
+    fn from(e: umm_net::NetError) -> Self {
+        TsError::Network {
+            url: e.url,
+            message: e.message,
+        }
+    }
+}
+
 pub type Result<T, E = TsError> = std::result::Result<T, E>;
 
 pub(crate) fn io_err(context: impl Into<String>) -> impl FnOnce(std::io::Error) -> TsError {

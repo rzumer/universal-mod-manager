@@ -462,6 +462,7 @@ fn build(
         detect,
         launch,
         loader: None,
+        nexus: None,
         thunderstore: community.map(|c| Thunderstore {
             community: c.label.to_string(),
         }),

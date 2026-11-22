@@ -1,3 +1,5 @@
+mod nexus;
+
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -292,6 +294,9 @@ enum Cmd {
     /// Thunderstore packages, for games set up with a mod loader from Thunderstore
     #[command(subcommand)]
     Ts(TsCmd),
+    /// Mods from Nexus Mods: sign in, install from links, updates
+    #[command(subcommand)]
+    Nexus(nexus::NexusCmd),
 }
 
 #[derive(Subcommand)]
@@ -511,6 +516,7 @@ fn run(cli: Cli) -> Result<()> {
             println!("{game}: install folder set to {}", path.display());
         }
         Cmd::Ts(cmd) => ts(&s, cmd)?,
+        Cmd::Nexus(cmd) => nexus::run(&s, cmd)?,
         Cmd::Game(GameCmd::Add {
             folder,
             name,
