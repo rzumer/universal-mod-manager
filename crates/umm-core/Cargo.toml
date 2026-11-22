@@ -29,4 +29,3 @@ base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
 winreg.workspace = true
-keyring = { version = "3.6", features = ["windows-native"] }

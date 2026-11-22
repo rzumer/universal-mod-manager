@@ -1,33 +1,23 @@
 //! Nexus Mods: the public GraphQL API for browsing (search, files, updates, recognising an
-//! archive by its hash), the v1 REST API for what needs an account (the API key, Premium
-//! downloads), and `nxm://` links from the website.
+//! archive by its hash), and `nxm://` links from the website. Files are downloaded on the
+//! website; downloading through the API needs Nexus's single sign-on, which comes once Nexus
+//! registers UMM.
 //!
-//! Every request carries UMM's name and version, as Nexus asks of applications; only the v1
-//! requests carry the user's API key.
+//! Every request carries UMM's name and version, as Nexus asks of applications.
 
-pub mod api;
 pub mod graph;
 pub mod link;
 
-pub use api::{Client, DownloadLink, User};
 pub use link::NxmLink;
+
+/// UMM's name in the `Application-Name` header.
+pub const APP_NAME: &str = "Universal Mod Manager";
 
 /// The website's host, for links shown to the user.
 pub const SITE_URL: &str = "https://www.nexusmods.com";
-/// Where a user creates a personal API key.
-pub const API_KEY_PAGE: &str = "https://www.nexusmods.com/users/myaccount?tab=api";
 
 #[derive(Debug, thiserror::Error)]
 pub enum NexusError {
-    /// The API key was refused (HTTP 401).
-    #[error("Nexus Mods did not accept the API key; check it, or create a new one")]
-    BadKey,
-    /// Downloading needs a Premium account, or a link from the website (HTTP 403).
-    #[error("Nexus Mods only lets Premium accounts download from inside an app. Use the Mod Manager Download button on the mod's Files page instead")]
-    PremiumOnly,
-    /// The download link from the website has expired.
-    #[error("the download link from Nexus Mods has expired; click Mod Manager Download again")]
-    LinkExpired,
     #[error("Nexus Mods has no {0}")]
     NotFound(String),
     /// Too many requests: Nexus allows a few thousand a day.

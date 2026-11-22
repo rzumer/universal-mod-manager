@@ -3,7 +3,7 @@
 //! so free and signed-out users can browse. Values always go as GraphQL variables, never
 //! spliced into the query text.
 
-use crate::api::APP_NAME;
+use crate::APP_NAME;
 use crate::{NexusError, Result};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};

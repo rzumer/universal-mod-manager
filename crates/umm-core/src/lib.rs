@@ -8,7 +8,6 @@ mod manual;
 mod nexus;
 mod placement;
 mod runtime;
-mod secrets;
 mod setup;
 mod share;
 mod steam;
@@ -23,12 +22,11 @@ pub use link::{
 };
 pub use manual::FolderInfo;
 pub use nexus::{
-    ExpectedFile, NexusAccount, NexusFile, NexusGame, NexusInstallReport, NexusItem, NexusModFiles,
-    NexusPage, NexusRequirement, NexusSearch, NexusSort, NexusUpdate, NexusUpdateState,
+    ExpectedFile, NexusGame, NexusInstallReport, NexusItem, NexusModFiles, NexusPage,
+    NexusRequirement, NexusSearch, NexusSort, NexusUpdate, NexusUpdateState,
 };
 pub use placement::{PlacedFile, PlacementView};
 pub use runtime::SyncReport;
-pub use secrets::{system_secrets, MemorySecrets, SecretStore};
 pub use setup::LoaderChoice;
 pub use share::{ProfileExport, ProfileImport};
 pub use steam::{Draft, Engine, Note, SteamApp, SteamCandidate, SteamList};
@@ -129,37 +127,23 @@ pub struct Session {
     http: Arc<dyn Http>,
     ecosystem: Mutex<Option<Arc<Ecosystem>>>,
     ts: Mutex<ts::TsCache>,
-    secrets: Arc<dyn SecretStore>,
     /// Nexus games looked up by domain name.
     nexus_games: Mutex<std::collections::HashMap<String, umm_nexus::graph::Game>>,
 }
 
 impl Session {
-    /// Opens the data folder (the default one with `None`), with real network access and the
-    /// system's credential store.
+    /// Opens the data folder (the default one with `None`), with real network access.
     pub fn open(root: Option<PathBuf>) -> Result<Self> {
-        let root = root.unwrap_or_else(DataDir::default_root);
-        let secrets: Arc<dyn SecretStore> = Arc::from(system_secrets(&root));
-        Self::open_with_secrets(Some(root), Arc::new(UreqHttp::default()), secrets)
+        Self::open_with(root, Arc::new(UreqHttp::default()))
     }
 
-    /// Like [`Session::open`], with the given network access (tests pass a fake) and secrets
-    /// kept in memory only.
+    /// Like [`Session::open`], with the given network access (tests pass a fake).
     pub fn open_with(root: Option<PathBuf>, http: Arc<dyn Http>) -> Result<Self> {
-        Self::open_with_secrets(root, http, Arc::new(MemorySecrets::default()))
-    }
-
-    pub fn open_with_secrets(
-        root: Option<PathBuf>,
-        http: Arc<dyn Http>,
-        secrets: Arc<dyn SecretStore>,
-    ) -> Result<Self> {
         Ok(Self {
             data: DataDir::open(root.unwrap_or_else(DataDir::default_root))?,
             http,
             ecosystem: Mutex::new(None),
             ts: Mutex::new(ts::TsCache::new()),
-            secrets,
             nexus_games: Mutex::new(Default::default()),
         })
     }

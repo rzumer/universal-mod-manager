@@ -1,6 +1,6 @@
 [package]
 name = "umm-nexus"
-description = "Nexus Mods: API client, nxm:// links, file updates"
+description = "Nexus Mods: browsing, nxm:// links, file updates"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

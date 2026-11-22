@@ -51,9 +51,8 @@ const linkOthers = {
   nxm: String.raw`"C:\Program Files\Black Tree Gaming Ltd\Vortex\Vortex.exe" -d "%1"`,
 };
 const q = new URLSearchParams(location.search);
-// `?premium` starts signed in with a Premium account; `?nopick` makes the Unity game unknown
-// to Nexus; `?unrecognised` makes downloads unknown by hash.
-let nexusAccount = q.has("premium") ? { name: "Ann", premium: true } : null;
+// `?nopick` makes the Unity game unknown to Nexus; `?unrecognised` makes downloads unknown
+// by hash.
 const nexusDomains = { "example-unity-game": null, "example-asi-game": null };
 const nexusFiles = [
   { fileId: 4100, name: "Lantern Light", version: "2.0.1", category: "MAIN", size: 1_800_000, date: 300, description: "Everything in one archive.", old: false, group: 1 },
@@ -421,27 +420,11 @@ const handlers = {
     const m = url.match(/^nxm:\/\/([a-z0-9_-]+)\/mods\/(\d+)\/files\/(\d+)/i);
     if (!m) throw "not a Nexus Mods download link UMM can use";
     const f = nexusFiles.find((x) => x.fileId === Number(m[3]));
-    nexusPending = { game: "example-unity-game", modId: Number(m[2]), fileId: Number(m[3]), at: Infinity };
     return {
       domain: m[1].toLowerCase(), modName: "Lantern Light", fileName: f?.name || null, version: f?.version || null,
-      expired: /expires=1(&|$)/.test(url), signedIn: !!nexusAccount,
+      modId: Number(m[2]), fileId: Number(m[3]),
       games: Object.values(games).map((g) => ({ id: g.id, name: g.name, matches: g.id === "example-unity-game" })),
     };
-  },
-  nexus_install_link: async ({ game, profile }) => {
-    const p = nexusPending;
-    nexusPending = null;
-    return nexusInstall(game, profile, p.modId, p.fileId);
-  },
-  nexus_account: () => nexusAccount,
-  nexus_sign_in: ({ key }) => {
-    if (key.trim().length < 8) throw "Nexus Mods did not accept the API key; check it, or create a new one";
-    nexusAccount = { name: "Ann", premium: true };
-    return nexusAccount;
-  },
-  nexus_sign_out: () => {
-    nexusAccount = null;
-    return null;
   },
   nexus_game: ({ game }) => {
     const d = nexusDomains[game];
@@ -496,7 +479,20 @@ const handlers = {
     nexusPending = { game, modId, fileId, at: Date.now() };
     return String.raw`C:\Users\you\Downloads`;
   },
-  nexus_download_poll: () => (nexusPending && Date.now() - nexusPending.at > 2500 ? String.raw`C:\Users\you\Downloads\Lantern Light-77-2-0-1-300.zip` : null),
+  nexus_download_poll: () => {
+    // `?closewindow` previews the user closing the Nexus Mods window.
+    if (nexusPending && q.has("closewindow") && !nexusPending.reopened) return { path: null, failed: false, closed: Date.now() - nexusPending.at > 1200 };
+    if (!nexusPending || Date.now() - nexusPending.at < 2500) return { path: null, failed: false, closed: false };
+    return { path: String.raw`C:\Users\you\AppData\Local\Temp\umm-downloads\1\Lantern Light-77-2-0-1-300.zip`, failed: false, closed: false };
+  },
+  nexus_download_reopen: () => {
+    if (nexusPending) Object.assign(nexusPending, { reopened: true, at: Date.now() });
+    return null;
+  },
+  nexus_download_in_browser: () => {
+    if (nexusPending) nexusPending.at = Date.now();
+    return null;
+  },
   nexus_download_cancel: () => {
     nexusPending = null;
     return null;
@@ -508,16 +504,11 @@ const handlers = {
     nexusPending = null;
     return { installed: await nexusInstall(p.game, profile, p.modId, p.fileId), unrecognised: false };
   },
-  nexus_install_file: ({ game, profile, modId, fileId }) => nexusInstall(game, profile, modId, fileId),
   nexus_updates: ({ game }) =>
     mods[game].filter((m) => m.nexusMod).map((m) => {
       const newer = m.nexusMod === 77 && m.nexusFile === 3900;
       return { id: m.id, name: m.name, modId: m.nexusMod, version: m.version, state: newer ? "newer" : "current", newFileId: newer ? 4100 : null, newVersion: newer ? "2.0.1" : null };
     }),
-  nexus_update: ({ game, profile, modId }) => {
-    if (!nexusAccount?.premium) throw "Nexus Mods only lets Premium accounts download from inside an app";
-    return nexusInstall(game, profile, 77, 4100);
-  },
   open_nexus_page: () => null,
   open_web_page: () => null,
   take_pending_link: () => {

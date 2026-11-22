@@ -4,40 +4,29 @@
 //! archive by its hash all go through Nexus's public GraphQL API. A game is matched to its
 //! Nexus game by `[nexus] domain`, or by its name.
 //!
-//! Downloading depends on the account. Free accounts download on the website: UMM opens the
-//! file's page and picks the archive up from the Downloads folder (see `downloads.rs`),
-//! checking it by hash. Premium accounts sign in with their personal API key (kept in the
-//! system's credential store) and download straight from the API.
+//! Downloading happens on the website, as Nexus asks of apps it has not registered: the app
+//! opens the file's page in a window of its own and catches the download, or the user
+//! downloads in their browser and UMM picks the archive up from the Downloads folder (see
+//! `downloads.rs`). Either way the archive is checked by its hash. Downloading through the API
+//! needs Nexus's single sign-on, which comes once Nexus registers UMM.
 //!
 //! Archives have no install rules of their own: they go through the game's, like an imported
 //! archive. A newer version of an installed file (same file group on Nexus) replaces it.
 
 use crate::{CoreError, Result, Session};
-use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use umm_deploy::GameLock;
 use umm_gamedef::GameDef;
 use umm_nexus::graph::{self, Graph, ModFile, ModPage, ModSummary};
-use umm_nexus::{Client, NexusError, NxmLink};
-use umm_store::fsutil::{self, IoCtx};
+use umm_nexus::{NexusError, NxmLink};
+use umm_store::fsutil::IoCtx;
 use umm_store::{ImportOptions, ModMeta, NexusMeta};
 
 pub use umm_nexus::graph::{Search as NexusSearch, Sort as NexusSort};
 
-/// Name of the API key in the secret store.
-const KEY_SECRET: &str = "nexus-api-key";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// The signed-in account, as Nexus last described it. Kept in `nexus/account.json` (no key).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NexusAccount {
-    pub user_id: u64,
-    pub name: String,
-    pub is_premium: bool,
-    pub is_supporter: bool,
-}
 
 /// The game on Nexus a UMM game matches.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,27 +38,6 @@ pub struct NexusGame {
     pub mod_count: Option<u64>,
     /// Found by name; not yet written into the game's `game.toml`.
     pub guessed: bool,
-}
-
-/// A file to download straight from the API (Premium, or with an `nxm://` link's key).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NexusFile {
-    pub domain: String,
-    pub mod_id: u64,
-    pub file_id: u64,
-    /// The key and expiry from an `nxm://` link; `None` downloads as a Premium account.
-    pub credentials: Option<(String, u64)>,
-}
-
-impl From<&NxmLink> for NexusFile {
-    fn from(l: &NxmLink) -> Self {
-        NexusFile {
-            domain: l.domain.clone(),
-            mod_id: l.mod_id,
-            file_id: l.file_id,
-            credentials: l.credentials().map(|(k, e)| (k.to_string(), e)),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -181,82 +149,9 @@ fn md5_file(path: &Path) -> Result<String> {
     Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// A safe local name for an archive downloaded by UMM: the file's own name if it is a plain
-/// name with an archive extension, else one made from its id.
-fn download_name(file: &ModFile) -> String {
-    let n = file.uri.trim();
-    let plain = !n.is_empty()
-        && !n.contains(['/', '\\', ':'])
-        && umm_gamedef::RelPath::parse(n).is_ok_and(|r| r.depth() == 1)
-        && umm_store::archive_kind(Path::new(n)).is_some();
-    if plain {
-        n.to_string()
-    } else {
-        format!("nexus-{}.zip", file.file_id)
-    }
-}
-
 impl Session {
-    fn nexus_dir(&self) -> PathBuf {
-        self.data.root().join("nexus")
-    }
-
     fn graph(&self) -> Graph<'_> {
         Graph::new(self.http(), VERSION)
-    }
-
-    fn nexus_key(&self) -> Result<String> {
-        self.secrets
-            .get(KEY_SECRET)
-            .map_err(|e| CoreError::Invalid(format!("reading the Nexus Mods API key: {e}")))?
-            .ok_or_else(|| {
-                CoreError::Invalid(
-                    "sign in to Nexus Mods with your personal API key first: Nexus needs it to download into an app".into(),
-                )
-            })
-    }
-
-    /// The signed-in account, without asking Nexus. `None` when signed out.
-    pub fn nexus_account(&self) -> Option<NexusAccount> {
-        let text = fs::read(self.nexus_dir().join("account.json")).ok()?;
-        let account = serde_json::from_slice(&text).ok()?;
-        // The account file outlives a key removed from the credential store by hand.
-        matches!(self.secrets.get(KEY_SECRET), Ok(Some(_))).then_some(account)
-    }
-
-    /// Checks `key` with Nexus and keeps it.
-    pub fn nexus_sign_in(&self, key: &str) -> Result<NexusAccount> {
-        let key = key.trim();
-        if key.is_empty() || key.len() > 1024 || key.chars().any(char::is_whitespace) {
-            return Err(CoreError::Invalid(
-                "that does not look like a Nexus Mods API key".into(),
-            ));
-        }
-        let user = Client::new(self.http(), key, VERSION).validate()?;
-        let account = NexusAccount {
-            user_id: user.user_id,
-            name: user.name,
-            is_premium: user.is_premium,
-            is_supporter: user.is_supporter,
-        };
-        self.secrets
-            .set(KEY_SECRET, key)
-            .map_err(|e| CoreError::Invalid(format!("saving the Nexus Mods API key: {e}")))?;
-        let dir = self.nexus_dir();
-        fs::create_dir_all(&dir).ctx(|| format!("creating {}", dir.display()))?;
-        let body = serde_json::to_vec_pretty(&account).expect("accounts serialize");
-        fsutil::write_atomic(&dir.join("account.json"), &body)
-            .ctx(|| "saving the Nexus Mods account".to_string())?;
-        Ok(account)
-    }
-
-    /// Forgets the key and the account.
-    pub fn nexus_sign_out(&self) -> Result<()> {
-        self.secrets
-            .delete(KEY_SECRET)
-            .map_err(|e| CoreError::Invalid(format!("removing the Nexus Mods API key: {e}")))?;
-        let _ = fs::remove_file(self.nexus_dir().join("account.json"));
-        Ok(())
     }
 
     /// Nexus games whose name contains `name`.
@@ -710,87 +605,6 @@ impl Session {
         )
     }
 
-    /// Downloads one file of a Nexus mod straight from the API and installs it. Needs a
-    /// Premium account, or the key from an `nxm://` link (`file.credentials`).
-    pub fn nexus_install(
-        &self,
-        id: &str,
-        file: &NexusFile,
-        profile: &str,
-        progress: &mut dyn FnMut(&str),
-    ) -> Result<NexusInstallReport> {
-        if let Some((_, expires)) = &file.credentials {
-            if *expires <= fsutil::unix_now() {
-                return Err(NexusError::LinkExpired.into());
-            }
-        } else if !self.nexus_account().is_some_and(|a| a.is_premium) {
-            return Err(NexusError::PremiumOnly.into());
-        }
-        let key = self.nexus_key()?;
-        let domain_set = self.check_installable(id, &file.domain)?;
-        progress("Looking up the file on Nexus Mods");
-        let game_id = self.nexus_game_info(&file.domain)?.id;
-        let mf = self.nexus_files_in(id, &file.domain, game_id, file.mod_id)?;
-        let f = mf
-            .files
-            .iter()
-            .find(|f| f.file_id == file.file_id)
-            .cloned()
-            .ok_or_else(|| {
-                NexusError::NotFound(format!("file {} of mod {}", file.file_id, file.mod_id))
-            })?;
-        let dir = self
-            .nexus_dir()
-            .join("downloads")
-            .join(fsutil::unique_suffix());
-        fs::create_dir_all(&dir).ctx(|| format!("creating {}", dir.display()))?;
-        let result = (|| -> Result<NexusInstallReport> {
-            let client = Client::new(self.http(), &key, VERSION);
-            let creds = file.credentials.as_ref().map(|(k, e)| (k.as_str(), *e));
-            let links = client.download_links(&file.domain, file.mod_id, file.file_id, creds)?;
-            let label = format!("Downloading {}", f.name);
-            progress(&label);
-            let mut last = 0u64;
-            let mut dest = dir.join(download_name(&f));
-            client.download(&links, &dest, &mut |done, total| {
-                let step = total.map_or(5 << 20, |t| (t / 20).max(1));
-                if done == 0 || done - last >= step || Some(done) == total {
-                    last = done;
-                    let mb = |b: u64| b as f64 / 1_048_576.0;
-                    progress(&match total {
-                        Some(t) => format!("{label} ({:.1} of {:.1} MB)", mb(done), mb(t)),
-                        None => format!("{label} ({:.1} MB)", mb(done)),
-                    });
-                }
-            })?;
-            // Newer uploads have no file name on Nexus: name the archive by its contents.
-            if umm_store::archive_kind(&dest).is_some()
-                && dest.ends_with(format!("nexus-{}.zip", f.file_id))
-            {
-                if let Some(ext) = sniff_archive(&dest) {
-                    let named = dest.with_extension(ext);
-                    fs::rename(&dest, &named).ctx(|| "naming the download".to_string())?;
-                    dest = named;
-                }
-            }
-            progress("Unpacking");
-            self.import_nexus_archive(
-                id,
-                &dest,
-                &file.domain,
-                game_id,
-                &mf.summary.name,
-                file.mod_id,
-                &f,
-                &mf.files,
-                profile,
-                domain_set,
-            )
-        })();
-        let _ = fs::remove_dir_all(&dir);
-        result
-    }
-
     /// Games a Nexus game's files can go into: `(id, name, matches)`, where `matches` means
     /// the game is that Nexus game (set, or by name). Games set to another Nexus game are
     /// left out; the matching ones come first.
@@ -817,19 +631,6 @@ impl Session {
             .into_iter()
             .find(|f| f.file_id == link.file_id);
         Ok((name, file))
-    }
-
-    /// Installs from an `nxm://` link.
-    pub fn nexus_install_link(
-        &self,
-        id: &str,
-        link: &str,
-        profile: &str,
-        progress: &mut dyn FnMut(&str),
-    ) -> Result<NexusInstallReport> {
-        let l = NxmLink::parse(link)
-            .ok_or_else(|| CoreError::Invalid(format!("not a Nexus Mods download link: {link}")))?;
-        self.nexus_install(id, &NexusFile::from(&l), profile, progress)
     }
 
     /// Whether each Nexus file installed for the game has a newer version in its file group.
@@ -875,49 +676,6 @@ impl Session {
         }
         Ok(out)
     }
-
-    /// Installs the newest version of an installed Nexus file, replacing it (Premium).
-    pub fn nexus_update(
-        &self,
-        id: &str,
-        mod_id: &str,
-        profile: &str,
-        progress: &mut dyn FnMut(&str),
-    ) -> Result<Option<NexusInstallReport>> {
-        let update = self
-            .nexus_updates(id)?
-            .into_iter()
-            .find(|u| u.id == mod_id)
-            .ok_or_else(|| {
-                CoreError::Invalid(format!("`{mod_id}` is not a mod from Nexus Mods"))
-            })?;
-        let NexusUpdateState::Newer { file_id, .. } = update.state else {
-            return Ok(None);
-        };
-        let file = NexusFile {
-            domain: update.nexus.domain.clone(),
-            mod_id: update.nexus.mod_id,
-            file_id,
-            credentials: None,
-        };
-        self.nexus_install(id, &file, profile, progress).map(Some)
-    }
-}
-
-/// The archive format of a file by its first bytes, as an extension.
-fn sniff_archive(p: &Path) -> Option<&'static str> {
-    let mut head = [0u8; 8];
-    let n = fs::File::open(p).ok()?.read(&mut head).ok()?;
-    let head = &head[..n];
-    if head.starts_with(b"PK") {
-        Some("zip")
-    } else if head.starts_with(&[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C]) {
-        Some("7z")
-    } else if head.starts_with(b"Rar!") {
-        Some("rar")
-    } else {
-        None
-    }
 }
 
 #[cfg(test)]
@@ -935,26 +693,10 @@ mod tests {
     }
 
     #[test]
-    fn downloads_get_plain_names() {
-        let mut f: ModFile =
-            serde_json::from_str(r#"{"fileId": 7, "name": "Main", "category": "MAIN"}"#).unwrap();
-        f.uri = "Glow-1-2.7z".into();
-        assert_eq!(download_name(&f), "Glow-1-2.7z");
-        f.uri = "../evil.rar".into();
-        assert_eq!(download_name(&f), "nexus-7.zip");
-        f.uri = "e5/de/59/e5de594b".into();
-        assert_eq!(download_name(&f), "nexus-7.zip");
-    }
-
-    #[test]
     fn hashes_files() {
         let tmp = tempfile::tempdir().unwrap();
         let p = tmp.path().join("a.zip");
         fs::write(&p, "abc").unwrap();
         assert_eq!(md5_file(&p).unwrap(), "900150983cd24fb0d6963f7d28e17f72");
-        fs::write(&p, "7z\u{bc}").unwrap();
-        assert_eq!(sniff_archive(&p), None);
-        fs::write(&p, [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, 0, 4]).unwrap();
-        assert_eq!(sniff_archive(&p), Some("7z"));
     }
 }

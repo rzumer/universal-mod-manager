@@ -76,10 +76,9 @@ const S = {
   // Thunderstore tab: the query, the page shown (null while loading), and an install/update
   // in progress ({ message }).
   ts: { game: null, query: { text: "", category: "", sort: "rating", installedOnly: false, offset: 0, limit: 40 }, page: null, busy: null },
-  // Nexus Mods tab: the signed-in account (undefined until asked; only Premium matters), the
-  // game's Nexus game, the query and page shown, installed mods' updates, and an install in
-  // progress ({ message }).
-  nexus: { account: undefined, game: null, picker: null, query: { text: "", sort: "endorsements", offset: 0, count: 40, installed: false }, page: null, updates: null, busy: null },
+  // Nexus Mods tab: the game's Nexus game, the query and page shown, installed mods' updates,
+  // and an install in progress ({ message }).
+  nexus: { game: null, picker: null, query: { text: "", sort: "endorsements", offset: 0, count: 40, installed: false }, page: null, updates: null, busy: null },
 };
 
 function toast(message, kind = "info") {
@@ -217,9 +216,10 @@ async function loadHealth() {
 }
 
 async function refreshAll() {
-  // Mods may have changed (deleted, imported, installed), so the Thunderstore tab's
-  // "installed" and "update" marks are out of date until it loads again.
+  // Mods may have changed (deleted, imported, installed), so the Thunderstore and Nexus
+  // tabs' "installed" and "update" marks are out of date until they load again.
   S.ts.stale = true;
+  S.nexus.stale = true;
   await loadGames();
   await loadGame();
 }
@@ -307,7 +307,6 @@ function renderSidebar() {
         ),
       h("button", { class: "link", onclick: () => location.reload() }, "Reload game definitions"),
       h("button", { class: "link", onclick: linkSettings }, "Install buttons on mod sites…"),
-      h("button", { class: "link", onclick: nexusAccountDialog }, S.nexus.account ? `Nexus Mods: ${S.nexus.account.name}…` : "Sign in to Nexus Mods…"),
       hiddenNotes().size > 0 &&
         h(
           "button",
@@ -448,7 +447,7 @@ function tabs() {
             if (id === "health" && !S.health) loadHealth();
             if (id === "actions") loadActions();
             if (id === "thunderstore" && (!S.ts.page || S.ts.game !== S.gameId || S.ts.stale)) loadTs(true);
-            if (id === "nexus" && (!S.nexus.page || S.nexus.game?.game !== S.gameId)) loadNexus(true);
+            if (id === "nexus" && (!S.nexus.page || S.nexus.game?.game !== S.gameId || S.nexus.stale)) loadNexus(true);
           },
         },
         label,
@@ -1179,7 +1178,7 @@ async function linkSettings() {
         "ul",
         { class: "plain-list" },
         h("li", {}, "“Install with Mod Manager” on thunderstore.io"),
-        h("li", {}, "“Mod Manager Download” on nexusmods.com, shown for games Vortex supports (UMM needs your Nexus Mods API key for these)"),
+        h("li", {}, "“Mod Manager Download” on nexusmods.com, shown for games Vortex supports (UMM opens the file’s page in its own window, where you click “Slow download”)"),
       ),
       ...[status].flat(2),
     ],
@@ -1200,27 +1199,20 @@ async function handleNxmLink(url) {
   if (!l) return;
   const what = l.modName ? `${l.modName}${l.fileName && l.fileName !== l.modName ? ` (${l.fileName})` : ""}${l.version ? ` ${l.version}` : ""}` : "this file";
   const ok1 = (text) => modal({ title: `Install ${what}?`, body: h("p", {}, text), actions: [{ label: "OK", value: true, class: "primary", focus: true }] });
-  if (l.expired) return ok1("This download link has expired. Click “Mod Manager Download” on the website again.");
   if (!l.games.length) return ok1(`None of your games can take files from nexusmods.com/${l.domain}: add the game first.`);
-  if (!l.signedIn) {
-    const go = await confirmModal(`Install ${what}?`, "Nexus Mods needs your personal API key to download into UMM, even with this link. Sign in first.", "Sign in…");
-    if (!go) return;
-    await nexusAccountDialog();
-    if (!S.nexus.account) return;
-  }
   const matching = l.games.filter((g) => g.matches);
   const shown = matching.length ? matching : l.games;
   const pick = h("select", { "aria-label": "Game" }, shown.map((g) => h("option", { value: g.id, selected: g.id === S.gameId }, g.name)));
   const go = await modal({
     title: `Install ${what}?`,
     body: [
-      h("p", {}, "From a Nexus Mods download link, into the current profile of the game you pick."),
+      h("p", {}, "From a Nexus Mods download link, into the current profile of the game you pick. Its page opens in a UMM window, where you click “Slow download”."),
       h("label", { class: "field" }, h("span", {}, "Game"), pick),
       !matching.length && h("p", { class: "muted small" }, `None of your games is set to nexusmods.com/${l.domain} yet; the game you pick will be.`),
     ],
     actions: [
       { label: "Cancel", value: null, class: "ghost" },
-      { label: "Install", value: "go", class: "primary", focus: true },
+      { label: "Download", value: "go", class: "primary", focus: true },
     ],
   });
   if (go !== "go") return;
@@ -1233,9 +1225,7 @@ async function handleNxmLink(url) {
   }
   S.tab = "nexus";
   if (S.nexus.game?.game !== S.gameId) loadNexus(true);
-  const game = S.gameId;
-  const r = await nexusRun("Downloading", () => api.nexusInstallLink(game, S.profileName, url));
-  if (r) await nexusToast(r);
+  await nexusGet(l.domain, l.modId, l.fileId, l.modName || "the file");
 }
 
 async function handleInstallLink(url) {
@@ -1310,6 +1300,7 @@ async function loadNexus(reset, append = false) {
     renderMain();
   }
   const q = { ...N.query };
+  N.stale = false;
   const p = await attempt(() => api.nexusSearch(game, q));
   if (S.gameId !== game) return;
   if (!p) N.page = { error: true, items: [], total: 0 };
@@ -1375,7 +1366,6 @@ function nexusTab(d) {
   const locked = playing || g.deployed || !!N.busy;
   const q = N.query;
   const p = N.page;
-  const premium = !!N.account?.premium;
   const updatesByMod = {};
   for (const u of N.updates || []) if (u.state === "newer") (updatesByMod[u.modId] ||= []).push(u);
   const pending = (N.updates || []).filter((u) => u.state === "newer");
@@ -1440,7 +1430,7 @@ function nexusTab(d) {
           ? h("button", { class: "small", disabled: locked, onclick: () => nexusGet(N.game.domain, it.modId, up[0].newFileId, it.name) }, `Update to ${up[0].newVersion}`)
           : it.installed.length
             ? h("div", { class: "row" }, h("span", { class: "chip ok" }, `Installed ${it.installed.join(", ")}`), h("button", { class: "ghost small", disabled: locked, onclick: () => nexusFilesDialog(it) }, "Files…"))
-            : h("button", { class: "primary small", disabled: locked, onclick: () => nexusFilesDialog(it) }, premium ? "Install…" : "Download…");
+            : h("button", { class: "primary small", disabled: locked, onclick: () => nexusFilesDialog(it) }, "Download…");
         return h(
           "div",
           { class: "ts-row" },
@@ -1499,7 +1489,7 @@ function nexusTab(d) {
       h("button", { class: "ghost small", onclick: () => loadNexus(true), title: "Load the list and updates again" }, "Refresh"),
     ),
     banners,
-    p && !p.error && h("p", { class: "muted small" }, `${p.total} mod${p.total === 1 ? "" : "s"} · ${premium ? "downloads in UMM with your Premium account" : "downloads open on nexusmods.com; UMM installs the file from your Downloads folder"} · into the profile “${S.profileName}”`),
+    p && !p.error && h("p", { class: "muted small" }, `${p.total} mod${p.total === 1 ? "" : "s"} · downloads open in a UMM window on nexusmods.com · into the profile “${S.profileName}”`),
     list,
     p && !p.error && p.items.length < p.total &&
       h(
@@ -1571,7 +1561,6 @@ async function nexusFilesDialog(it) {
   const f = await attempt(() => api.nexusFiles(game, it.modId));
   if (!f) return;
   let wanted = null;
-  const premium = !!S.nexus.account?.premium;
   const current = f.files.filter((x) => !x.old);
   const old = f.files.filter((x) => x.old);
   const first = current.find((x) => x.category === "MAIN" && !x.installed) || current.find((x) => !x.installed) || current[0] || old[0];
@@ -1591,7 +1580,7 @@ async function nexusFilesDialog(it) {
     );
   const files = h("div", { class: "nexus-files" }, current.map(row), old.length > 0 && h("details", {}, h("summary", { class: "muted small" }, `Older versions (${old.length})`), old.map(row)));
   const body = [
-    h("p", { class: "muted" }, premium ? "Pick a file; UMM downloads and installs it." : "Pick a file. Its page opens on nexusmods.com: click “Slow download” there (log in first if asked), and UMM installs the file once it is in your Downloads folder."),
+    h("p", { class: "muted" }, "Pick a file. Its page opens in a UMM window: click “Slow download” there (log in first if asked), and UMM installs the file once it has downloaded."),
     files,
     requirementList(f.requirements, (r) => {
       wanted = r;
@@ -1604,7 +1593,7 @@ async function nexusFilesDialog(it) {
     body,
     actions: [
       { label: "Cancel", value: null, class: "ghost" },
-      f.files.length > 0 && { label: premium ? "Install" : "Download", value: "go", class: "primary", focus: true },
+      f.files.length > 0 && { label: "Download", value: "go", class: "primary", focus: true },
     ].filter(Boolean),
   });
   if (wanted) return nexusFilesDialog({ modId: wanted.modId, name: wanted.name });
@@ -1621,11 +1610,13 @@ async function nexusFilesDialog(it) {
 /// Closes the dialog waiting for a browser download, if one is open.
 let cancelWaiting = null;
 
-/// Shows a dialog while waiting for the browser's download; resolves to its path, or null.
+/// Shows a dialog while the file is downloaded on the website, in UMM's Nexus Mods window or
+/// the user's browser. Resolves to `{ path }` (an archive to install), or null.
 function waitForDownload(dir, label) {
   return new Promise((resolve) => {
     const root = $("#modal-root");
     let done = false;
+    let inBrowser = false;
     const finish = (v) => {
       if (done) return;
       done = true;
@@ -1637,30 +1628,68 @@ function waitForDownload(dir, label) {
     cancelWaiting = () => finish(null);
     const choose = async () => {
       const p = await attempt(() => api.pickPath("archive"));
-      if (p) finish(p);
+      if (p) finish({ path: p });
     };
+    const how = h("p", {}, "Its page is open in a UMM window. Click “Slow download” there; log in to Nexus Mods in that window first if the page asks. UMM installs the file as soon as it has downloaded.");
+    const waiting = h("div", { class: "loading" }, h("span", { class: "spinner" }), "Waiting for the download…");
+    const note = h("p", { class: "muted small" }, "Logging in there keeps you logged in for next time.");
+    const reopen = h(
+      "p",
+      {},
+      h("span", { class: "muted" }, "The Nexus Mods window is closed. "),
+      h(
+        "button",
+        {
+          class: "small",
+          onclick: async () => {
+            if ((await attempt(api.nexusDownloadReopen)) === undefined) return;
+            reopen.replaceWith(waiting);
+          },
+        },
+        "Reopen it",
+      ),
+    );
+    const browserBtn = h(
+      "button",
+      {
+        class: "ghost",
+        onclick: async () => {
+          if ((await attempt(api.nexusDownloadInBrowser)) === undefined) return;
+          inBrowser = true;
+          browserBtn.remove();
+          if (reopen.isConnected) reopen.replaceWith(waiting);
+          how.textContent = "Its page is open in your browser. Click “Slow download” there; log in to Nexus Mods first if the page asks.";
+          waiting.lastChild.textContent = `Waiting for it in ${dir}…`;
+          note.textContent = "If your browser saves downloads somewhere else, choose the file once it is done.";
+        },
+      },
+      "Use my browser instead",
+    );
     const dlg = h(
       "div",
       { class: "modal", role: "dialog", "aria-modal": "true", "aria-label": `Download ${label}` },
       h("h2", {}, `Download ${label}`),
-      h(
-        "div",
-        { class: "modal-body" },
-        h("p", {}, "Its page is open in your browser. Click “Slow download” there (or “Mod Manager Download”, if the page has it and UMM handles those buttons); log in to Nexus Mods first if the page asks."),
-        h("div", { class: "loading" }, h("span", { class: "spinner" }), `Waiting for it in ${dir}…`),
-        h("p", { class: "muted small" }, "If your browser saves downloads somewhere else, choose the file once it is done."),
-      ),
+      h("div", { class: "modal-body" }, how, waiting, note),
       h(
         "div",
         { class: "modal-actions" },
         h("button", { class: "ghost", onclick: () => finish(null) }, "Cancel"),
+        browserBtn,
         h("button", { onclick: choose }, "Choose the file…"),
       ),
     );
     root.replaceChildren(h("div", { class: "scrim" }, dlg));
     const timer = setInterval(async () => {
       const p = await api.nexusDownloadPoll().catch(() => null);
-      if (p) finish(p);
+      if (!p) return;
+      if (p.path) finish({ path: p.path });
+      else if (p.failed) {
+        note.textContent = "The download did not finish. Try again on the page.";
+        note.className = "small error-text";
+      } else if (p.closed && !inBrowser && !reopen.isConnected) {
+        // Still possible to choose a file or switch to the browser: offer the window again.
+        waiting.replaceWith(reopen);
+      }
     }, 1000);
   });
 }
@@ -1683,21 +1712,17 @@ async function nexusRun(title, call) {
   return r;
 }
 
-/// Gets one file of a mod: in UMM for Premium accounts, else through the website.
+/// Gets one file of a mod through the website: in UMM's Nexus Mods window, or the browser.
 async function nexusGet(domain, modId, fileId, label) {
   const game = S.gameId;
-  if (S.nexus.account?.premium) {
-    const r = await nexusRun(`Downloading ${label}`, () => api.nexusInstallFile(game, S.profileName, domain, modId, fileId));
-    if (r) await nexusToast(r);
-    return !!r;
-  }
   const dir = await attempt(() => api.nexusDownloadStart(game, domain, modId, fileId));
   if (!dir) return false;
-  const path = await waitForDownload(dir, label);
-  if (!path) {
+  const got = await waitForDownload(dir, label);
+  if (!got) {
     attempt(api.nexusDownloadCancel);
     return false;
   }
+  const path = got.path;
   let r = await nexusRun("Installing", () => api.nexusDownloadInstall(S.profileName, path, false));
   if (r?.unrecognised) {
     const ok = await confirmModal(
@@ -1710,57 +1735,6 @@ async function nexusGet(domain, modId, fileId, label) {
   }
   if (r?.installed) await nexusToast(r.installed);
   return !!r?.installed;
-}
-
-async function nexusAccountDialog() {
-  const a = await attempt(api.nexusAccount);
-  if (a === undefined) return;
-  if (a) {
-    const v = await modal({
-      title: "Nexus Mods",
-      body: [
-        h("p", {}, `Signed in as ${a.name}, with a ${a.premium ? "Premium" : "free"} account.`),
-        h("p", { class: "muted" }, a.premium ? "UMM downloads files and updates from Nexus Mods itself." : "Free accounts download on the website: UMM opens each file’s page and installs it from your Downloads folder, or from the “Mod Manager Download” button when UMM handles install buttons on mod sites."),
-      ],
-      actions: [
-        { label: "Close", value: null, class: "ghost" },
-        { label: "Sign out", value: "out", class: "" },
-      ],
-    });
-    if (v === "out" && (await attempt(api.nexusSignOut, "Signed out of Nexus Mods")) !== undefined) {
-      S.nexus.account = null;
-      renderSidebar();
-      if (S.tab === "nexus") renderMain();
-    }
-    return;
-  }
-  const keyPage = "https://www.nexusmods.com/users/myaccount?tab=api";
-  const field = h("input", { type: "password", placeholder: "Your personal API key", "aria-label": "API key", autocomplete: "off", spellcheck: "false" });
-  const p = modal({
-    title: "Sign in to Nexus Mods",
-    body: [
-      h("p", {}, "Browsing, and downloading through each file’s page, need no account in UMM. Signing in with your personal API key lets UMM download from the website’s “Mod Manager Download” button (free accounts, for games Vortex supports) and, with a Premium account, download files and updates itself."),
-      h("p", { class: "muted" }, "It is kept in Windows’ Credential Manager, not in UMM’s data folder. Find it on your account’s API Keys page (at the bottom, “Personal API Key”)."),
-      h("button", { class: "link inline-link", onclick: () => attempt(() => api.openNexusPage(keyPage)) }, "Open the API Keys page ↗"),
-      h("label", { class: "field" }, h("span", {}, "API key"), field),
-    ],
-    actions: [
-      { label: "Cancel", value: null, class: "ghost" },
-      { label: "Sign in", value: "go", class: "primary" },
-    ],
-  });
-  setTimeout(() => {
-    field.focus();
-    field.addEventListener("keydown", (e) => e.key === "Enter" && $("#modal-root .primary").click());
-  });
-  if ((await p) !== "go" || !field.value.trim()) return;
-  const r = await attempt(() => api.nexusSignIn(field.value));
-  if (r) {
-    S.nexus.account = r;
-    toast(`Signed in to Nexus Mods as ${r.name}${r.premium ? " (Premium)" : ""}`, "ok");
-    renderSidebar();
-    if (S.tab === "nexus") renderMain();
-  }
 }
 
 async function loadLoaderChoice() {
@@ -2444,7 +2418,6 @@ async function main() {
     if (ok) api.quitAnyway();
   });
   setupDrop();
-  S.nexus.account = (await attempt(api.nexusAccount)) ?? null;
   renderSidebar();
   renderMain();
   S.startup = await attempt(api.startup);

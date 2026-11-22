@@ -6,8 +6,8 @@ use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 use umm_core::{
-    DownloadWatch, ExpectedFile, NexusFile, NexusInstallReport, NexusSearch, NexusSort,
-    NexusUpdateState, Session, DEFAULT_PROFILE,
+    DownloadWatch, ExpectedFile, NexusInstallReport, NexusSearch, NexusSort, NexusUpdateState,
+    Session, DEFAULT_PROFILE,
 };
 
 #[derive(Subcommand)]
@@ -38,9 +38,8 @@ pub enum NexusCmd {
     },
     /// List a mod's files (MOD: its page link or number)
     Files { game: String, r#mod: String },
-    /// Download and install a mod's file (its main file, or --file). Premium accounts
-    /// download in UMM; otherwise UMM gives the file's page on the website and installs the
-    /// archive once it appears in the Downloads folder.
+    /// Download and install a mod's file (its main file, or --file): UMM gives the file's page
+    /// on the website and installs the archive once it appears in the Downloads folder.
     Download {
         game: String,
         r#mod: String,
@@ -61,21 +60,14 @@ pub enum NexusCmd {
     },
     /// Check installed Nexus mods for newer versions of their files
     Updates { game: String },
-    /// Install newer versions of installed Nexus files (all of them if none are named).
-    /// Premium accounts download in UMM; otherwise UMM gives each file's page.
+    /// Install newer versions of installed Nexus files (all of them if none are named): UMM
+    /// gives each file's page on the website, as for `download`.
     Update {
         game: String,
         mods: Vec<String>,
         #[arg(short, long, default_value = DEFAULT_PROFILE)]
         profile: String,
     },
-    /// Sign in with a Premium account's personal API key, to download in UMM. Without KEY,
-    /// it is read from the terminal, so it stays out of your shell history.
-    SignIn { key: Option<String> },
-    /// Forget the API key
-    SignOut,
-    /// Show the signed-in account
-    Status,
 }
 
 fn print_install(r: &NexusInstallReport) {
@@ -101,10 +93,6 @@ fn mod_id(m: &str) -> Result<u64> {
     }
     m.parse()
         .with_context(|| format!("`{m}` is not a Nexus Mods page link or mod number"))
-}
-
-fn premium(s: &Session) -> bool {
-    s.nexus_account().is_some_and(|a| a.is_premium)
 }
 
 /// Waits for the file to be downloaded on the website, then installs it.
@@ -294,22 +282,12 @@ pub fn run(s: &Session, cmd: NexusCmd) -> Result<()> {
                     }
                 }
             };
-            let r = if premium(s) {
-                let nf = NexusFile {
-                    domain: f.domain.clone(),
-                    mod_id: f.summary.mod_id,
-                    file_id,
-                    credentials: None,
-                };
-                s.nexus_install(&game, &nf, &profile, progress)?
-            } else {
-                let want = ExpectedFile {
-                    domain: f.domain.clone(),
-                    mod_id: f.summary.mod_id,
-                    file_id,
-                };
-                download_on_site(s, &game, &want, &profile, dir)?
+            let want = ExpectedFile {
+                domain: f.domain.clone(),
+                mod_id: f.summary.mod_id,
+                file_id,
             };
+            let r = download_on_site(s, &game, &want, &profile, dir)?;
             print_install(&r);
         }
         NexusCmd::Import {
@@ -359,56 +337,15 @@ pub fn run(s: &Session, cmd: NexusCmd) -> Result<()> {
                 let NexusUpdateState::Newer { file_id, .. } = u.state else {
                     continue;
                 };
-                let r = if premium(s) {
-                    s.nexus_update(&game, &u.id, &profile, progress)?
-                        .context("already up to date")?
-                } else {
-                    let want = ExpectedFile {
-                        domain: u.nexus.domain.clone(),
-                        mod_id: u.nexus.mod_id,
-                        file_id,
-                    };
-                    download_on_site(s, &game, &want, &profile, None)?
+                let want = ExpectedFile {
+                    domain: u.nexus.domain.clone(),
+                    mod_id: u.nexus.mod_id,
+                    file_id,
                 };
+                let r = download_on_site(s, &game, &want, &profile, None)?;
                 print_install(&r);
             }
         }
-        NexusCmd::SignIn { key } => {
-            let key = match key {
-                Some(k) => k,
-                None => {
-                    eprintln!("Create a personal API key at {}", umm_nexus::API_KEY_PAGE);
-                    eprint!("Paste it here: ");
-                    std::io::stderr().flush().ok();
-                    let mut line = String::new();
-                    std::io::stdin().lock().read_line(&mut line)?;
-                    line
-                }
-            };
-            let a = s.nexus_sign_in(&key)?;
-            if a.is_premium {
-                println!(
-                    "signed in as {} (Premium): UMM downloads files itself",
-                    a.name
-                );
-            } else {
-                println!(
-                    "signed in as {} (free account): downloads still go through the website",
-                    a.name
-                );
-            }
-        }
-        NexusCmd::SignOut => {
-            s.nexus_sign_out()?;
-            println!("signed out of Nexus Mods");
-        }
-        NexusCmd::Status => match s.nexus_account() {
-            Some(a) => {
-                let kind = if a.is_premium { "Premium" } else { "free" };
-                println!("signed in as {} ({kind} account)", a.name);
-            }
-            None => println!("not signed in; browsing and website downloads need no account"),
-        },
     }
     Ok(())
 }

@@ -1,17 +1,15 @@
-//! Nexus Mods: browsing without an account, free downloads picked up from the Downloads
-//! folder, updates by file group, and Premium downloads. Against fake Nexus answers.
+//! Nexus Mods: browsing without an account, downloads made on the website and checked by
+//! hash, and updates by file group. Against fake Nexus answers.
 
 use std::fs;
 use std::io::{Cursor, Write};
 use std::sync::Arc;
 use umm_core::{
-    CoreError, DownloadWatch, ExpectedFile, NexusError, NexusFile, NexusSearch, NexusUpdateState,
-    Session, DEFAULT_PROFILE,
+    CoreError, DownloadWatch, ExpectedFile, NexusSearch, NexusUpdateState, Session, DEFAULT_PROFILE,
 };
 use umm_thunderstore::http::FakeHttp;
 
 const GQL: &str = "https://api.nexusmods.com/v2/graphql";
-const API: &str = "https://api.nexusmods.com/v1";
 
 const GAME: &str = r#"{"data": {"game": {"id": 1539, "name": "Glow Valley", "domainName": "glowvalley", "modCount": 96}}}"#;
 const GAMES: &str = r#"{"data": {"games": {"nodes": [
@@ -96,7 +94,6 @@ fn browses_and_installs_downloads_without_an_account() {
     let new = zip_of(&[("Glow 3.1/glow.dll", "new")]);
     let http = fake(&old, &new);
     let s = game(tmp.path(), http.clone());
-    assert!(s.nexus_account().is_none());
 
     // The game is found by its name; "Glow Valley 2" is not it.
     let g = s.nexus_game("glow").unwrap().unwrap();
@@ -227,11 +224,6 @@ fn browses_and_installs_downloads_without_an_account() {
         &u[0].state,
         NexusUpdateState::Newer { file_id: 507, .. }
     ));
-    // Free accounts cannot download it from inside UMM.
-    assert!(matches!(
-        s.nexus_update("glow", "glow", DEFAULT_PROFILE, &mut |_| {}),
-        Err(CoreError::Nexus(NexusError::PremiumOnly))
-    ));
     let p = downloads.join("Glow 3.1-14-3-1-300.zip");
     fs::write(&p, &new).unwrap();
     let r = s
@@ -315,130 +307,4 @@ fn browses_and_installs_downloads_without_an_account() {
         err.to_string().contains("set up for the Nexus Mods game"),
         "{err}"
     );
-}
-
-#[test]
-fn premium_accounts_download_directly() {
-    let tmp = tempfile::tempdir().unwrap();
-    let old = zip_of(&[("glow.dll", "old")]);
-    let new = zip_of(&[("glow.dll", "new")]);
-    let http = fake(&old, &new);
-    http.set(
-        &format!("{API}/users/validate.json"),
-        r#"{"user_id": 42, "name": "Ann", "is_premium": true, "is_supporter": false}"#,
-    );
-    http.set(
-        &format!("{API}/games/glowvalley/mods/14/files/491/download_link.json"),
-        r#"[{"name": "CDN", "URI": "https://cdn/old"}]"#,
-    );
-    http.set(
-        &format!("{API}/games/glowvalley/mods/14/files/507/download_link.json"),
-        r#"[{"name": "CDN", "URI": "https://cdn/new"}]"#,
-    );
-    http.set("https://cdn/old", old);
-    http.set("https://cdn/new", new);
-    let s = game(tmp.path(), http);
-
-    let file = NexusFile {
-        domain: "glowvalley".into(),
-        mod_id: 14,
-        file_id: 491,
-        credentials: None,
-    };
-    // Signed out: no direct downloads.
-    assert!(matches!(
-        s.nexus_install("glow", &file, DEFAULT_PROFILE, &mut |_| {}),
-        Err(CoreError::Nexus(NexusError::PremiumOnly))
-    ));
-    assert!(s.nexus_sign_in("key").unwrap().is_premium);
-    s.nexus_install("glow", &file, DEFAULT_PROFILE, &mut |_| {})
-        .unwrap();
-    let r = s
-        .nexus_update("glow", "glow", DEFAULT_PROFILE, &mut |_| {})
-        .unwrap()
-        .unwrap();
-    assert!(r.replaced);
-    assert_eq!(r.meta.nexus.unwrap().file_id, 507);
-    assert!(s
-        .nexus_update("glow", "glow", DEFAULT_PROFILE, &mut |_| {})
-        .unwrap()
-        .is_none());
-    assert!(
-        fs::read_dir(tmp.path().join("data/nexus/downloads"))
-            .unwrap()
-            .next()
-            .is_none(),
-        "UMM's own downloads are removed once stored"
-    );
-
-    // An expired link from the website is refused before anything is downloaded.
-    let link = "nxm://glowvalley/mods/14/files/507?key=k&expires=1";
-    assert!(matches!(
-        s.nexus_install_link("glow", link, DEFAULT_PROFILE, &mut |_| {}),
-        Err(CoreError::Nexus(NexusError::LinkExpired))
-    ));
-}
-
-#[test]
-fn free_accounts_install_from_website_links() {
-    let tmp = tempfile::tempdir().unwrap();
-    let old = zip_of(&[("glow.dll", "old")]);
-    let new = zip_of(&[("glow.dll", "new")]);
-    let http = fake(&old, &new);
-    let expires = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-        + 3600;
-    http.set(
-        &format!("{API}/users/validate.json"),
-        r#"{"user_id": 42, "name": "Ann", "is_premium": false, "is_supporter": false}"#,
-    );
-    http.set(
-        &format!(
-            "{API}/games/glowvalley/mods/14/files/507/download_link.json?key=k1&expires={expires}"
-        ),
-        r#"[{"name": "CDN", "URI": "https://cdn/new"}]"#,
-    );
-    http.set("https://cdn/new", new);
-    let s = game(tmp.path(), http);
-    assert_eq!(
-        s.nexus_link_games("glowvalley").unwrap(),
-        [("glow".to_string(), "Glow Valley".to_string(), true)]
-    );
-    let link = format!("nxm://glowvalley/mods/14/files/507?key=k1&expires={expires}&user_id=42");
-    let l = umm_core::NxmLink::parse(&link).unwrap();
-    let (name, file) = s.nexus_link_info(&l).unwrap();
-    assert_eq!(
-        (name.as_str(), file.unwrap().version.as_str()),
-        ("Glow", "3.1")
-    );
-
-    // Nexus needs the user's own key too, even with the link's.
-    let err = s
-        .nexus_install_link("glow", &link, DEFAULT_PROFILE, &mut |_| {})
-        .unwrap_err();
-    assert!(err.to_string().contains("sign in"), "{err}");
-    assert!(!s.nexus_sign_in("key").unwrap().is_premium);
-    let r = s
-        .nexus_install_link("glow", &link, DEFAULT_PROFILE, &mut |_| {})
-        .unwrap();
-    assert_eq!(
-        (r.meta.id.as_str(), r.meta.nexus.unwrap().file_id),
-        ("glow", 507)
-    );
-}
-
-#[test]
-fn a_refused_key_is_not_kept() {
-    let tmp = tempfile::tempdir().unwrap();
-    let http =
-        Arc::new(FakeHttp::default().with_error(&format!("{API}/users/validate.json"), 401, "{}"));
-    let s = game(tmp.path(), http);
-    assert!(matches!(
-        s.nexus_sign_in("bad"),
-        Err(CoreError::Nexus(NexusError::BadKey))
-    ));
-    assert!(s.nexus_account().is_none());
-    assert!(s.nexus_sign_in("two words").is_err());
 }

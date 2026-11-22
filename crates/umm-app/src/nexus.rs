@@ -7,31 +7,37 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Runtime, State};
 use umm_core::{
-    CoreError, DownloadWatch, ExpectedFile, NexusAccount, NexusFile, NexusInstallReport,
-    NexusModFile, NexusSearch, NexusSort, NexusUpdateState, Session,
+    CoreError, DownloadWatch, ExpectedFile, NexusInstallReport, NexusModFile, NexusSearch,
+    NexusSort, NexusUpdateState, Session,
 };
 
-/// A download the user is making on the website, which UMM waits for.
+/// A download the user is making on the website, which UMM waits for: in its own window
+/// (caught there), or in their browser (picked up from the Downloads folder).
 pub struct PendingDownload {
     pub game: String,
     pub expected: ExpectedFile,
     pub watch: DownloadWatch,
+    /// Where the window saves downloads; deleted once the download is done with.
+    pub temp: PathBuf,
+    /// The archive the window downloaded.
+    pub caught: Option<PathBuf>,
+    /// The window's download failed.
+    pub failed: bool,
+    /// The user closed the window.
+    pub closed: bool,
 }
 
-#[derive(Serialize)]
+/// The label of the window showing nexusmods.com.
+const DOWNLOAD_WINDOW: &str = "nexus-download";
+
+/// What has happened to the pending download.
+#[derive(Serialize, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct NexusAccountDto {
-    pub name: String,
-    pub premium: bool,
-}
-
-impl From<NexusAccount> for NexusAccountDto {
-    fn from(a: NexusAccount) -> Self {
-        NexusAccountDto {
-            name: a.name,
-            premium: a.is_premium,
-        }
-    }
+pub struct DownloadPollDto {
+    /// An archive to install: caught in the window, or found in the Downloads folder.
+    pub path: Option<String>,
+    pub failed: bool,
+    pub closed: bool,
 }
 
 #[derive(Serialize)]
@@ -188,8 +194,8 @@ pub struct NexusLinkDto {
     pub mod_name: Option<String>,
     pub file_name: Option<String>,
     pub version: Option<String>,
-    pub expired: bool,
-    pub signed_in: bool,
+    pub mod_id: u64,
+    pub file_id: u64,
     pub games: Vec<NexusLinkGameDto>,
 }
 
@@ -225,21 +231,6 @@ fn file_dto(f: &NexusModFile, installed: &[u64]) -> NexusFileDto {
         old: f.is_old(),
         installed: installed.contains(&f.file_id),
     }
-}
-
-#[tauri::command]
-pub async fn nexus_account(state: State<'_, AppState>) -> Res<Option<NexusAccountDto>> {
-    blocking(&state, |s| Ok(s.nexus_account().map(Into::into))).await
-}
-
-#[tauri::command]
-pub async fn nexus_sign_in(state: State<'_, AppState>, key: String) -> Res<NexusAccountDto> {
-    blocking(&state, move |s| Ok(s.nexus_sign_in(&key)?.into())).await
-}
-
-#[tauri::command]
-pub async fn nexus_sign_out(state: State<'_, AppState>) -> Res<()> {
-    blocking(&state, |s| s.nexus_sign_out()).await
 }
 
 fn game_dto(s: &Session, game: &str) -> Result<NexusGameDto, CoreError> {
@@ -377,10 +368,12 @@ pub async fn nexus_files(
     .await
 }
 
-/// Starts a download on the website: opens the file's page in the browser and starts
-/// watching the Downloads folder for it. Returns the folder watched.
+/// Starts a download on the website: opens the file's page in a UMM window, which catches
+/// the download (or the mod-manager link) the page starts. The Downloads folder is watched
+/// too, for when the user switches to their own browser. Returns the folder watched.
 #[tauri::command]
-pub async fn nexus_download_start(
+pub async fn nexus_download_start<R: Runtime>(
+    app: AppHandle<R>,
     state: State<'_, AppState>,
     game: String,
     domain: String,
@@ -390,32 +383,206 @@ pub async fn nexus_download_start(
     let dir = umm_core::downloads_dir().ok_or("cannot find your Downloads folder")?;
     let watch = DownloadWatch::new(&dir).map_err(|e| format!("reading {}: {e}", dir.display()))?;
     let url = Session::nexus_download_page(&domain, mod_id, file_id);
-    *state.nexus_download.lock().map_err(|e| e.to_string())? = Some(PendingDownload {
-        game,
-        expected: ExpectedFile {
-            domain,
-            mod_id,
-            file_id,
-        },
-        watch,
-    });
-    open_url(&url)?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let temp = std::env::temp_dir()
+        .join("umm-downloads")
+        .join(format!("{}-{stamp}", std::process::id()));
+    let previous = state
+        .nexus_download
+        .lock()
+        .map_err(|e| e.to_string())?
+        .replace(PendingDownload {
+            game,
+            expected: ExpectedFile {
+                domain,
+                mod_id,
+                file_id,
+            },
+            watch,
+            temp: temp.clone(),
+            caught: None,
+            failed: false,
+            closed: false,
+        });
+    if let Some(p) = previous {
+        let _ = std::fs::remove_dir_all(&p.temp);
+    }
+    open_download_window(&app, &url, Arc::clone(&state.nexus_download))?;
     Ok(dir.display().to_string())
 }
 
-/// The archive that has appeared for the pending download, if any.
+/// Shows a page of nexusmods.com in UMM's download window. The page has no access to UMM:
+/// only the main window may call its commands. UMM watches what it does instead: a download
+/// is saved to the pending download's temporary folder and noted, and a mod-manager link is
+/// noted rather than followed. The hooks read the pending download when they run, so a
+/// reused window serves the next file.
+fn open_download_window<R: Runtime>(
+    app: &AppHandle<R>,
+    url: &str,
+    pending: Arc<std::sync::Mutex<Option<PendingDownload>>>,
+) -> Res<()> {
+    use tauri::webview::{DownloadEvent, NewWindowResponse};
+    use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+    let parsed: tauri::Url = url.parse().map_err(|e| format!("{url}: {e}"))?;
+    if let Some(w) = app.get_webview_window(DOWNLOAD_WINDOW) {
+        // One window at a time: reuse it for the new file.
+        w.navigate(parsed).map_err(|e| e.to_string())?;
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    let note = Arc::clone(&pending);
+    let plain = app.clone();
+    let on_close = Arc::clone(&pending);
+    let opener = app.clone();
+    let window = WebviewWindowBuilder::new(app, DOWNLOAD_WINDOW, WebviewUrl::External(parsed))
+        .title("Download from Nexus Mods – UMM")
+        .inner_size(1180.0, 860.0)
+        .min_inner_size(640.0, 480.0)
+        // "Mod Manager Download" makes Slow download produce an `nxm://` link, which only
+        // an app signed in to Nexus could use: go to the file's plain download page instead,
+        // where Slow download gives the file itself.
+        .on_navigation(move |u| match u.scheme() {
+            "nxm" => {
+                if let Some(l) = umm_core::NxmLink::parse(u.as_str()) {
+                    let page = Session::nexus_download_page(&l.domain, l.mod_id, l.file_id);
+                    if let (Some(w), Ok(page)) =
+                        (plain.get_webview_window(DOWNLOAD_WINDOW), page.parse())
+                    {
+                        let _ = w.navigate(page);
+                    }
+                }
+                false
+            }
+            "https" | "about" | "blob" | "data" => true,
+            _ => false,
+        })
+        // Links that open a new window (log-in pop-ups, some buttons) open in this one.
+        .on_new_window(move |u, _| {
+            if u.scheme() == "https" {
+                if let Some(w) = opener.get_webview_window(DOWNLOAD_WINDOW) {
+                    let _ = w.navigate(u);
+                }
+            }
+            NewWindowResponse::Deny
+        })
+        .on_download(move |_, event| match event {
+            DownloadEvent::Requested { url, destination } => {
+                let Ok(slot) = note.lock() else { return false };
+                let Some(p) = slot.as_ref() else { return false };
+                let name = destination
+                    .file_name()
+                    .map(|n| n.to_owned())
+                    .or_else(|| {
+                        url.path_segments()
+                            .and_then(|mut s| s.next_back().map(std::ffi::OsString::from))
+                    })
+                    .unwrap_or_else(|| "download".into());
+                if std::fs::create_dir_all(&p.temp).is_err() {
+                    return false;
+                }
+                *destination = p.temp.join(name);
+                true
+            }
+            DownloadEvent::Finished { path, success, .. } => {
+                if let Ok(mut slot) = note.lock() {
+                    if let Some(p) = slot.as_mut() {
+                        match path.filter(|_| success) {
+                            Some(path) => p.caught = Some(path),
+                            None => p.failed = true,
+                        }
+                    }
+                }
+                true
+            }
+            _ => true,
+        })
+        .build()
+        .map_err(|e| format!("opening the Nexus Mods window: {e}"))?;
+    window.on_window_event(move |e| {
+        if let tauri::WindowEvent::Destroyed = e {
+            if let Ok(mut slot) = on_close.lock() {
+                if let Some(p) = slot.as_mut() {
+                    p.closed = true;
+                }
+            }
+        }
+    });
+    Ok(())
+}
+
+fn close_download_window<R: Runtime>(app: &AppHandle<R>) {
+    use tauri::Manager;
+    if let Some(w) = app.get_webview_window(DOWNLOAD_WINDOW) {
+        let _ = w.close();
+    }
+}
+
+/// What has happened to the pending download.
 #[tauri::command]
-pub fn nexus_download_poll(state: State<'_, AppState>) -> Res<Option<String>> {
-    let slot = state.nexus_download.lock().map_err(|e| e.to_string())?;
-    Ok(slot
-        .as_ref()
-        .and_then(|p| p.watch.poll())
-        .map(|p| p.display().to_string()))
+pub fn nexus_download_poll(state: State<'_, AppState>) -> Res<DownloadPollDto> {
+    let mut slot = state.nexus_download.lock().map_err(|e| e.to_string())?;
+    let Some(p) = slot.as_mut() else {
+        return Ok(DownloadPollDto::default());
+    };
+    let path = p.caught.clone().or_else(|| p.watch.poll());
+    Ok(DownloadPollDto {
+        path: path.map(|p| p.display().to_string()),
+        failed: std::mem::take(&mut p.failed),
+        closed: p.closed,
+    })
+}
+
+/// Opens the Nexus Mods window again for the pending download, after the user closed it.
+/// Async like every command that creates a window: on Windows, a window created from a
+/// synchronous command (run on the main thread) deadlocks the webview.
+#[tauri::command]
+pub async fn nexus_download_reopen<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Res<()> {
+    let url = {
+        let mut slot = state.nexus_download.lock().map_err(|e| e.to_string())?;
+        let p = slot.as_mut().ok_or("no download is waiting")?;
+        p.closed = false;
+        Session::nexus_download_page(&p.expected.domain, p.expected.mod_id, p.expected.file_id)
+    };
+    open_download_window(&app, &url, Arc::clone(&state.nexus_download))
+}
+
+/// Opens the pending download's page in the user's own browser instead; the Downloads folder
+/// is watched for it.
+#[tauri::command]
+pub async fn nexus_download_in_browser<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Res<()> {
+    let url = {
+        let slot = state.nexus_download.lock().map_err(|e| e.to_string())?;
+        let p = slot.as_ref().ok_or("no download is waiting")?;
+        Session::nexus_download_page(&p.expected.domain, p.expected.mod_id, p.expected.file_id)
+    };
+    close_download_window(&app);
+    open_url(&url)
 }
 
 #[tauri::command]
-pub fn nexus_download_cancel(state: State<'_, AppState>) -> Res<()> {
-    *state.nexus_download.lock().map_err(|e| e.to_string())? = None;
+pub async fn nexus_download_cancel<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Res<()> {
+    if let Some(p) = state
+        .nexus_download
+        .lock()
+        .map_err(|e| e.to_string())?
+        .take()
+    {
+        let _ = std::fs::remove_dir_all(&p.temp);
+    }
+    close_download_window(&app);
     Ok(())
 }
 
@@ -430,12 +597,13 @@ pub async fn nexus_download_install<R: Runtime>(
     path: String,
     trust: bool,
 ) -> Res<NexusDownloadResultDto> {
-    let (game, expected) = {
+    let (game, expected, temp) = {
         let slot = state.nexus_download.lock().map_err(|e| e.to_string())?;
         let p = slot.as_ref().ok_or("no download is waiting")?;
-        (p.game.clone(), p.expected.clone())
+        (p.game.clone(), p.expected.clone(), p.temp.clone())
     };
     let pending = Arc::clone(&state.nexus_download);
+    let window = app.clone();
     blocking(&state, move |s| {
         let mut progress = progress_to(app, game.clone());
         let path = PathBuf::from(path);
@@ -456,6 +624,10 @@ pub async fn nexus_download_install<R: Runtime>(
                 if let Ok(mut slot) = pending.lock() {
                     *slot = None;
                 }
+                // A copy the window downloaded is UMM's to delete; one in the user's
+                // Downloads folder is theirs.
+                let _ = std::fs::remove_dir_all(&temp);
+                close_download_window(&window);
                 Ok(NexusDownloadResultDto {
                     installed: Some(r.into()),
                     unrecognised: false,
@@ -472,16 +644,14 @@ pub async fn nexus_resolve_link(state: State<'_, AppState>, url: String) -> Res<
         let l = umm_core::NxmLink::parse(&url).ok_or_else(|| {
             CoreError::Invalid("not a Nexus Mods download link UMM can use".into())
         })?;
-        // Names are a nicety: the link still installs if they cannot be looked up here.
+        // Names are a nicety: the file can still be downloaded if they cannot be looked up.
         let (mod_name, file) = match s.nexus_link_info(&l) {
             Ok((n, f)) => (Some(n), f),
             Err(_) => (None, None),
         };
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or_default();
         Ok(NexusLinkDto {
+            mod_id: l.mod_id,
+            file_id: l.file_id,
             games: s
                 .nexus_link_games(&l.domain)?
                 .into_iter()
@@ -490,51 +660,8 @@ pub async fn nexus_resolve_link(state: State<'_, AppState>, url: String) -> Res<
             mod_name,
             file_name: file.as_ref().map(|f| f.name.clone()),
             version: file.map(|f| f.version),
-            expired: l.expired(now),
-            signed_in: s.nexus_account().is_some(),
             domain: l.domain,
         })
-    })
-    .await
-}
-
-/// Installs the file an `nxm://` link names. Progress arrives as `nexus-progress` events.
-#[tauri::command]
-pub async fn nexus_install_link<R: Runtime>(
-    app: AppHandle<R>,
-    state: State<'_, AppState>,
-    game: String,
-    profile: String,
-    url: String,
-) -> Res<NexusInstallDto> {
-    blocking(&state, move |s| {
-        let mut progress = progress_to(app, game.clone());
-        Ok(s.nexus_install_link(&game, &url, &profile, &mut progress)?
-            .into())
-    })
-    .await
-}
-
-/// Installs a file straight from Nexus (Premium accounts).
-#[tauri::command]
-pub async fn nexus_install_file<R: Runtime>(
-    app: AppHandle<R>,
-    state: State<'_, AppState>,
-    game: String,
-    profile: String,
-    domain: String,
-    mod_id: u64,
-    file_id: u64,
-) -> Res<NexusInstallDto> {
-    blocking(&state, move |s| {
-        let mut progress = progress_to(app, game.clone());
-        let f = NexusFile {
-            domain,
-            mod_id,
-            file_id,
-            credentials: None,
-        };
-        Ok(s.nexus_install(&game, &f, &profile, &mut progress)?.into())
     })
     .await
 }
@@ -564,23 +691,6 @@ pub async fn nexus_updates(state: State<'_, AppState>, game: String) -> Res<Vec<
                 }
             })
             .collect())
-    })
-    .await
-}
-
-/// Installs the newest version of an installed Nexus file (Premium accounts).
-#[tauri::command]
-pub async fn nexus_update<R: Runtime>(
-    app: AppHandle<R>,
-    state: State<'_, AppState>,
-    game: String,
-    profile: String,
-    mod_id: String,
-) -> Res<Option<NexusInstallDto>> {
-    blocking(&state, move |s| {
-        let mut progress = progress_to(app, game.clone());
-        Ok(s.nexus_update(&game, &mod_id, &profile, &mut progress)?
-            .map(Into::into))
     })
     .await
 }
