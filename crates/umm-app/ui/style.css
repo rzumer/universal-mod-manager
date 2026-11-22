@@ -120,9 +120,9 @@ select, input[type="text"], input[type="search"] {
 .game-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .game-item {
   width: 100%;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
   border: 1px solid transparent;
   background: transparent;
   padding: 8px 10px;
@@ -130,6 +130,10 @@ select, input[type="text"], input[type="search"] {
 }
 .game-item:hover:not(:disabled) { background: var(--surface-2); border-color: transparent; }
 .game-item.selected { background: var(--surface); border-color: var(--border); box-shadow: var(--shadow); }
+.game-text { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0; flex: 1; }
+.game-icon { width: 28px; height: 28px; border-radius: 6px; flex: none; object-fit: contain; }
+.mod-icon { width: 32px; height: 32px; border-radius: 6px; flex: none; object-fit: cover; }
+.icon-tile { display: inline-flex; align-items: center; justify-content: center; background: var(--surface-2); color: var(--muted); font-weight: 600; font-size: 13px; }
 .game-name { font-weight: 600; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
 .status i { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
@@ -190,7 +194,7 @@ button.launch { justify-content: center; font-size: 16px; padding: 11px 18px; bo
 .mod-list, .store-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
 .mod-row, .store-list li { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-top: 1px solid var(--border); }
 .mod-row:first-child, .store-list li:first-child { border-top: none; }
-.mod-row.disabled .mod-main { opacity: 0.55; }
+.mod-row.disabled .mod-main, .mod-row.disabled .mod-icon { opacity: 0.55; }
 .mod-row.missing .mod-meta { color: var(--danger); }
 .mod-row.dragging { opacity: 0.4; }
 .mod-row.drop-target { box-shadow: inset 0 2px 0 var(--accent); }

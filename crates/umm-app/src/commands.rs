@@ -521,6 +521,19 @@ pub async fn ts_search(
     .await
 }
 
+/// A game's icon (Steam's, else its exe's), as a `data:` URL; `None` when it has none.
+#[tauri::command]
+pub async fn game_icon(state: State<'_, AppState>, game: String) -> Res<Option<String>> {
+    blocking(&state, move |s| s.game_icon(&game)).await
+}
+
+/// A mod's icon (its Thunderstore package's, or its Nexus Mods picture), as a `data:` URL;
+/// `None` when it has none.
+#[tauri::command]
+pub async fn mod_icon(state: State<'_, AppState>, game: String, id: String) -> Res<Option<String>> {
+    blocking(&state, move |s| s.mod_icon(&game, &id)).await
+}
+
 /// Downloads the game's package list again. Returns whether Thunderstore could be reached.
 #[tauri::command]
 pub async fn ts_refresh(state: State<'_, AppState>, game: String) -> Res<bool> {

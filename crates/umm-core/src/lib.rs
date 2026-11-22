@@ -4,6 +4,7 @@ mod doctor;
 mod downloads;
 mod fomod;
 mod godotml;
+mod icons;
 mod launch;
 mod link;
 mod manual;

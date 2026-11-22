@@ -236,6 +236,7 @@ async function refreshAll() {
   // tabs' "installed" and "update" marks are out of date until they load again.
   S.ts.stale = true;
   S.nexus.stale = true;
+  forgetMissingIcons();
   await loadGames();
   await loadGame();
 }
@@ -255,6 +256,42 @@ function gameStatus(g) {
   if (!g.install) return ["muted", "Not found"];
   return ["ok", `${g.modCount} mod${g.modCount === 1 ? "" : "s"}`];
 }
+
+// ----- Icons -----
+
+/// Icons fetched so far, by `game/<id>` or `mod/<game>/<id>`: a `data:` URL, `null` for none,
+/// or the pending fetch.
+const icons = new Map();
+
+/// Asks again for the icons that were not there (a game installed since, a mod's picture
+/// fetched when Nexus Mods was unreachable).
+function forgetMissingIcons() {
+  for (const [k, v] of icons) if (v === null) icons.delete(k);
+}
+
+/// An icon fetched once by `load`: shown as soon as it is known, with a tile of `name`'s
+/// first letter standing in while it loads, and when there is none.
+function iconImage(key, load, name, cls) {
+  const got = icons.get(key);
+  if (typeof got === "string") return h("img", { class: cls, src: got, alt: "" });
+  const tile = h("span", { class: `${cls} icon-tile`, "aria-hidden": "true" }, (name || "?").trim().charAt(0).toUpperCase());
+  if (got === null) return tile;
+  let pending = got;
+  if (!pending) {
+    pending = load()
+      .catch(() => null)
+      .then((url) => {
+        icons.set(key, url || null);
+        return url || null;
+      });
+    icons.set(key, pending);
+  }
+  pending.then((url) => url && tile.isConnected && tile.replaceWith(h("img", { class: cls, src: url, alt: "" })));
+  return tile;
+}
+
+const gameIcon = (g) => iconImage(`game/${g.id}`, () => api.gameIcon(g.id), g.name, "game-icon");
+const modIcon = (game, id, name) => iconImage(`mod/${game}/${id}`, () => api.modIcon(game, id), name, "mod-icon");
 
 function renderSidebar() {
   const list = S.games.length
@@ -278,8 +315,8 @@ function renderSidebar() {
                   loadGame();
                 },
               },
-              h("span", { class: "game-name" }, g.name),
-              h("span", { class: `status ${kind}` }, h("i", {}), text),
+              gameIcon(g),
+              h("span", { class: "game-text" }, h("span", { class: "game-name" }, g.name), h("span", { class: `status ${kind}` }, h("i", {}), text)),
             ),
           );
         }),
@@ -564,6 +601,7 @@ function modsTab(d) {
         }),
         h("span", { class: "track" }),
       ),
+      modIcon(S.gameId, e.id, m ? m.name : e.id),
       h(
         "div",
         { class: "mod-main" },
@@ -643,6 +681,7 @@ function modsTab(d) {
             h(
               "li",
               {},
+              modIcon(S.gameId, m.id, m.name),
               h("div", { class: "mod-main" }, h("div", { class: "mod-name" }, m.name), h("div", { class: "mod-meta" }, `${m.id} · ${m.files} files · ${fmtBytes(m.size)}`)),
               h("div", { class: "row-actions" },
                 h("button", { class: "small", disabled: playing, onclick: async () => {

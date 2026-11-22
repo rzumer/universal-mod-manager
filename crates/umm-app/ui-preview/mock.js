@@ -5,6 +5,10 @@
 const listeners = {};
 const emit = (event, payload) => (listeners[event] || []).forEach((cb) => cb(payload));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/// A square icon in two colours, as a `data:` URL.
+const mockIcon = (bg, fg) =>
+  "data:image/svg+xml;base64," +
+  btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" rx="12" fill="${bg}"/><path d="M14 46 L28 24 L38 38 L44 30 L52 46 Z" fill="${fg}"/><circle cx="44" cy="20" r="6" fill="${fg}"/></svg>`);
 
 const games = {
   "example-unity-game": {
@@ -338,6 +342,13 @@ const handlers = {
     return { ...m, source: null, importedUnix: 0 };
   },
   // A tiny picture, standing in for an option's image.
+  // A drawn icon for the example game and the mods from Thunderstore or Nexus Mods; none for
+  // the rest, which show a letter.
+  game_icon: async ({ game }) => (game === "example-unity-game" ? mockIcon("#2563eb", "#93c5fd") : null),
+  mod_icon: async ({ id }) => {
+    await sleep(150);
+    return { bepinex: mockIcon("#7c3aed", "#ddd6fe"), "lantern-light": mockIcon("#d97706", "#fde68a"), "rock-textures": mockIcon("#57534e", "#d6d3d1") }[id] || null;
+  },
   mod_image: () =>
     "data:image/svg+xml;base64," +
     btoa('<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="#6b7280"/><circle cx="110" cy="120" r="50" fill="#9ca3af"/><circle cx="210" cy="110" r="60" fill="#4b5563"/></svg>'),

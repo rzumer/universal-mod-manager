@@ -44,6 +44,8 @@ macro_rules! umm_handlers {
             commands::pick_game_folder,
             commands::add_manual_game,
             commands::ts_search,
+            commands::game_icon,
+            commands::mod_icon,
             commands::ts_refresh,
             commands::ts_install,
             commands::ts_update,
