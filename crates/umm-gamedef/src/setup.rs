@@ -6,7 +6,7 @@
 use crate::{
     loader_name, thunderstore_inject, GameDef, GameDefError, Inject, InstallRule, Loader,
     Thunderstore, BEPINEX_KIND, GDWEAVE_KIND, GODOTML_KIND, LOVELY_KIND,
-    RECURSIVE_MELONLOADER_KIND, SHIMLOADER_KIND, THUNDERSTORE_SOURCE,
+    RECURSIVE_MELONLOADER_KIND, ROM_KIND, SHIMLOADER_KIND, THUNDERSTORE_SOURCE,
 };
 use serde::{Deserialize, Serialize};
 
@@ -129,12 +129,29 @@ pub fn godotml_rules() -> Vec<InstallRule> {
     ]
 }
 
+/// Install rules for Return of Modding mods imported from files rather than Thunderstore: its
+/// proxy stays at the game folder's root (moved next to the exe at deploy), its folders keep
+/// their place, and anything else is a mod in its own folder under `plugins/`.
+pub fn rom_rules() -> Vec<InstallRule> {
+    vec![
+        rule("version.dll", ""),
+        rule("d3d12.dll", ""),
+        rule("ReturnOfModding/**", "ReturnOfModding/"),
+        rule("plugins/**", "ReturnOfModding/plugins/"),
+        rule("plugins_data/**", "ReturnOfModding/plugins_data/"),
+        rule("config/**", "ReturnOfModding/config/"),
+        rule("**", "ReturnOfModding/plugins/{mod}/"),
+    ]
+}
+
 const BEPINEX_CONFIG: &str = "BepInEx/config/**";
 const SHIMLOADER_CONFIG: &str = "shimloader/cfg/**";
 const MELONLOADER_CONFIG: &str = "UserData/**";
 const LOVELY_CONFIG: &str = "mods/lovely/**";
 const GDWEAVE_CONFIG: &str = "GDWeave/configs/**";
+const ROM_CONFIG: &str = "ReturnOfModding/config/**";
 const LOADER_CONFIGS: &[&str] = &[
+    ROM_CONFIG,
     BEPINEX_CONFIG,
     SHIMLOADER_CONFIG,
     MELONLOADER_CONFIG,
@@ -237,6 +254,8 @@ impl GameDef {
                     (gdweave_rules(), Some(GDWEAVE_CONFIG))
                 } else if kind == GODOTML_KIND {
                     (godotml_rules(), None)
+                } else if kind == ROM_KIND {
+                    (rom_rules(), Some(ROM_CONFIG))
                 } else if crate::is_melonloader(kind) {
                     (
                         melonloader_rules(kind == RECURSIVE_MELONLOADER_KIND),

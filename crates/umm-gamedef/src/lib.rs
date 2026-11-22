@@ -474,6 +474,16 @@ pub const GODOTML_LOADER_DIR: &str = "addons";
 /// What a game's project settings say when GodotML is built in (its autoload).
 pub const GODOTML_AUTOLOAD: &str = "res://addons/mod_loader/mod_loader.gd";
 
+/// Loader kind for Return of Modding (Risk of Rain Returns, and Hades II as Hell2Modding).
+pub const ROM_KIND: &str = "return-of-modding";
+/// Its folder (mods, their data and configs) in the runtime folder, which the flag names the
+/// parent of.
+pub const ROM_DIR: &str = "ReturnOfModding";
+pub const ROM_ROOT_FLAG: &str = "--rom_modding_root_folder";
+/// Its proxy DLLs, next to the game's exe: `version.dll` for Return of Modding, `d3d12.dll`
+/// for Hell2Modding.
+pub const ROM_PROXIES: &[&str] = &["version.dll", "d3d12.dll"];
+
 /// A loader that is pointed at a per-profile runtime folder outside the game, so that only
 /// its proxy goes into the game folder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -490,6 +500,8 @@ pub enum RuntimeLoader {
     GDWeave,
     /// The Godot Mod Loader built into the game, given its mod folder as a launch argument.
     GodotML,
+    /// Return of Modding, given the folder holding its own as a launch argument.
+    ReturnOfModding,
 }
 
 impl RuntimeLoader {
@@ -502,6 +514,7 @@ impl RuntimeLoader {
             RuntimeLoader::Lovely => &[LOVELY_DIR],
             RuntimeLoader::GDWeave => &[GDWEAVE_DIR],
             RuntimeLoader::GodotML => &[GODOTML_MODS_DIR, GODOTML_LOADER_DIR],
+            RuntimeLoader::ReturnOfModding => &[ROM_DIR],
         }
     }
 }
@@ -515,6 +528,7 @@ pub fn thunderstore_inject(kind: &str) -> Option<Inject> {
         LOVELY_KIND => Some(Inject::Args),
         GDWEAVE_KIND => Some(Inject::Args),
         GODOTML_KIND => Some(Inject::Args),
+        ROM_KIND => Some(Inject::Args),
         _ => None,
     }
 }
@@ -528,6 +542,7 @@ pub fn loader_name(kind: &str) -> &str {
         LOVELY_KIND => "Lovely",
         GDWEAVE_KIND => "GDWeave",
         GODOTML_KIND => "Godot Mod Loader",
+        ROM_KIND => "Return of Modding",
         other => other,
     }
 }
@@ -553,6 +568,7 @@ impl GameDef {
             Inject::Args if l.kind == LOVELY_KIND => Some(RuntimeLoader::Lovely),
             Inject::Args if l.kind == GDWEAVE_KIND => Some(RuntimeLoader::GDWeave),
             Inject::Args if l.kind == GODOTML_KIND => Some(RuntimeLoader::GodotML),
+            Inject::Args if l.kind == ROM_KIND => Some(RuntimeLoader::ReturnOfModding),
             _ => None,
         }
     }
@@ -726,10 +742,11 @@ impl GameDef {
                         || loader.kind == LOVELY_KIND
                         || loader.kind == GDWEAVE_KIND
                         || loader.kind == GODOTML_KIND
+                        || loader.kind == ROM_KIND
                         || is_melonloader(&loader.kind) => {}
                 Inject::Args => {
                     return Err(GameDefError::Unsupported(format!(
-                        "loader kind `{}` cannot be injected with arguments (supported: shimloader, melonloader, recursive-melonloader, lovely, gdweave, godotml); use inject = \"files\"",
+                        "loader kind `{}` cannot be injected with arguments (supported: shimloader, melonloader, recursive-melonloader, lovely, gdweave, godotml, return-of-modding); use inject = \"files\"",
                         loader.kind
                     )))
                 }

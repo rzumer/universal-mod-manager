@@ -13,7 +13,7 @@ use umm_gamedef::{
     DOORSTOP_TARGET_FLAG, GDWEAVE_DIR, GDWEAVE_FOLDER_FLAG, GDWEAVE_PROXY, GODOTML_AUTOLOAD,
     GODOTML_ENABLE_FLAG, GODOTML_MODS_DIR, GODOTML_MODS_FLAG, LOVELY_DIR, LOVELY_MOD_DIR_FLAG,
     LOVELY_PROXIES, MELONLOADER_BASEDIR_FLAG, MELONLOADER_GENERATED, MELONLOADER_REGENERATE_FLAG,
-    SHIMLOADER_DIRS,
+    ROM_PROXIES, ROM_ROOT_FLAG, SHIMLOADER_DIRS,
 };
 use umm_launch::{LaunchSpec, Tracking};
 use umm_store::fsutil::{hash_file, write_atomic, IoCtx};
@@ -130,6 +130,10 @@ impl Session {
                 check_gdweave(&plan.files)?;
                 (Some(Injection::GDWeave), None)
             }
+            Some(RuntimeLoader::ReturnOfModding) => {
+                place_rom_proxy(&def.def, &mut plan.files)?;
+                (Some(Injection::ReturnOfModding), None)
+            }
             Some(RuntimeLoader::GodotML) => {
                 if !godotml_built_in(&def.def, &root) {
                     // Set up for the session: the loader's files and what its setup makes
@@ -171,6 +175,7 @@ impl Session {
                     | Injection::MelonLoader { .. }
                     | Injection::Lovely
                     | Injection::GDWeave
+                    | Injection::ReturnOfModding
             )
         );
         if let (true, Some(launch)) = (proxied, &def.def.launch) {
@@ -476,6 +481,36 @@ pub(crate) enum Injection {
     Lovely,
     GDWeave,
     GodotML,
+    ReturnOfModding,
+}
+
+/// Puts Return of Modding's proxy DLL next to the game's exe (Hades II keeps its own in
+/// `Ship/`); errors when the profile has none.
+fn place_rom_proxy(def: &GameDef, files: &mut [PlannedFile]) -> Result<()> {
+    let exe_dir = def
+        .launch
+        .as_ref()
+        .and_then(|l| RelPath::parse(&l.exe).ok())
+        .and_then(|e| e.parent())
+        .filter(|p| !p.is_root());
+    let mut found = false;
+    for f in files.iter_mut() {
+        let name = f.target.as_str();
+        if f.target.depth() != 1 || !ROM_PROXIES.iter().any(|p| name.eq_ignore_ascii_case(p)) {
+            continue;
+        }
+        found = true;
+        if let Some(dir) = &exe_dir {
+            f.target = dir.join(&f.target);
+        }
+    }
+    if found {
+        Ok(())
+    } else {
+        Err(CoreError::Invalid(
+            "the profile has no Return of Modding; install it from the Thunderstore tab (it also comes with any mod that needs it)".into(),
+        ))
+    }
 }
 
 /// Whether `file` has `needle` in it, read a piece at a time.
@@ -715,6 +750,10 @@ pub(crate) fn build_spec(
     if injection == Some(Injection::Lovely) {
         game_args.extend([LOVELY_MOD_DIR_FLAG.to_string(), in_runtime(LOVELY_DIR)]);
     }
+    if injection == Some(Injection::ReturnOfModding) {
+        // The loader adds `ReturnOfModding/` to the folder it is given.
+        game_args.extend([ROM_ROOT_FLAG.to_string(), native_path(runtime_dir)]);
+    }
     if injection == Some(Injection::GodotML) {
         game_args.extend([
             GODOTML_ENABLE_FLAG.to_string(),
@@ -953,6 +992,42 @@ mod tests {
                 native_path(&Path::new("/rt").join("mods")).as_str()
             ]
         );
+    }
+
+    #[test]
+    fn return_of_modding_gets_its_root_folder_and_its_proxy_goes_by_the_exe() {
+        let d = def("[launch]\nexe = \"Ship/Hades2.exe\"\n\
+             [loader]\nkind = \"return-of-modding\"\nsource = \"thunderstore\"\ninject = \"args\"\n\
+             [thunderstore]\ncommunity = \"hades-ii\"\n");
+        let spec = build_spec(
+            &d,
+            Path::new("/game"),
+            Path::new("/rt"),
+            &Profile::new("Default"),
+            Some(Injection::ReturnOfModding),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            spec.args,
+            [
+                "--rom_modding_root_folder",
+                native_path(Path::new("/rt")).as_str()
+            ]
+        );
+        let file = |t: &str| PlannedFile {
+            target: RelPath::parse(t).unwrap(),
+            source: PathBuf::new(),
+            owner: "Hell2Modding-Hell2Modding".into(),
+            hash: String::new(),
+            size: 0,
+            writable: false,
+        };
+        let mut files = vec![file("d3d12.dll"), file("Content/x.txt")];
+        place_rom_proxy(&d, &mut files).unwrap();
+        assert_eq!(files[0].target.as_str(), "Ship/d3d12.dll");
+        assert_eq!(files[1].target.as_str(), "Content/x.txt");
+        assert!(place_rom_proxy(&d, &mut [file("Content/x.txt")]).is_err());
     }
 
     #[test]

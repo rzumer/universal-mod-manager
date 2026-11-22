@@ -143,6 +143,12 @@ pub fn plan(
     if game.package_loader == umm_gamedef::LOVELY_KIND && loader.is_none() {
         return lovely_mod(files, full_name);
     }
+    if let Some(l) = loader.filter(|l| l.loader == umm_gamedef::ROM_KIND) {
+        return rom_pack(files, full_name, &l.root_folder);
+    }
+    if game.package_loader == umm_gamedef::ROM_KIND && loader.is_none() {
+        return rom_mod(files, full_name);
+    }
     if let Some(l) = loader.filter(|l| l.loader == umm_gamedef::GODOTML_KIND) {
         return godotml_pack(files, full_name, &l.root_folder);
     }
@@ -408,6 +414,81 @@ fn lovely_mod(
     let out: BTreeMap<String, Vec<u8>> = files
         .into_iter()
         .map(|(path, body)| (format!("mods/{full_name}/{path}"), body))
+        .collect();
+    if out.is_empty() {
+        return Err(TsError::Data {
+            what: full_name.into(),
+            message: "the package has no files to install".into(),
+        });
+    }
+    Ok(out)
+}
+
+/// Lays out the Return of Modding package (or Hell2Modding) as r2modman does: what its root
+/// folder holds, its proxy DLL, goes to the game folder's root; UMM moves the proxy next to
+/// the game's exe when deploying. The package's own files are left out.
+fn rom_pack(
+    files: BTreeMap<String, Vec<u8>>,
+    full_name: &str,
+    root_folder: &str,
+) -> Result<BTreeMap<String, Vec<u8>>> {
+    let root = match root_folder.trim_matches('/') {
+        "" => String::new(),
+        r => format!("{}/", r.to_ascii_lowercase()),
+    };
+    let mut out = BTreeMap::new();
+    for (path, body) in files {
+        let lower = path.to_ascii_lowercase();
+        let Some(rel) = lower.strip_prefix(&root) else {
+            continue;
+        };
+        if rel.contains('/') || PACKAGE_FILES.contains(&rel) {
+            continue;
+        }
+        out.insert(path[path.len() - rel.len()..].to_string(), body);
+    }
+    if !out
+        .keys()
+        .any(|k| umm_gamedef::ROM_PROXIES.contains(&k.to_ascii_lowercase().as_str()))
+    {
+        return Err(TsError::Data {
+            what: format!("{full_name} (mod loader)"),
+            message: format!(
+                "no {} in the package",
+                umm_gamedef::ROM_PROXIES.join(" or ")
+            ),
+        });
+    }
+    Ok(out)
+}
+
+/// Lays out a Return of Modding mod as r2modman does: its `plugins/`, `plugins_data/` and
+/// `config/` folders each go to the loader's folder of that name, in `<Owner-Name>/` (the
+/// mod's GUID to the loader); everything else, its `manifest.json` included (the loader reads
+/// it), goes to `plugins/<Owner-Name>/`.
+fn rom_mod(files: BTreeMap<String, Vec<u8>>, full_name: &str) -> Result<BTreeMap<String, Vec<u8>>> {
+    let dir = umm_gamedef::ROM_DIR;
+    let out: BTreeMap<String, Vec<u8>> = files
+        .into_iter()
+        .map(|(path, body)| {
+            let inner = path
+                .get(dir.len() + 1..)
+                .filter(|_| {
+                    path.to_ascii_lowercase()
+                        .starts_with(&format!("{}/", dir.to_ascii_lowercase()))
+                })
+                .unwrap_or(&path)
+                .to_string();
+            let (first, rest) = inner.split_once('/').unwrap_or(("", &inner));
+            let route = ["plugins", "plugins_data", "config"]
+                .into_iter()
+                .find(|r| first.eq_ignore_ascii_case(r));
+            let target = match route {
+                Some(r) => format!("{dir}/{r}/{full_name}/{rest}"),
+                None => format!("{dir}/plugins/{full_name}/{inner}"),
+            };
+            (target, body)
+        })
         .collect();
     if out.is_empty() {
         return Err(TsError::Data {
@@ -873,6 +954,69 @@ pub(crate) mod tests {
                 "mods/Steamodded-smods/src/core.lua",
             ]
         );
+    }
+
+    #[test]
+    fn return_of_modding_packages_and_mods() {
+        let mut rorr = rules();
+        rorr.package_loader = "return-of-modding".into();
+        rorr.install_rules.clear();
+        let entry = ModloaderPackage {
+            package_id: "ReturnOfModding-ReturnOfModding".into(),
+            root_folder: "ReturnOfModdingPack".into(),
+            loader: "return-of-modding".into(),
+        };
+        let keys = |m: &BTreeMap<String, Vec<u8>>| m.keys().cloned().collect::<Vec<_>>();
+        let pack = zip_of(&[
+            ("manifest.json", "{}"),
+            ("CHANGELOG.md", "c"),
+            ("ReturnOfModdingPack/version.dll", "p"),
+        ]);
+        let out = plan(
+            &pack,
+            "ReturnOfModding-ReturnOfModding",
+            &rorr,
+            Some(&entry),
+        )
+        .unwrap();
+        assert_eq!(keys(&out), ["version.dll"]);
+        let hell2 = zip_of(&[("ReturnOfModdingPack/d3d12.dll", "p")]);
+        let out = plan(&hell2, "Hell2Modding-Hell2Modding", &rorr, Some(&entry)).unwrap();
+        assert_eq!(keys(&out), ["d3d12.dll"]);
+        let empty = zip_of(&[("manifest.json", "{}")]);
+        assert!(plan(
+            &empty,
+            "ReturnOfModding-ReturnOfModding",
+            &rorr,
+            Some(&entry)
+        )
+        .is_err());
+
+        // A mod: its own files (the manifest included) to plugins/, its folders to theirs.
+        let zip = zip_of(&[
+            ("manifest.json", "{}"),
+            ("icon.png", "i"),
+            ("main.lua", "m"),
+            ("lib/util.lua", "u"),
+            ("plugins_data/sprites/a.png", "a"),
+            ("config/defaults.cfg", "c"),
+        ]);
+        let out = plan(&zip, "Me-Mine", &rorr, None).unwrap();
+        assert_eq!(
+            keys(&out),
+            [
+                "ReturnOfModding/config/Me-Mine/defaults.cfg",
+                "ReturnOfModding/plugins/Me-Mine/icon.png",
+                "ReturnOfModding/plugins/Me-Mine/lib/util.lua",
+                "ReturnOfModding/plugins/Me-Mine/main.lua",
+                "ReturnOfModding/plugins/Me-Mine/manifest.json",
+                "ReturnOfModding/plugins_data/Me-Mine/sprites/a.png",
+            ]
+        );
+        // Already laid out from the loader's folder.
+        let zip = zip_of(&[("ReturnOfModding/plugins/main.lua", "m")]);
+        let out = plan(&zip, "Me-Mine", &rorr, None).unwrap();
+        assert_eq!(keys(&out), ["ReturnOfModding/plugins/Me-Mine/main.lua"]);
     }
 
     #[test]
