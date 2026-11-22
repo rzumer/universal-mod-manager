@@ -4301,7 +4301,7 @@ dependencies = [
 
 [[package]]
 name = "umm-app"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4316,7 +4316,7 @@ dependencies = [
 
 [[package]]
 name = "umm-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4326,7 +4326,7 @@ dependencies = [
 
 [[package]]
 name = "umm-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64 0.22.1",
  "dirs 5.0.1",
@@ -4351,7 +4351,7 @@ dependencies = [
 
 [[package]]
 name = "umm-deploy"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "same-file",
  "serde",
@@ -4363,7 +4363,7 @@ dependencies = [
 
 [[package]]
 name = "umm-fomod"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "roxmltree",
  "serde",
@@ -4372,7 +4372,7 @@ dependencies = [
 
 [[package]]
 name = "umm-gamedef"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "dirs 5.0.1",
  "globset",
@@ -4386,7 +4386,7 @@ dependencies = [
 
 [[package]]
 name = "umm-launch"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "thiserror 1.0.69",
  "windows-sys 0.59.0",
@@ -4394,7 +4394,7 @@ dependencies = [
 
 [[package]]
 name = "umm-net"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "tempfile",
  "thiserror 1.0.69",
@@ -4403,7 +4403,7 @@ dependencies = [
 
 [[package]]
 name = "umm-nexus"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4413,7 +4413,7 @@ dependencies = [
 
 [[package]]
 name = "umm-store"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "blake3",
  "dirs 5.0.1",
@@ -4430,7 +4430,7 @@ dependencies = [
 
 [[package]]
 name = "umm-thunderstore"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64 0.22.1",
  "flate2",
