@@ -1098,6 +1098,81 @@ async function installByName(prefill) {
   await tsRun("Installing…", () => api.tsInstallUnlisted(game, p.fullName, version, S.profileName));
 }
 
+/// Compares two version numbers part by part ("1.10.0" comes after "1.9.2").
+function compareVersions(a, b) {
+  const pa = String(a).split(/[.\-+]/);
+  const pb = String(b).split(/[.\-+]/);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = parseInt(pa[i] ?? "0", 10) || 0;
+    const y = parseInt(pb[i] ?? "0", 10) || 0;
+    if (x !== y) return x - y;
+  }
+  return 0;
+}
+
+/// Picks another version of an installed package, older or newer. Versions older than
+/// another installed package needs are shown, but cannot be picked.
+async function tsVersionsDialog(it) {
+  const game = S.gameId;
+  const versions = await attempt(() => api.tsVersions(game, it.fullName));
+  if (!versions?.length) return;
+  const current = versions.find((v) => v.installed)?.version || it.installed;
+  let chosen = current;
+  const label = () =>
+    chosen === current ? "Installed" : compareVersions(chosen, current) < 0 ? `Downgrade to ${chosen}` : `Update to ${chosen}`;
+  const refresh = () => {
+    const go = $("#modal-root .modal-actions button.primary");
+    if (go) {
+      go.textContent = label();
+      go.disabled = chosen === current;
+    }
+  };
+  const rows = versions.map((v, i) => {
+    const blocked = v.neededBy.length > 0;
+    return h(
+      "label",
+      { class: `version-row ${blocked ? "blocked" : ""}` },
+      h("input", {
+        type: "radio",
+        name: "ts-version",
+        value: v.version,
+        checked: v.version === current,
+        disabled: blocked,
+        onchange: () => {
+          chosen = v.version;
+          refresh();
+        },
+      }),
+      h("span", { class: "version-num" }, v.version),
+      i === 0 && h("span", { class: "chip" }, "Latest"),
+      v.installed && h("span", { class: "chip ok" }, "Installed"),
+      v.size ? h("span", { class: "muted small version-size" }, fmtBytes(v.size)) : null,
+      blocked && h("span", { class: "muted small version-why" }, `Too old for ${v.neededBy.map((n) => `${n.name} (needs ${n.version})`).join(", ")}`),
+    );
+  });
+  const lowest = versions.filter((v) => !v.neededBy.length).at(-1);
+  const pending = modal({
+    title: `${it.name.replaceAll("_", " ")} versions`,
+    body: [
+      h(
+        "p",
+        { class: "muted" },
+        `Install another version into every profile. ${lowest && lowest !== versions.at(-1) ? `Other installed packages need ${lowest.version} or later. ` : ""}Its dependencies are installed too, if it needs newer ones.`,
+      ),
+      h("div", { class: "version-list", role: "radiogroup", "aria-label": "Versions" }, rows),
+    ],
+    actions: [
+      { label: "Cancel", value: null, class: "ghost" },
+      { label: label(), value: "go", class: "primary" },
+    ],
+  });
+  refresh();
+  if ((await pending) !== "go" || chosen === current) return;
+  await tsRun(compareVersions(chosen, current) < 0 ? "Downgrading…" : "Updating…", () =>
+    api.tsInstallVersion(game, it.fullName, chosen, S.profileName),
+  );
+}
+
 const tsInstall = (pkgs) => tsRun("Installing…", () => api.tsInstall(S.gameId, pkgs, S.profileName));
 const tsUpdate = (names) => tsRun("Updating…", () => api.tsUpdate(S.gameId, names, S.profileName));
 
@@ -1156,9 +1231,14 @@ function tsTab(d) {
       meta: [`${fmtCount(it.downloads)} downloads`, `${it.rating} likes`, it.size && fmtBytes(it.size), it.categories.join(", ")],
       dim: it.deprecated,
       action: it.installed
-        ? it.update
-          ? h("button", { class: "small", disabled: locked, onclick: () => tsUpdate([it.fullName]) }, `Update to ${it.latest}`)
-          : h("span", { class: "chip ok" }, `Installed ${it.installed}`)
+        ? h(
+            "div",
+            { class: "row" },
+            it.update
+              ? h("button", { class: "small", disabled: locked, onclick: () => tsUpdate([it.fullName]) }, `Update to ${it.latest}`)
+              : h("span", { class: "chip ok" }, `Installed ${it.installed}`),
+            h("button", { class: "ghost small", disabled: locked, title: "Install another version, older or newer", onclick: () => tsVersionsDialog(it) }, "Versions…"),
+          )
         : h("button", { class: "primary small", disabled: locked, onclick: () => tsInstall([it.fullName]) }, "Install"),
     });
 

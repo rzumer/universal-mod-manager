@@ -86,6 +86,18 @@ pub struct TsLookup {
     pub review_status: Option<String>,
 }
 
+/// A version of a Thunderstore package, offered to change to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TsVersionChoice {
+    pub version: String,
+    pub size: u64,
+    /// The version installed now.
+    pub installed: bool,
+    /// Installed packages that need a newer version than this one: `(Owner-Name, the
+    /// version they name)`. A version some package needs a newer one than cannot be chosen.
+    pub needed_by: Vec<(String, String)>,
+}
+
 /// A package installed for a game: its mod id and Thunderstore details.
 #[derive(Debug, Clone)]
 pub struct InstalledPackage {
@@ -216,7 +228,7 @@ impl Session {
         let kind = def.ts_loader().unwrap_or(umm_gamedef::BEPINEX_KIND);
         let bepinex = kind == umm_gamedef::BEPINEX_KIND;
         let il2cpp = self
-            .install_path(&def)?
+            .install_path(def)?
             .is_some_and(|(p, _)| p.join("GameAssembly.dll").is_file());
         Ok(packages
             .iter()
@@ -632,6 +644,84 @@ impl Session {
             return Ok(TsInstallReport::default());
         }
         self.ts_install(id, &wanted, profile, progress)
+    }
+
+    /// The versions of a package the game's list has, newest first, each with the installed
+    /// packages that need a newer one: the lowest version that may be installed is the
+    /// highest any of them names.
+    pub fn ts_versions(&self, id: &str, full_name: &str) -> Result<Vec<TsVersionChoice>> {
+        let (packages, _) = self.ts_packages(id, false)?;
+        let pkg = packages
+            .iter()
+            .find(|p| p.full_name.eq_ignore_ascii_case(full_name))
+            .ok_or_else(|| {
+                CoreError::Invalid(format!("{full_name} is not on Thunderstore for this game"))
+            })?;
+        let installed = self.ts_installed(id)?;
+        let current = installed
+            .iter()
+            .find(|p| p.meta.full_name.eq_ignore_ascii_case(full_name))
+            .map(|p| p.meta.version.clone());
+        // What the other installed packages name for it.
+        let wanted: Vec<(String, String)> = installed
+            .iter()
+            .filter(|p| !p.meta.full_name.eq_ignore_ascii_case(full_name))
+            .filter_map(|p| {
+                p.meta.dependencies.iter().find_map(|d| {
+                    let (name, version) = split_dependency(d)?;
+                    name.eq_ignore_ascii_case(full_name)
+                        .then(|| (p.meta.full_name.clone(), version.to_string()))
+                })
+            })
+            .collect();
+        Ok(pkg
+            .versions
+            .iter()
+            .map(|v| TsVersionChoice {
+                version: v.version.clone(),
+                size: v.size,
+                installed: current.as_deref() == Some(v.version.as_str()),
+                needed_by: wanted
+                    .iter()
+                    .filter(|(_, needs)| compare_versions(&v.version, needs) == Ordering::Less)
+                    .cloned()
+                    .collect(),
+            })
+            .collect())
+    }
+
+    /// Installs a package at the version given, older or newer than the installed one, with
+    /// its dependencies. Refused for a version older than another installed package needs.
+    pub fn ts_install_version(
+        &self,
+        id: &str,
+        full_name: &str,
+        version: &str,
+        profile: &str,
+        progress: &mut dyn FnMut(&str),
+    ) -> Result<TsInstallReport> {
+        let choice = self
+            .ts_versions(id, full_name)?
+            .into_iter()
+            .find(|c| c.version == version)
+            .ok_or_else(|| CoreError::Invalid(format!("{full_name} has no version {version}")))?;
+        if !choice.needed_by.is_empty() {
+            let who = choice
+                .needed_by
+                .iter()
+                .map(|(n, v)| format!("{n} needs {v} or later"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(CoreError::Invalid(format!(
+                "{full_name} {version} is too old: {who}"
+            )));
+        }
+        self.ts_install(
+            id,
+            &[(full_name.to_string(), Some(version.to_string()))],
+            profile,
+            progress,
+        )
     }
 
     /// Names of installed packages that depend on the mod `mod_id`.

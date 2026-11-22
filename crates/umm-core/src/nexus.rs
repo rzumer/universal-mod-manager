@@ -150,7 +150,7 @@ fn md5_file(path: &Path) -> Result<String> {
 }
 
 impl Session {
-    fn graph(&self) -> Graph<'_> {
+    pub(crate) fn graph(&self) -> Graph<'_> {
         Graph::new(self.http(), VERSION)
     }
 

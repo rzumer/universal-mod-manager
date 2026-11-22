@@ -42,6 +42,7 @@ pub use share::{ProfileExport, ProfileImport};
 pub use steam::{Draft, Engine, Note, SteamApp, SteamCandidate, SteamList};
 pub use ts::{
     package_mod_id, InstalledPackage, TsInstallReport, TsItem, TsLookup, TsPage, TsQuery, TsSort,
+    TsVersionChoice,
 };
 pub use umm_deploy::{
     Conflict, DeployError, Faults, Journal, Method as DeployMethod, Op as DeployOp, Plan,

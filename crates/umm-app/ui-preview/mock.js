@@ -485,6 +485,27 @@ const handlers = {
     await sleep(600);
     return { installed: [{ fullName: name, version: "6.0.788", replaced: null }], missing: [], warnings: [], notes: ["Turned off BepInEx-BepInExPack in this profile; BepInEx-BepInExPack_IL2CPP replaces it"] };
   },
+  // Versions: the latest and a few before it; for BepInEx, the oldest is too old for a mod.
+  ts_versions: ({ game, name }) => {
+    const p = tsPackages.find((x) => x.fullName === name);
+    const installed = tsInstalledVersion(game, name);
+    const list =
+      name === "BepInEx-BepInExPack" ? ["5.4.2305", "5.4.2100", "5.4.2000", "5.4.1900"] : [p.latest, "1.1.0", "1.0.0"].filter((v, i, a) => a.indexOf(v) === i);
+    return list.map((version) => ({
+      version,
+      size: p.size,
+      installed: version === installed,
+      neededBy: name === "BepInEx-BepInExPack" && version === "5.4.1900" ? [{ name: "Ann-Lantern_Tweaks", version: "5.4.2000" }] : [],
+    }));
+  },
+  ts_install_version: async ({ game, name, version }) => {
+    emit("ts-progress", { game, message: `Downloading ${name.split("-").slice(1).join("-")} ${version}` });
+    await sleep(600);
+    const m = (mods[game] || []).find((x) => x.thunderstore === name);
+    const replaced = m?.version || null;
+    if (m) m.version = version;
+    return { installed: [{ fullName: name, version, replaced }], missing: [] };
+  },
   ts_install: async ({ game, packages }) => {
     const order = [];
     const visit = (full) => {

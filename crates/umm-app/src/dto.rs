@@ -730,6 +730,39 @@ pub struct TsReportDto {
     pub notes: Vec<String>,
 }
 
+/// A version of a package, offered to change to.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TsVersionDto {
+    pub version: String,
+    pub size: u64,
+    pub installed: bool,
+    /// Installed packages needing a newer version than this one.
+    pub needed_by: Vec<TsNeedDto>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TsNeedDto {
+    pub name: String,
+    pub version: String,
+}
+
+impl From<umm_core::TsVersionChoice> for TsVersionDto {
+    fn from(c: umm_core::TsVersionChoice) -> Self {
+        TsVersionDto {
+            version: c.version,
+            size: c.size,
+            installed: c.installed,
+            needed_by: c
+                .needed_by
+                .into_iter()
+                .map(|(name, version)| TsNeedDto { name, version })
+                .collect(),
+        }
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TsLookupDto {

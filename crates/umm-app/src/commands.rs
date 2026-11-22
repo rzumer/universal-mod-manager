@@ -630,6 +630,43 @@ pub async fn ts_update<R: Runtime>(
     .await
 }
 
+/// A package's versions, newest first, each with the installed packages needing a newer one.
+#[tauri::command]
+pub async fn ts_versions(
+    state: State<'_, AppState>,
+    game: String,
+    name: String,
+) -> Res<Vec<TsVersionDto>> {
+    blocking(&state, move |s| {
+        Ok(s.ts_versions(&game, &name)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    })
+    .await
+}
+
+/// Installs a package at the version given (older or newer), with its dependencies. Progress
+/// arrives as `ts-progress` events.
+#[tauri::command]
+pub async fn ts_install_version<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+    game: String,
+    name: String,
+    version: String,
+    profile: String,
+) -> Res<TsReportDto> {
+    blocking(&state, move |s| {
+        let mut progress = progress_to(app, game.clone());
+        Ok(
+            s.ts_install_version(&game, &name, &version, &profile, &mut progress)?
+                .into(),
+        )
+    })
+    .await
+}
+
 /// Installed packages that depend on the mod, to warn before removing it.
 #[tauri::command]
 pub async fn ts_dependents(

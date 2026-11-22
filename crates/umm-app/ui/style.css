@@ -397,6 +397,13 @@ button.ts-name:hover svg, button.ts-name:focus-visible svg { opacity: 1; fill: v
 .ts-desc { font-size: 13px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ts-meta { font-size: 12px; margin-top: 2px; }
 .ts-row > button, .ts-row > .chip { flex: none; }
+.version-list { display: flex; flex-direction: column; max-height: 320px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+.version-row { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-top: 1px solid var(--border); cursor: pointer; }
+.version-row:first-child { border-top: none; }
+.version-row.blocked { cursor: default; opacity: 0.6; }
+.version-num { font-weight: 600; font-variant-numeric: tabular-nums; min-width: 5em; }
+.version-size { white-space: nowrap; }
+.version-why { margin-left: auto; text-align: right; }
 .ts-more { display: flex; justify-content: center; margin-top: 10px; }
 .ts-share { display: flex; gap: 14px; align-items: baseline; margin-bottom: 10px; font-size: 13px; }
 .chip.ok { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
