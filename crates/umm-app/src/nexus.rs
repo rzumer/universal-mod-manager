@@ -5,7 +5,7 @@ use crate::AppState;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Runtime, State};
+use tauri::{AppHandle, Runtime, State};
 use umm_core::{
     CoreError, DownloadWatch, ExpectedFile, NexusInstallReport, NexusModFile, NexusSearch,
     NexusSort, NexusUpdateState, Session,
@@ -202,24 +202,8 @@ pub struct NexusLinkDto {
     pub games: Vec<NexusLinkGameDto>,
 }
 
-/// Payload of the `nexus-progress` event.
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct NexusProgressDto {
-    pub game: String,
-    pub message: String,
-}
-
 fn progress_to<R: Runtime>(app: AppHandle<R>, game: String) -> impl FnMut(&str) {
-    move |m: &str| {
-        let _ = app.emit(
-            "nexus-progress",
-            NexusProgressDto {
-                game: game.clone(),
-                message: m.to_string(),
-            },
-        );
-    }
+    crate::commands::store_progress(app, "nexus-progress", game)
 }
 
 fn file_dto(f: &NexusModFile, installed: &[u64]) -> NexusFileDto {

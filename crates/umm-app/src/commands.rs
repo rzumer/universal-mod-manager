@@ -527,16 +527,26 @@ pub async fn ts_refresh(state: State<'_, AppState>, game: String) -> Res<bool> {
     blocking(&state, move |s| Ok(!s.ts_packages(&game, true)?.1)).await
 }
 
-fn progress_to<R: Runtime>(app: AppHandle<R>, game: String) -> impl FnMut(&str) {
+/// Sends a store's install progress for `game` to the interface as `event` (`ts-progress`,
+/// `nexus-progress`).
+pub(crate) fn store_progress<R: Runtime>(
+    app: AppHandle<R>,
+    event: &'static str,
+    game: String,
+) -> impl FnMut(&str) {
     move |m: &str| {
         let _ = app.emit(
-            "ts-progress",
-            TsProgressDto {
+            event,
+            StoreProgressDto {
                 game: game.clone(),
                 message: m.to_string(),
             },
         );
     }
+}
+
+fn progress_to<R: Runtime>(app: AppHandle<R>, game: String) -> impl FnMut(&str) {
+    store_progress(app, "ts-progress", game)
 }
 
 /// Installs packages (`Owner-Name`, or `Owner-Name@1.2.3`) with their dependencies into the

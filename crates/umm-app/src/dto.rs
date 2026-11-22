@@ -831,10 +831,10 @@ pub struct LinkDto {
     pub games: Vec<LinkGameDto>,
 }
 
-/// Payload of the `ts-progress` event.
+/// Payload of a store's install progress events (`ts-progress`, `nexus-progress`).
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct TsProgressDto {
+pub struct StoreProgressDto {
     pub game: String,
     pub message: String,
 }
