@@ -679,6 +679,7 @@ function filesTab() {
     northstar: "R2Northstar/",
     mio: "mods/ and modconfig/",
     rivet: "Rivet/",
+    bepisloader: "BepInEx/ and Renderer/",
   }[S.details.game.loader];
   const runtimeNote =
     runtimeDirs && ["doorstop", "args"].includes(S.details.game.inject)

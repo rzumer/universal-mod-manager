@@ -221,8 +221,9 @@ impl Session {
         Ok(packages
             .iter()
             .filter(|p| {
-                eco.modloader_for(&p.full_name, &kind)
+                eco.modloader_for(&p.full_name, kind)
                     .is_some_and(|m| m.loader == kind)
+                    && !umm_gamedef::is_companion_loader(&p.full_name)
             })
             .filter(|p| !p.deprecated)
             .filter(|p| {
@@ -249,7 +250,9 @@ impl Session {
             .to_string();
         let (packages, stale) = self.ts_packages(id, false)?;
         let installed_pkgs = self.ts_installed(id)?;
-        let loader_installed = installed_pkgs.iter().any(|p| p.meta.loader);
+        let loader_installed = installed_pkgs
+            .iter()
+            .any(|p| p.meta.loader && !umm_gamedef::is_companion_loader(&p.meta.full_name));
         let installed: HashMap<String, String> = installed_pkgs
             .into_iter()
             .map(|p| (p.meta.full_name, p.meta.version))
@@ -446,7 +449,10 @@ impl Session {
         // One BepInEx pack per game. A pack asked for by name, else one already installed, is
         // the game's pack; a dependency on any other pack counts as met by it (mods often name
         // a game's original pack, which may not suit the game any more).
-        let is_loader = |name: &str| eco.modloader(name).is_some();
+        // A companion package (Resonite's renderer BepInEx) comes with the loader instead of
+        // replacing it.
+        let is_loader =
+            |name: &str| eco.modloader(name).is_some() && !umm_gamedef::is_companion_loader(name);
         let in_profile: Vec<String> = umm_store::load_profile(&game, profile)?
             .mods
             .into_iter()
@@ -459,7 +465,11 @@ impl Session {
             .find(|n| is_loader(n))
             .or_else(|| {
                 // The pack this profile uses, else any installed one.
-                let loaders = || installed_pkgs.iter().filter(|p| p.meta.loader);
+                let loaders = || {
+                    installed_pkgs.iter().filter(|p| {
+                        p.meta.loader && !umm_gamedef::is_companion_loader(&p.meta.full_name)
+                    })
+                };
                 loaders()
                     .find(|p| in_profile.contains(&p.mod_id))
                     .or_else(|| loaders().next())
@@ -560,10 +570,11 @@ impl Session {
         let mut changed = false;
         // A pack installed by name replaces any other pack in this profile: turned off, kept.
         if let Some(chosen) = wanted.iter().map(|(n, _)| n).find(|n| is_loader(n)) {
-            for other in installed_pkgs
-                .iter()
-                .filter(|o| o.meta.loader && !o.meta.full_name.eq_ignore_ascii_case(chosen))
-            {
+            for other in installed_pkgs.iter().filter(|o| {
+                o.meta.loader
+                    && !umm_gamedef::is_companion_loader(&o.meta.full_name)
+                    && !o.meta.full_name.eq_ignore_ascii_case(chosen)
+            }) {
                 if let Some(e) = p
                     .mods
                     .iter_mut()

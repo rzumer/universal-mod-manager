@@ -5,9 +5,9 @@
 
 use crate::{
     loader_name, thunderstore_inject, GameDef, GameDefError, Inject, InstallRule, Loader,
-    Thunderstore, BEPINEX_KIND, GDWEAVE_KIND, GODOTML_KIND, LOVELY_KIND, MIO_KIND, NORTHSTAR_KIND,
-    RECURSIVE_MELONLOADER_KIND, RIVET_KIND, ROM_KIND, SHIMLOADER_KIND, THUNDERSTORE_SOURCE,
-    UMM_KIND,
+    Thunderstore, BEPINEX_KIND, BEPISLOADER_KIND, GDWEAVE_KIND, GODOTML_KIND, LOVELY_KIND,
+    MIO_KIND, NORTHSTAR_KIND, RECURSIVE_MELONLOADER_KIND, RIVET_KIND, ROM_KIND, SHIMLOADER_KIND,
+    THUNDERSTORE_SOURCE, UMM_KIND,
 };
 use serde::{Deserialize, Serialize};
 
@@ -313,6 +313,9 @@ impl GameDef {
                     (rom_rules(), Some(ROM_CONFIG))
                 } else if kind == UMM_KIND {
                     (umm_rules(), Some(UMM_CONFIG))
+                } else if kind == BEPISLOADER_KIND {
+                    // BepInEx plugins, for the main process.
+                    (bepinex_rules(), Some(BEPINEX_CONFIG))
                 } else if kind == RIVET_KIND {
                     // `Rivet.ini` is an ini, which the definition already copies.
                     (rivet_rules(), None)
@@ -456,12 +459,12 @@ target = ""
 
         let other = Community {
             label: "trip",
-            loader: "bepisloader",
+            loader: "gdpatch",
         };
         let err = def()
             .with_setup(LoaderSetup::Thunderstore, Some(other))
             .unwrap_err();
-        assert!(err.to_string().contains("bepisloader"), "{err}");
+        assert!(err.to_string().contains("gdpatch"), "{err}");
     }
 
     #[test]

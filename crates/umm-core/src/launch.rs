@@ -8,15 +8,16 @@ use umm_deploy::{
 };
 use umm_gamedef::{
     detect::steam_roots, loader_name, DoorstopLoader, DoorstopTarget, GameDef, RelPath,
-    RuntimeLoader, SteamRelaunch, BEPINEX_KIND, CORECLR_PATH, CORLIB_DIR, DOORSTOP3_ENABLED_FLAG,
-    DOORSTOP3_TARGET_FLAG, DOORSTOP_CORECLR_FLAG, DOORSTOP_CORLIB_FLAG, DOORSTOP_ENABLED_FLAG,
-    DOORSTOP_TARGET_FLAG, GDWEAVE_DIR, GDWEAVE_FOLDER_FLAG, GDWEAVE_PROXY, GODOTML_AUTOLOAD,
-    GODOTML_ENABLE_FLAG, GODOTML_MODS_DIR, GODOTML_MODS_FLAG, LOVELY_DIR, LOVELY_MOD_DIR_FLAG,
-    LOVELY_PROXIES, MELONLOADER_BASEDIR_FLAG, MELONLOADER_GENERATED, MELONLOADER_REGENERATE_FLAG,
-    MIO_CONFIG_DIR, MIO_CONFIG_FLAG, MIO_LOADER, MIO_MODS_DIR, MIO_MODS_FLAG, MIO_PROXY,
-    NORTHSTAR_DIR, NORTHSTAR_DLL, NORTHSTAR_FLAG, NORTHSTAR_PROFILE_FLAG, NORTHSTAR_PROXY,
-    RIVET_FLAGS, RIVET_LOADER, RIVET_LOG, RIVET_MODS_DIR, RIVET_PROXY, ROM_PROXIES, ROM_ROOT_FLAG,
-    SHIMLOADER_DIRS,
+    RuntimeLoader, SteamRelaunch, BEPINEX_KIND, BEPISLOADER_ENABLE_FLAG, BEPISLOADER_HOOK,
+    BEPISLOADER_RENDERER_PRELOADERS, BEPISLOADER_TARGET_FLAG, CORECLR_PATH, CORLIB_DIR,
+    DOORSTOP3_ENABLED_FLAG, DOORSTOP3_TARGET_FLAG, DOORSTOP_CORECLR_FLAG, DOORSTOP_CORLIB_FLAG,
+    DOORSTOP_ENABLED_FLAG, DOORSTOP_TARGET_FLAG, GDWEAVE_DIR, GDWEAVE_FOLDER_FLAG, GDWEAVE_PROXY,
+    GODOTML_AUTOLOAD, GODOTML_ENABLE_FLAG, GODOTML_MODS_DIR, GODOTML_MODS_FLAG, LOVELY_DIR,
+    LOVELY_MOD_DIR_FLAG, LOVELY_PROXIES, MELONLOADER_BASEDIR_FLAG, MELONLOADER_GENERATED,
+    MELONLOADER_REGENERATE_FLAG, MIO_CONFIG_DIR, MIO_CONFIG_FLAG, MIO_LOADER, MIO_MODS_DIR,
+    MIO_MODS_FLAG, MIO_PROXY, NORTHSTAR_DIR, NORTHSTAR_DLL, NORTHSTAR_FLAG, NORTHSTAR_PROFILE_FLAG,
+    NORTHSTAR_PROXY, RIVET_FLAGS, RIVET_LOADER, RIVET_LOG, RIVET_MODS_DIR, RIVET_PROXY,
+    ROM_PROXIES, ROM_ROOT_FLAG, SHIMLOADER_DIRS,
 };
 use umm_launch::{LaunchSpec, Tracking};
 use umm_store::fsutil::{hash_file, write_atomic, IoCtx};
@@ -132,6 +133,25 @@ impl Session {
             Some(RuntimeLoader::GDWeave) => {
                 check_gdweave(&plan.files)?;
                 (Some(Injection::GDWeave), None)
+            }
+            Some(RuntimeLoader::BepisLoader) => {
+                let find = |p: &str| {
+                    plan.files
+                        .iter()
+                        .any(|f| f.target.as_str().eq_ignore_ascii_case(p))
+                };
+                if !find(BEPISLOADER_HOOK) {
+                    return Err(CoreError::Invalid(
+                        "the profile has no BepisLoader; install it from the Thunderstore tab (it also comes with any mod that needs it)".into(),
+                    ));
+                }
+                // The renderer's BepInEx is a package of its own; without it, only the
+                // main process is modded.
+                let renderer = BEPISLOADER_RENDERER_PRELOADERS
+                    .iter()
+                    .copied()
+                    .find(|p| find(p));
+                (Some(Injection::BepisLoader { renderer }), None)
             }
             Some(RuntimeLoader::Rivet) => {
                 let has = |p: &str| {
@@ -814,6 +834,22 @@ pub(crate) fn build_spec(
     if injection == Some(Injection::Lovely) {
         game_args.extend([LOVELY_MOD_DIR_FLAG.to_string(), in_runtime(LOVELY_DIR)]);
     }
+    if let Some(Injection::BepisLoader { renderer }) = injection {
+        game_args.extend([
+            BEPISLOADER_ENABLE_FLAG.to_string(),
+            BEPISLOADER_TARGET_FLAG.to_string(),
+            in_runtime("BepInEx"),
+        ]);
+        // The renderer, a Unity process the game starts, gets Doorstop's arguments.
+        if let Some(preloader) = renderer {
+            game_args.extend([
+                DOORSTOP_ENABLED_FLAG.to_string(),
+                "true".to_string(),
+                DOORSTOP_TARGET_FLAG.to_string(),
+                in_runtime(preloader),
+            ]);
+        }
+    }
     if injection == Some(Injection::Rivet) {
         let [enable, target, directory, log] = RIVET_FLAGS;
         game_args.extend([
@@ -1103,6 +1139,54 @@ mod tests {
                 "--mod-dir",
                 native_path(&Path::new("/rt").join("mods")).as_str()
             ]
+        );
+    }
+
+    #[test]
+    fn bepisloader_gets_each_process_bepinex() {
+        let d = def("[launch]\nexe = \"Resonite.exe\"\n\
+             [loader]\nkind = \"bepisloader\"\nsource = \"thunderstore\"\ninject = \"args\"\n\
+             [thunderstore]\ncommunity = \"resonite\"\n");
+        let spec = |renderer| {
+            build_spec(
+                &d,
+                Path::new("/game"),
+                Path::new("/rt"),
+                &Profile::new("Default"),
+                Some(Injection::BepisLoader { renderer }),
+                None,
+            )
+            .unwrap()
+            .args
+        };
+        let rt = |parts: &[&str]| {
+            native_path(
+                &parts
+                    .iter()
+                    .fold(Path::new("/rt").to_path_buf(), |p, c| p.join(c)),
+            )
+        };
+        assert_eq!(
+            spec(Some(BEPISLOADER_RENDERER_PRELOADERS[0])),
+            [
+                "--hookfxr-enable",
+                "--bepinex-target",
+                &rt(&["BepInEx"]),
+                "--doorstop-enabled",
+                "true",
+                "--doorstop-target-assembly",
+                &rt(&[
+                    "Renderer",
+                    "BepInEx",
+                    "core",
+                    "BepInEx.Unity.Mono.Preloader.dll"
+                ])
+            ]
+        );
+        assert_eq!(
+            spec(None).len(),
+            3,
+            "no renderer BepInEx: the main process only"
         );
     }
 

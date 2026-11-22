@@ -282,15 +282,19 @@ pub fn plan(
                 }
             }
         }
-        // The first folder on the way down that names a route takes the rest of the path.
+        // The first folder on the way down that names a route takes the rest of the path. When
+        // several routes end in that name (Resonite's `BepInEx/plugins` and
+        // `Renderer/BepInEx/plugins`), the one whose whole path leads there wins.
         let routed = parts[..parts.len() - 1]
             .iter()
             .enumerate()
             .find_map(|(i, dir)| {
                 let d = dir.to_lowercase();
+                let lead = parts[..=i].join("/").to_lowercase();
                 routes
                     .iter()
-                    .find(|r| r.last == d)
+                    .find(|r| r.last == d && r.path.to_lowercase() == lead)
+                    .or_else(|| routes.iter().find(|r| r.last == d))
                     .map(|r| (r, parts[i + 1..].join("/")))
             });
         let target = match routed {

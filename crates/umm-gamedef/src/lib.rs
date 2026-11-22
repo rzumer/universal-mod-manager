@@ -550,6 +550,32 @@ pub const RIVET_FLAGS: [&str; 4] = [
     "-rivetLog",
 ];
 
+/// Loader kind for BepisLoader (Resonite): BepInEx for the game's .NET process, started by a
+/// `hostfxr.dll` hook, and BepInEx for its Unity renderer, started by Doorstop.
+pub const BEPISLOADER_KIND: &str = "bepisloader";
+/// The hook, in the game folder; BepInEx for each process, in the runtime folder (the
+/// renderer's under `Renderer/`, which r2modman never copies into the game either).
+pub const BEPISLOADER_HOOK: &str = "hostfxr.dll";
+pub const BEPISLOADER_DIRS: &[&str] = &["BepInEx", "Renderer"];
+pub const BEPISLOADER_ENABLE_FLAG: &str = "--hookfxr-enable";
+pub const BEPISLOADER_TARGET_FLAG: &str = "--bepinex-target";
+/// The renderer's BepInEx preloaders Doorstop can load (BepInEx 6, then 5).
+pub const BEPISLOADER_RENDERER_PRELOADERS: &[&str] = &[
+    "Renderer/BepInEx/core/BepInEx.Unity.Mono.Preloader.dll",
+    "Renderer/BepInEx/core/BepInEx.Preloader.dll",
+];
+/// Loader packages that come with a game's loader rather than replacing it: Resonite's
+/// renderer BepInEx, beside BepisLoader. Laid out like a loader package, but never the game's
+/// one loader.
+pub const COMPANION_LOADER_PACKAGES: &[&str] = &["ResoniteModding-BepInExRenderer"];
+
+/// Whether `Owner-Name` is a companion loader package (see [`COMPANION_LOADER_PACKAGES`]).
+pub fn is_companion_loader(full_name: &str) -> bool {
+    COMPANION_LOADER_PACKAGES
+        .iter()
+        .any(|p| p.eq_ignore_ascii_case(full_name))
+}
+
 /// A loader that is pointed at a per-profile runtime folder outside the game, so that only
 /// its proxy goes into the game folder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -574,6 +600,8 @@ pub enum RuntimeLoader {
     Mio,
     /// Rivet, given its loader, mod folder and log as launch arguments.
     Rivet,
+    /// BepisLoader, given each process's BepInEx as launch arguments.
+    BepisLoader,
 }
 
 impl RuntimeLoader {
@@ -590,6 +618,7 @@ impl RuntimeLoader {
             RuntimeLoader::Northstar => &[NORTHSTAR_DIR],
             RuntimeLoader::Mio => &[MIO_MODS_DIR, MIO_CONFIG_DIR],
             RuntimeLoader::Rivet => &[RIVET_DIR],
+            RuntimeLoader::BepisLoader => BEPISLOADER_DIRS,
         }
     }
 }
@@ -608,6 +637,7 @@ pub fn thunderstore_inject(kind: &str) -> Option<Inject> {
         NORTHSTAR_KIND => Some(Inject::Args),
         MIO_KIND => Some(Inject::Args),
         RIVET_KIND => Some(Inject::Args),
+        BEPISLOADER_KIND => Some(Inject::Args),
         _ => None,
     }
 }
@@ -626,6 +656,7 @@ pub fn loader_name(kind: &str) -> &str {
         NORTHSTAR_KIND => "Northstar",
         MIO_KIND => "MIO Mod Loader",
         RIVET_KIND => "Rivet",
+        BEPISLOADER_KIND => "BepisLoader",
         other => other,
     }
 }
@@ -655,6 +686,7 @@ impl GameDef {
             Inject::Args if l.kind == NORTHSTAR_KIND => Some(RuntimeLoader::Northstar),
             Inject::Args if l.kind == MIO_KIND => Some(RuntimeLoader::Mio),
             Inject::Args if l.kind == RIVET_KIND => Some(RuntimeLoader::Rivet),
+            Inject::Args if l.kind == BEPISLOADER_KIND => Some(RuntimeLoader::BepisLoader),
             _ => None,
         }
     }
@@ -832,10 +864,11 @@ impl GameDef {
                         || loader.kind == NORTHSTAR_KIND
                         || loader.kind == MIO_KIND
                         || loader.kind == RIVET_KIND
+                        || loader.kind == BEPISLOADER_KIND
                         || is_melonloader(&loader.kind) => {}
                 Inject::Args => {
                     return Err(GameDefError::Unsupported(format!(
-                        "loader kind `{}` cannot be injected with arguments (supported: shimloader, melonloader, recursive-melonloader, lovely, gdweave, godotml, return-of-modding, northstar, mio, rivet); use inject = \"files\"",
+                        "loader kind `{}` cannot be injected with arguments (supported: shimloader, melonloader, recursive-melonloader, lovely, gdweave, godotml, return-of-modding, northstar, mio, rivet, bepisloader); use inject = \"files\"",
                         loader.kind
                     )))
                 }

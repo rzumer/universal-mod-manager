@@ -14,7 +14,7 @@ fn touch(p: &Path) {
 }
 
 /// Thunderstore knows app 4242 as the BepInEx community `test-quest`, and app 5150 as a
-/// game whose loader (BepisLoader) UMM does not support.
+/// game whose loader (GDPatch) UMM does not support.
 const ECOSYSTEM: &str = r#"{
   "games": {
     "test-quest": {"label": "test-quest", "meta": {"displayName": "Test Quest"},
@@ -22,7 +22,7 @@ const ECOSYSTEM: &str = r#"{
       "r2modman": [{"packageLoader": "bepinex", "installRules": [], "exeNames": ["TestQuest.exe"]}]},
     "melon-game": {"label": "melon-game",
       "distributions": [{"platform": "steam", "identifier": "5150"}],
-      "r2modman": [{"packageLoader": "bepisloader", "installRules": []}]}
+      "r2modman": [{"packageLoader": "gdpatch", "installRules": []}]}
   },
   "modloaderPackages": []
 }"#;

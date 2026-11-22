@@ -571,6 +571,13 @@ pub fn draft_from(
     Ok(draft)
 }
 
+/// Games whose exe starts the game under other process names, which UMM watches too: Resonite
+/// runs as a .NET host and a Unity renderer.
+const HANDED_OFF: &[(&str, &[&str])] = &[(
+    "Resonite.exe",
+    &["Renderite.Host.exe", "Renderite.Renderer.exe"],
+)];
+
 /// Drafts a definition for a game added by hand: its folder, the name to show, and the exe
 /// to launch (relative to the folder; empty for none).
 pub fn draft_manual(
@@ -712,6 +719,12 @@ fn build(
                 if !process_names.iter().any(|n| n.eq_ignore_ascii_case(&name)) {
                     process_names.push(name);
                 }
+            }
+        }
+        // Games whose exe hands off to processes of other names.
+        for (launcher, others) in HANDED_OFF {
+            if file(exe).eq_ignore_ascii_case(launcher) {
+                process_names.extend(others.iter().map(|o| o.to_string()));
             }
         }
         Some(Launch {
