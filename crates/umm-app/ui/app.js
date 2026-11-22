@@ -81,11 +81,27 @@ const S = {
   nexus: { game: null, picker: null, query: { text: "", sort: "endorsements", offset: 0, count: 40, installed: false }, page: null, updates: null, busy: null },
 };
 
+/// Shows a message for long enough to read it: longer for longer text and for errors, longer
+/// again when others are showing, and for as long as the pointer is over it.
 function toast(message, kind = "info") {
   const t = h("div", { class: `toast ${kind}`, role: kind === "error" ? "alert" : "status" }, message);
-  $("#toasts").append(t);
-  setTimeout(() => t.classList.add("leaving"), kind === "error" ? 7000 : 3500);
-  setTimeout(() => t.remove(), kind === "error" ? 7400 : 3900);
+  const box = $("#toasts");
+  const others = box.querySelectorAll(".toast:not(.leaving)").length;
+  box.append(t);
+  const base = kind === "error" ? 6000 : 3000;
+  const reading = String(message).length * 60;
+  const ms = base + reading + others * 2500;
+  let timer;
+  const start = (delay) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      t.classList.add("leaving");
+      setTimeout(() => t.remove(), 400);
+    }, delay);
+  };
+  t.addEventListener("mouseenter", () => clearTimeout(timer));
+  t.addEventListener("mouseleave", () => start(2000));
+  start(ms);
 }
 
 async function attempt(fn, success) {
