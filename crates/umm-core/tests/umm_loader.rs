@@ -30,7 +30,9 @@ const LISTING: &str = r#"[
    "is_pinned": true, "categories": ["Libraries"],
    "versions": [{"version_number": "0.32.4", "dependencies": []}]},
   {"name": "Mine", "full_name": "Me-Mine", "owner": "Me", "categories": ["Mods"],
-   "versions": [{"version_number": "1.0.0", "dependencies": ["UMM-UMM-0.32.4"]}]}
+   "versions": [{"version_number": "1.0.0", "dependencies": ["UMM-UMM-0.32.4"]}]},
+  {"name": "Bare", "full_name": "Me-Bare", "owner": "Me", "categories": ["Mods"],
+   "versions": [{"version_number": "1.0.0", "dependencies": []}]}
 ]"#;
 
 fn gz(s: &str) -> Vec<u8> {
@@ -80,6 +82,17 @@ fn fake() -> Arc<FakeHttp> {
             .with(
                 "https://thunderstore.io/package/download/Me/Mine/1.0.0/",
                 mine,
+            )
+            .with(
+                "https://thunderstore.io/package/download/Me/Bare/1.0.0/",
+                zip_of(&[
+                    (
+                        "manifest.json",
+                        r#"{"name":"Bare","version_number":"1.0.0","dependencies":[]}"#,
+                    ),
+                    ("Bare/Info.json", r#"{"Id":"Bare"}"#),
+                    ("Bare/Bare.dll", "dll"),
+                ]),
             ),
     )
 }
@@ -144,4 +157,64 @@ fn unity_mod_manager_runs_from_the_runtime_folder() {
     s.revert("rhythm", false, &mut Faults::none()).unwrap();
     assert!(!root.join("winhttp.dll").exists());
     assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+}
+
+#[test]
+fn the_loader_comes_with_a_mod_that_does_not_name_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("game");
+    let s = Session::open_with(Some(tmp.path().join("data")), fake()).unwrap();
+    fs::create_dir_all(root.join("Rhythm_Data")).unwrap();
+    fs::write(root.join("Rhythm.exe"), "game").unwrap();
+    let p = s.data().game("rhythm").def_path();
+    fs::create_dir_all(p.parent().unwrap()).unwrap();
+    fs::write(
+        p,
+        "schema = 1
+name = \"Rhythm\"
+[detect]
+steam_app_id = 6266
+         [launch]
+exe = \"Rhythm.exe\"
+[[install]]
+match = \"**\"
+target = \"\"
+",
+    )
+    .unwrap();
+    s.set_install_path("rhythm", &root).unwrap();
+    s.set_loader("rhythm", LoaderSetup::Thunderstore).unwrap();
+
+    let r = s
+        .ts_install(
+            "rhythm",
+            &[("Me-Bare".into(), None)],
+            DEFAULT_PROFILE,
+            &mut |_| {},
+        )
+        .unwrap();
+    assert!(
+        r.installed.iter().any(|(n, _, _)| n == "UMM-UMM"),
+        "{:?}",
+        r.installed
+    );
+    assert!(
+        r.notes.iter().any(|n| n.contains("UMM-UMM too")),
+        "{:?}",
+        r.notes
+    );
+    s.deploy("rhythm", DEFAULT_PROFILE, &mut Faults::none())
+        .unwrap();
+    s.revert("rhythm", false, &mut Faults::none()).unwrap();
+
+    // Once there, it is not added again.
+    let r = s
+        .ts_install(
+            "rhythm",
+            &[("Me-Mine".into(), None)],
+            DEFAULT_PROFILE,
+            &mut |_| {},
+        )
+        .unwrap();
+    assert!(r.notes.is_empty(), "{:?}", r.notes);
 }

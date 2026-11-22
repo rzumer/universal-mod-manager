@@ -202,28 +202,23 @@ impl Session {
             .collect())
     }
 
-    pub fn ts_search(&self, id: &str, q: &TsQuery) -> Result<TsPage> {
-        let (def, _, eco) = self.ts_game(id)?;
-        let kind = def
-            .ts_loader()
-            .unwrap_or(umm_gamedef::BEPINEX_KIND)
-            .to_string();
+    /// The community's package for the game's loader (also what a missing loader is installed
+    /// from). For BepInEx, the pack for this build of the game: an IL2CPP game never gets the
+    /// plain Mono pack, a Mono game never an IL2CPP one (game-specific packs like
+    /// BepInExPack_AmongUs do not say which they are). Among the rest, BepInEx's own pack if
+    /// listed, else the most downloaded.
+    fn loader_package(
+        &self,
+        def: &GameDef,
+        eco: &Ecosystem,
+        packages: &[Package],
+    ) -> Result<Option<String>> {
+        let kind = def.ts_loader().unwrap_or(umm_gamedef::BEPINEX_KIND);
         let bepinex = kind == umm_gamedef::BEPINEX_KIND;
-        let (packages, stale) = self.ts_packages(id, false)?;
-        let installed_pkgs = self.ts_installed(id)?;
-        let loader_installed = installed_pkgs.iter().any(|p| p.meta.loader);
-        let installed: HashMap<String, String> = installed_pkgs
-            .into_iter()
-            .map(|p| (p.meta.full_name, p.meta.version))
-            .collect();
-        // The community's package for the game's loader. For BepInEx, the pack for this build
-        // of the game: an IL2CPP game never gets the plain Mono pack, a Mono game never an
-        // IL2CPP one (game-specific packs like BepInExPack_AmongUs do not say which they
-        // are). Among the rest, BepInEx's own pack if listed, else the most downloaded.
         let il2cpp = self
             .install_path(&def)?
             .is_some_and(|(p, _)| p.join("GameAssembly.dll").is_file());
-        let loader_package = packages
+        Ok(packages
             .iter()
             .filter(|p| {
                 eco.modloader_for(&p.full_name, &kind)
@@ -243,7 +238,23 @@ impl Session {
                 let own = p.owner == "BepInEx" && p.name.starts_with("BepInExPack");
                 (own, p.downloads)
             })
-            .map(|p| p.full_name.clone());
+            .map(|p| p.full_name.clone()))
+    }
+
+    pub fn ts_search(&self, id: &str, q: &TsQuery) -> Result<TsPage> {
+        let (def, _, eco) = self.ts_game(id)?;
+        let kind = def
+            .ts_loader()
+            .unwrap_or(umm_gamedef::BEPINEX_KIND)
+            .to_string();
+        let (packages, stale) = self.ts_packages(id, false)?;
+        let installed_pkgs = self.ts_installed(id)?;
+        let loader_installed = installed_pkgs.iter().any(|p| p.meta.loader);
+        let installed: HashMap<String, String> = installed_pkgs
+            .into_iter()
+            .map(|p| (p.meta.full_name, p.meta.version))
+            .collect();
+        let loader_package = self.loader_package(&def, &eco, &packages)?;
         let have = |p: &Package| {
             installed
                 .iter()
@@ -401,7 +412,7 @@ impl Session {
         progress: &mut dyn FnMut(&str),
         extra: Option<Package>,
     ) -> Result<TsInstallReport> {
-        let (_, community, eco) = self.ts_game(id)?;
+        let (def, community, eco) = self.ts_game(id)?;
         let m = Self::ts_match(&eco, &community);
         let (listed, _) = self.ts_packages(id, false)?;
         // A package from outside the community's list joins it for this install only.
@@ -454,6 +465,13 @@ impl Session {
                     .or_else(|| loaders().next())
                     .map(|p| p.meta.full_name.clone())
             });
+        // No loader yet, and none of the mods names one (some do not, though they need it):
+        // it comes with this install anyway, as the Thunderstore tab says.
+        let loader_to_add = match (&chosen_loader, def.ts_loader()) {
+            (None, Some(_)) => self.loader_package(&def, &eco, packages)?,
+            _ => None,
+        };
+        let mut added_loader = None;
         let other_loader = |dep: &str| {
             split_dependency(dep).is_some_and(|(n, _)| {
                 is_loader(n)
@@ -489,7 +507,16 @@ impl Session {
                     let deps = manifest.map(|m| m.dependencies).unwrap_or_default();
                     Ok(deps.into_iter().filter(|d| !other_loader(d)).collect())
                 };
-            resolve::resolve(packages, &installed, wanted, &mut deps_of)
+            match resolve::resolve(packages, &installed, wanted, &mut deps_of) {
+                Ok(p) if !p.all.iter().any(|n| is_loader(n)) && loader_to_add.is_some() => {
+                    let pkg = loader_to_add.clone().expect("checked");
+                    let mut with_loader = vec![(pkg.clone(), None)];
+                    with_loader.extend(wanted.iter().cloned());
+                    added_loader = Some(pkg);
+                    resolve::resolve(packages, &installed, &with_loader, &mut deps_of)
+                }
+                r => r,
+            }
         };
         let plan = match (plan, net_error) {
             (Ok(p), _) => p,
@@ -500,6 +527,11 @@ impl Session {
             missing: plan.missing.clone(),
             ..Default::default()
         };
+        if let Some(pkg) = &added_loader {
+            report.notes.push(format!(
+                "Installed {pkg} too: it is the game's mod loader, which every mod needs"
+            ));
+        }
         for step in &plan.steps {
             let pkg = packages
                 .iter()
