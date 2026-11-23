@@ -244,6 +244,9 @@ pub fn suggest(files: &[&str], game: &GameIndex, def: &CompiledDef) -> Option<Pl
     {
         return rimworld_root(&rels);
     }
+    if def.def.paradox.is_some() {
+        return paradox_root(&rels, def);
+    }
     let mut roots: Vec<String> = vec![String::new()];
     let mut seen: HashSet<String> = HashSet::new();
     for r in &rels {
@@ -367,6 +370,27 @@ fn rimworld_root(rels: &[RelPath]) -> Option<Placement> {
     let p = Placement {
         root,
         guessed,
+        ..Default::default()
+    };
+    (p != Placement::default()).then_some(p)
+}
+
+/// A Paradox mod's folder is the one holding its `descriptor.mod` (an archive often has the
+/// launcher's `<mod>.mod` beside it, left out); without one, wrapper folders are dropped.
+/// The install rules give it a folder of its own in the user folder's `mod/`.
+fn paradox_root(rels: &[RelPath], def: &CompiledDef) -> Option<Placement> {
+    let root = rels
+        .iter()
+        .filter(|r| {
+            r.file_name()
+                .is_some_and(|n| n.eq_ignore_ascii_case(crate::paradox::DESCRIPTOR))
+        })
+        .map(|r| r.parent().unwrap_or_else(RelPath::root))
+        .min_by_key(|r| r.depth())
+        .map(|r| r.as_str().to_string())
+        .unwrap_or_else(|| wrapper_chain(rels, def));
+    let p = Placement {
+        root,
         ..Default::default()
     };
     (p != Placement::default()).then_some(p)

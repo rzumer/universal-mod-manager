@@ -1,5 +1,6 @@
 use crate::DeployError;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -105,6 +106,30 @@ pub struct Journal {
     pub started_unix: u64,
     pub phase: Phase,
     pub ops: Vec<Op>,
+    /// Folders outside the game folder that `@<name>/…` paths are in, as they were when
+    /// deployed.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub folders: BTreeMap<String, PathBuf>,
+}
+
+/// Where a path goes: in one of the named `folders` when it starts with `@<name>/` and one is
+/// so named, else in the game folder.
+pub fn resolve(game_root: &Path, folders: &BTreeMap<String, PathBuf>, rel: &RelPath) -> PathBuf {
+    if let Some(name) = rel.first().and_then(|f| f.strip_prefix('@')) {
+        if let Some(dir) = folders.get(name) {
+            return rel.strip_components(1).to_path(dir);
+        }
+    }
+    rel.to_path(game_root)
+}
+
+/// Whether a path is a named folder's root itself (`@<name>`).
+pub fn is_folder_root(folders: &BTreeMap<String, PathBuf>, rel: &RelPath) -> bool {
+    rel.depth() == 1
+        && rel
+            .first()
+            .and_then(|f| f.strip_prefix('@'))
+            .is_some_and(|n| folders.contains_key(n))
 }
 
 impl Journal {
@@ -141,7 +166,7 @@ impl Journal {
     }
 
     pub fn target(&self, rel: &RelPath) -> PathBuf {
-        rel.to_path(&self.game_root)
+        resolve(&self.game_root, &self.folders, rel)
     }
 
     pub fn backup(&self, rel: &RelPath) -> PathBuf {

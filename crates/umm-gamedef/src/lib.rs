@@ -14,6 +14,7 @@ pub use setup::{Community, LoaderSetup};
 
 use globset::{GlobBuilder, GlobMatcher, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -64,6 +65,38 @@ pub struct GameDef {
     /// Game paths that are always copied rather than hardlinked, because the game writes to them.
     #[serde(default)]
     pub writable: PathSet,
+    /// Folders outside the game folder that mods go to, by name: an absolute path with
+    /// variables (see [`expand_path`]: `%DOCUMENTS%/Paradox Interactive/Crusader Kings III`).
+    /// Install rules target one as `@<name>/…`; deploying there is journaled like the game
+    /// folder.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub folders: BTreeMap<String, String>,
+    /// A Paradox game (Crusader Kings III, Stellaris…): mods are folders in its user folder's
+    /// `mod/`, each found by a `.mod` descriptor beside it, and enabled in `dlc_load.json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paradox: Option<Paradox>,
+}
+
+/// A Paradox game's mod setup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Paradox {
+    /// The [`GameDef::folders`] entry of the game's user folder (holding `mod/` and
+    /// `dlc_load.json`).
+    pub folder: String,
+}
+
+/// A path's named folder, when it starts with `@<name>/` and the definition has a folder of
+/// that name: the name and the path inside it. Other paths are in the game folder (a game's
+/// own `@Mod` folders, as Arma has, stay there).
+pub fn folder_of<'a>(
+    rel: &RelPath,
+    folders: &'a BTreeMap<String, String>,
+) -> Option<(&'a str, RelPath)> {
+    let first = rel.first()?;
+    let name = first.strip_prefix('@')?;
+    let (key, _) = folders.get_key_value(name)?;
+    Some((key.as_str(), rel.strip_components(1)))
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -840,6 +873,32 @@ impl GameDef {
         }
         if !is_valid_id(&self.id) {
             return Err(GameDefError::Id(self.id.clone()));
+        }
+        for (name, path) in &self.folders {
+            let ok = !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
+            if !ok {
+                return Err(GameDefError::Unsupported(format!(
+                    "[folders] `{name}`: names are lower-case letters, digits, - and _"
+                )));
+            }
+            if !(path.contains('%') || Path::new(path).is_absolute()) {
+                return Err(GameDefError::Unsupported(format!(
+                    "[folders] `{name}` must be an absolute path (variables like %DOCUMENTS% allowed)"
+                )));
+            }
+        }
+        if let Some(p) = self
+            .paradox
+            .as_ref()
+            .filter(|p| !self.folders.contains_key(&p.folder))
+        {
+            return Err(GameDefError::Unsupported(format!(
+                "[paradox] folder `{}` is not one of [folders]",
+                p.folder
+            )));
         }
         if let Some(n) = self.nexus.as_ref().filter(|n| !is_nexus_domain(&n.domain)) {
             return Err(GameDefError::Unsupported(format!(

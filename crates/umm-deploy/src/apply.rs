@@ -1,4 +1,4 @@
-use crate::journal::{Journal, Method, Op, Phase, JOURNAL_VERSION};
+use crate::journal::{is_folder_root, resolve, Journal, Method, Op, Phase, JOURNAL_VERSION};
 use crate::revert::{revert, RevertReport};
 use crate::{DeployError, Faults, Plan};
 use std::collections::BTreeMap;
@@ -32,7 +32,30 @@ pub fn prepare(
         return Err(DeployError::UnsafeGameRoot(game_root));
     }
 
-    let hardlink_ok = !prefer_copy && same_volume(&game.mods_dir(), &game_root);
+    // A named folder outside the game folder: absolute, and not a drive's root.
+    for dir in plan.folders.values() {
+        if !dir.is_absolute() || dir.parent().is_none() {
+            return Err(DeployError::UnsafeGameRoot(dir.clone()));
+        }
+    }
+    let to_path = |rel: &RelPath| resolve(&game_root, &plan.folders, rel);
+    // Hard links only work within a drive: decided for each place files go.
+    let link_ok = |rel: &RelPath| {
+        let place = match rel
+            .first()
+            .and_then(|f| f.strip_prefix('@'))
+            .and_then(|n| plan.folders.get(n))
+        {
+            Some(dir) => dir.clone(),
+            None => game_root.clone(),
+        };
+        let probe = place
+            .ancestors()
+            .find(|a| a.exists())
+            .map(Path::to_path_buf)
+            .unwrap_or(place);
+        !prefer_copy && same_volume(&game.mods_dir(), &probe)
+    };
     let (backup_root, backup_in_game) = if same_volume(game.root(), &game_root) {
         (game.backups_dir(), false)
     } else {
@@ -46,7 +69,7 @@ pub fn prepare(
             if new_dirs.contains_key(&dir.key()) {
                 continue;
             }
-            let p = dir.to_path(&game_root);
+            let p = to_path(&dir);
             match fs::symlink_metadata(&p) {
                 Ok(m) if m.file_type().is_symlink() => {
                     return Err(DeployError::LinkInPath(dir.to_string()))
@@ -64,12 +87,12 @@ pub fn prepare(
             }
         }
 
-        let method = if f.writable || !hardlink_ok {
+        let method = if f.writable || !link_ok(&f.target) {
             Method::Copy
         } else {
             Method::Hardlink
         };
-        let p = f.target.to_path(&game_root);
+        let p = to_path(&f.target);
         let op = match fs::symlink_metadata(&p) {
             Err(e) if e.kind() == io::ErrorKind::NotFound => Op::Add {
                 path: f.target.clone(),
@@ -192,6 +215,7 @@ pub fn prepare(
         started_unix: unix_now(),
         phase: Phase::Applying,
         ops,
+        folders: plan.folders.clone(),
     })
 }
 
@@ -249,7 +273,13 @@ fn apply_op(j: &Journal, op: &Op, faults: &mut Faults) -> Result<(), DeployError
         Op::Mkdir { path } => {
             faults.tick()?;
             let p = j.target(path);
-            match fs::create_dir(&p) {
+            // A named folder's root may lack its parents too (a game not run yet).
+            let made = if is_folder_root(&j.folders, path) {
+                fs::create_dir_all(&p)
+            } else {
+                fs::create_dir(&p)
+            };
+            match made {
                 Ok(()) => Ok(()),
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists && p.is_dir() => Ok(()),
                 Err(e) => {

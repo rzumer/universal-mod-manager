@@ -102,6 +102,8 @@ pub enum Engine {
     /// Bethesda's engines (NetImmerse, Gamebryo, Creation Engine): a data folder of plugins
     /// and archives.
     Bethesda,
+    /// Paradox's engines: mods in the game's user folder, enabled in `dlc_load.json`.
+    Clausewitz,
     Unknown,
 }
 
@@ -112,6 +114,7 @@ impl Engine {
             Engine::UnityIl2cpp => "Unity (IL2CPP)",
             Engine::Unreal => "Unreal Engine",
             Engine::Bethesda => "Gamebryo / Creation Engine",
+            Engine::Clausewitz => "Clausewitz / Jomini (Paradox)",
             Engine::Unknown => "Unknown engine",
         }
     }
@@ -215,7 +218,67 @@ pub struct Inspection {
     pub unreal_project: Option<String>,
     /// A Bethesda game's data folder (`Data`, `Data Files`), as spelled on disk.
     pub data_folder: Option<String>,
+    /// A Paradox game, recognised by its exe.
+    pub paradox: Option<&'static ParadoxGame>,
 }
+
+/// A Paradox game: its exe (relative to the game folder) and its user folder's name under
+/// `Documents\Paradox Interactive`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParadoxGame {
+    pub exe: &'static str,
+    pub user: &'static str,
+}
+
+/// Paradox games whose mods go in their user folder and are enabled in `dlc_load.json`.
+/// (Crusader Kings II lists its mods in `settings.txt` instead: not here.)
+pub const PARADOX_GAMES: &[ParadoxGame] = &[
+    ParadoxGame {
+        exe: "binaries/ck3.exe",
+        user: "Crusader Kings III",
+    },
+    ParadoxGame {
+        exe: "binaries/victoria3.exe",
+        user: "Victoria 3",
+    },
+    ParadoxGame {
+        exe: "binaries/imperator.exe",
+        user: "Imperator",
+    },
+    ParadoxGame {
+        exe: "stellaris.exe",
+        user: "Stellaris",
+    },
+    ParadoxGame {
+        exe: "hoi4.exe",
+        user: "Hearts of Iron IV",
+    },
+    ParadoxGame {
+        exe: "eu4.exe",
+        user: "Europa Universalis IV",
+    },
+];
+
+/// The Paradox game installed in `root`, by its exe.
+pub fn paradox_game(root: &Path) -> Option<&'static ParadoxGame> {
+    PARADOX_GAMES.iter().find(|g| {
+        let mut p = root.to_path_buf();
+        for c in g.exe.split('/') {
+            let Some(found) = fs::read_dir(&p).ok().and_then(|rd| {
+                rd.flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .find(|n| n.eq_ignore_ascii_case(c))
+            }) else {
+                return false;
+            };
+            p = p.join(found);
+        }
+        p.is_file()
+    })
+}
+
+/// The folder name UMM gives a Paradox game's user folder in its definition.
+pub const PARADOX_FOLDER: &str = "user";
 
 fn by_size(mut exes: Vec<(String, u64)>) -> Vec<String> {
     exes.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
@@ -252,6 +315,20 @@ pub fn inspect_folder(root: &Path) -> Inspection {
             exes,
             unreal_project: None,
             data_folder: None,
+            paradox: None,
+        };
+    }
+    // Paradox: its exe, often in `binaries/` (the top holds its launcher).
+    if let Some(g) = paradox_game(root) {
+        exes.retain(|e| !e.eq_ignore_ascii_case(g.exe));
+        exes.insert(0, g.exe.to_string());
+        return Inspection {
+            engine: Engine::Clausewitz,
+            exe: g.exe.to_string(),
+            exes,
+            unreal_project: None,
+            data_folder: None,
+            paradox: Some(g),
         };
     }
     // Bethesda: a data folder at the top holding a master plugin (`Fallout3.esm`).
@@ -262,6 +339,7 @@ pub fn inspect_folder(root: &Path) -> Inspection {
             exes,
             unreal_project: None,
             data_folder: Some(data),
+            paradox: None,
         };
     }
     if exists_ci(root, "Engine") {
@@ -286,6 +364,7 @@ pub fn inspect_folder(root: &Path) -> Inspection {
             exes,
             unreal_project: project,
             data_folder: None,
+            paradox: None,
         };
     }
     Inspection {
@@ -294,6 +373,7 @@ pub fn inspect_folder(root: &Path) -> Inspection {
         exes,
         unreal_project: None,
         data_folder: None,
+        paradox: None,
     }
 }
 
@@ -710,13 +790,31 @@ fn build(
                 ));
             }
         }
+        Engine::Clausewitz => {
+            if let Some(g) = found.paradox {
+                notes.push(Note::new(
+                    "paradox",
+                    format!(
+                        "Paradox game: each mod goes in its own folder in Documents\\Paradox Interactive\\{}\\mod, \
+                         with a descriptor UMM writes, and is enabled in dlc_load.json while mods are deployed \
+                         (your own list comes back afterwards). UMM starts the game directly, not through \
+                         Paradox's launcher, which would replace the list with its playset.",
+                        g.user
+                    ),
+                ));
+            }
+        }
         Engine::Unknown if setup == LoaderSetup::Generic => notes.push(Note::new(
             "unknown-engine",
             "Engine not recognised: mod files keep their paths relative to the game folder.",
         )),
         Engine::Unknown => {}
     }
-    install.push(rule("**", ""));
+    match found.paradox {
+        // Mods go in the user folder's `mod/`, not the game folder.
+        Some(_) => install.extend(crate::setup::paradox_rules(PARADOX_FOLDER)),
+        None => install.push(rule("**", "")),
+    }
 
     match (setup, found.engine) {
         (LoaderSetup::Thunderstore, _)
@@ -800,7 +898,14 @@ fn build(
         Some(Launch {
             exe: exe.to_string(),
             args: Vec::new(),
-            steam_relaunch: origin.relaunch,
+            // A Paradox game started through Steam runs Paradox's launcher, which writes the
+            // list of enabled mods from its playset: started directly instead, Steam running.
+            steam_relaunch: if found.paradox.is_some() && origin.relaunch == SteamRelaunch::ViaSteam
+            {
+                SteamRelaunch::AppidFile
+            } else {
+                origin.relaunch
+            },
             process_names,
             ignore_extender_loader: false,
         })
@@ -824,6 +929,20 @@ fn build(
         install,
         protect: PathSet { paths: protect },
         writable: PathSet { paths: writable },
+        folders: found
+            .paradox
+            .map(|g| {
+                [(
+                    PARADOX_FOLDER.to_string(),
+                    format!("%DOCUMENTS%/Paradox Interactive/{}", g.user),
+                )]
+                .into_iter()
+                .collect()
+            })
+            .unwrap_or_default(),
+        paradox: found.paradox.map(|_| crate::Paradox {
+            folder: PARADOX_FOLDER.into(),
+        }),
     };
     let def = generic.with_setup(setup, community)?;
     Ok(Draft {
@@ -946,6 +1065,38 @@ mod tests {
                 "Unreal Trip"
             ]
         );
+    }
+
+    #[test]
+    fn paradox_games_are_set_up_for_their_user_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        touch(&root.join("binaries/ck3.exe"), 100);
+        touch(&root.join("launcher/dowser.exe"), 500);
+        let found = inspect_folder(root);
+        assert_eq!(
+            (found.engine, found.exe.as_str()),
+            (Engine::Clausewitz, "binaries/ck3.exe")
+        );
+        let d = draft_manual(root, "CK3", &found.exe, &found, LoaderSetup::Generic, None).unwrap();
+        assert_eq!(
+            d.def.folders.get(PARADOX_FOLDER).map(String::as_str),
+            Some("%DOCUMENTS%/Paradox Interactive/Crusader Kings III")
+        );
+        assert_eq!(d.def.paradox.as_ref().unwrap().folder, PARADOX_FOLDER);
+        assert_eq!(d.def.install.len(), 1);
+        assert_eq!(d.def.install[0].target, "@user/mod/{mod}/");
+        assert!(d.notes.iter().any(|n| n.key == "paradox"));
+        // Reloads as written, and back to generic keeps the rule.
+        let text = to_toml(&d);
+        let back = GameDef::parse_game(&text, Path::new("game.toml"), "ck3").unwrap();
+        assert_eq!(back.paradox, d.def.paradox);
+        let again = back
+            .with_setup(LoaderSetup::Bepinex, None)
+            .unwrap()
+            .with_setup(LoaderSetup::Generic, None)
+            .unwrap();
+        assert_eq!(again.install[0].target, "@user/mod/{mod}/");
     }
 
     #[test]

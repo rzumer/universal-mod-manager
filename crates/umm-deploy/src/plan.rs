@@ -17,6 +17,9 @@ pub struct Plan {
     pub external: Vec<PlannedExternal>,
     /// Ini settings outside the game folder set while deployed.
     pub ini: Vec<PlannedIni>,
+    /// The game definition's folders outside the game folder, resolved: name → absolute
+    /// path. A target `@<name>/…` goes there (see [`umm_gamedef::folder_of`]).
+    pub folders: BTreeMap<String, PathBuf>,
 }
 
 /// An ini setting UMM sets while mods are deployed. Skipped when the file does not exist (the
@@ -268,5 +271,6 @@ pub fn build_plan(
         skipped,
         external: Vec::new(),
         ini: Vec::new(),
+        folders: BTreeMap::new(),
     })
 }

@@ -122,10 +122,14 @@ impl Session {
         self.ensure_not_running(&def.def)?;
         let profile = umm_store::load_profile(&game, profile_name)?;
         let mut plan = build_plan(&game, &def, &profile, Some(&root))?;
+        // Folders outside the game folder that mods go to (a Paradox game's user folder).
+        plan.folders = self.resolve_folders(&def)?;
         // Patchers' results replace the game's files (a patcher out of date runs first).
         self.add_patches(&def, &profile, &root, &mut plan, true)?;
         // WeiDU mods' installed result (installed again first, when out of date).
         self.add_weidu(&def, &profile, &root, &mut plan, true)?;
+        // A Paradox game's descriptors and list of enabled mods.
+        self.plan_paradox(&def, &profile, &mut plan)?;
         let rl = def.def.runtime_loader();
         // The Godot Mod Loader's own files go to the game folder when UMM sets it up.
         let mut godotml_in_game = false;
@@ -311,7 +315,17 @@ impl Session {
                     target: bin.join(&f.target),
                     ..f.clone()
                 });
-                for f in std::iter::once(f).chain(extra) {
+                // Beside an exe in a folder of its own too (Paradox games' `binaries/`), where
+                // the game looks for it when started directly.
+                let by_exe = RelPath::parse(&launch.exe)
+                    .ok()
+                    .and_then(|e| e.parent())
+                    .filter(|d| !d.is_root())
+                    .map(|d| PlannedFile {
+                        target: d.join(&f.target),
+                        ..f.clone()
+                    });
+                for f in std::iter::once(f).chain(extra).chain(by_exe) {
                     plan.files.retain(|p| p.target.key() != f.target.key());
                     plan.files.push(f);
                 }
@@ -385,6 +399,15 @@ impl Session {
                 loader: loader.file_name().unwrap_or_default().to_string(),
                 started_steam,
             });
+        } else if def_launch
+            .launch
+            .as_ref()
+            .is_some_and(|l| l.steam_relaunch == SteamRelaunch::AppidFile)
+            && def_launch.detect.steam_app_id.is_some()
+        {
+            // Started directly (a Paradox game, past its launcher): the game needs Steam
+            // running to start, else it restarts itself through Steam.
+            ensure_steam(find_steam_exe());
         }
         let spec = build_spec(
             &def_launch,

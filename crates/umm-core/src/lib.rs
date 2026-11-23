@@ -10,6 +10,7 @@ mod launch;
 mod link;
 mod manual;
 mod nexus;
+mod paradox;
 mod patcher;
 mod placement;
 mod plugins;
@@ -517,6 +518,7 @@ impl Session {
         let profile = umm_store::load_profile(&game, profile)?;
         let root = self.install_path(&def.def)?.map(|(p, _)| p);
         let mut plan = build_plan(&game, &def, &profile, root.as_deref())?;
+        plan.folders = self.resolve_folders(&def)?;
         if let Some(r) = &root {
             self.add_patches(&def, &profile, r, &mut plan, false)?;
             self.add_weidu(&def, &profile, r, &mut plan, false)?;

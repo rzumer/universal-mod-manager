@@ -3,6 +3,7 @@
 use crate::steam::TsFit;
 use crate::{CoreError, Result, Session};
 use umm_deploy::GameLock;
+use umm_gamedef::steam::Engine;
 use umm_gamedef::{loader_name, GameDef, LoaderSetup, BEPINEX_KIND};
 
 #[derive(Debug, Clone)]

@@ -80,6 +80,12 @@ pub fn bethesda_rules(data: &str) -> Vec<InstallRule> {
     v
 }
 
+/// Install rules for a Paradox game: each mod in a folder of its own in the user folder's
+/// `mod/` (named `folder` in the definition's folders).
+pub fn paradox_rules(folder: &str) -> Vec<InstallRule> {
+    vec![rule("**", &format!("@{folder}/mod/{{mod}}/"))]
+}
+
 /// The data folder of a definition's Bethesda plugin list (not RimWorld's mod list).
 pub fn bethesda_data_folder(def: &GameDef) -> Option<&str> {
     let p = def.plugins.as_ref()?;
@@ -303,7 +309,11 @@ impl GameDef {
         let (loader, rules, config) = match setup {
             LoaderSetup::Generic => (
                 None,
-                bethesda_data_folder(self).map_or_else(|| vec![rule("**", "")], bethesda_rules),
+                match &self.paradox {
+                    Some(p) => paradox_rules(&p.folder),
+                    None => bethesda_data_folder(self)
+                        .map_or_else(|| vec![rule("**", "")], bethesda_rules),
+                },
                 None,
             ),
             LoaderSetup::Bepinex => (
