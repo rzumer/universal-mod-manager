@@ -157,6 +157,21 @@ fn switching_the_loader_rewrites_only_its_sections() {
     assert_eq!(c.community.as_deref(), Some("test-quest"));
     assert!(fs::read_to_string(&file).unwrap().contains("# my own note"));
 
+    // A game whose folder is not a Unity game's is not offered BepInEx, nor switched to it.
+    let other = tmp.path().join("godot");
+    touch(&other.join("OtherUnity.exe"));
+    touch(&other.join("Game.pck"));
+    s.set_install_path("other-unity", &other).unwrap();
+    let c = s.loader_choice("other-unity").unwrap();
+    assert_eq!(c.available, [LoaderSetup::Generic]);
+    assert!(s
+        .set_loader("other-unity", LoaderSetup::Bepinex)
+        .unwrap_err()
+        .to_string()
+        .contains("not a Unity game"));
+    let unity = tmp.path().join("lib/steamapps/common/OtherUnity");
+    s.set_install_path("other-unity", &unity).unwrap();
+
     // A generic game off Thunderstore cannot pick Thunderstore, but can pick BepInEx.
     let c = s.loader_choice("other-unity").unwrap();
     assert_eq!(c.available, [LoaderSetup::Bepinex, LoaderSetup::Generic]);

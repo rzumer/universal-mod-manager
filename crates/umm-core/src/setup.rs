@@ -50,6 +50,18 @@ impl Session {
         TsFit::of(named.or_else(by_app).or_else(by_exe))
     }
 
+    /// Whether the game may be a Unity game, what BepInEx needs: from its folder, and when
+    /// its folder cannot be found, it may be.
+    fn may_be_unity(&self, def: &GameDef) -> bool {
+        match self.install_path(def) {
+            Ok(Some((root, _))) if root.is_dir() => matches!(
+                umm_gamedef::steam::inspect_folder(&root).engine,
+                Engine::UnityMono | Engine::UnityIl2cpp
+            ),
+            _ => true,
+        }
+    }
+
     pub fn loader_choice(&self, id: &str) -> Result<LoaderChoice> {
         let def = self.game_def(id)?;
         let fit = self.find_community(&def);
@@ -57,8 +69,11 @@ impl Session {
         if fit.community.is_some() {
             available.push(LoaderSetup::Thunderstore);
         }
-        // BepInEx makes no sense for a game whose Thunderstore loader is another one.
-        if fit.loader.as_deref().is_none_or(|l| l == BEPINEX_KIND) {
+        // BepInEx is for Unity games, and makes no sense for one whose Thunderstore loader is
+        // another. A game set up for it already keeps the choice.
+        let bepinex =
+            fit.loader.as_deref().is_none_or(|l| l == BEPINEX_KIND) && self.may_be_unity(&def);
+        if bepinex || def.setup() == Some(LoaderSetup::Bepinex) {
             available.push(LoaderSetup::Bepinex);
         }
         available.push(LoaderSetup::Generic);
@@ -85,6 +100,12 @@ impl Session {
             return Err(CoreError::Deployed(id.into()));
         }
         let fit = self.find_community(&def);
+        if setup == LoaderSetup::Bepinex && !self.may_be_unity(&def) {
+            return Err(CoreError::Invalid(format!(
+                "{} is not a Unity game: BepInEx cannot load mods into it",
+                def.name
+            )));
+        }
         if setup == LoaderSetup::Thunderstore && fit.community.is_none() {
             return Err(CoreError::Invalid(match &fit.other_loader {
                 Some(other) => format!(
