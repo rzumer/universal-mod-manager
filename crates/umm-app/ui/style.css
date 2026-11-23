@@ -405,6 +405,13 @@ button.ts-name:hover svg, button.ts-name:focus-visible svg { opacity: 1; fill: v
 .version-size { white-space: nowrap; }
 .version-why { margin-left: auto; text-align: right; }
 .ts-more { display: flex; justify-content: center; margin-top: 10px; }
+.seg { flex: none; display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; align-self: center; }
+.seg button { white-space: nowrap; border: none; border-radius: 0; background: transparent; padding: 4px 12px; font-size: 13px; color: var(--muted); }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button.on { background: var(--surface-2); color: var(--text); font-weight: 600; }
+.ts-toolbar .spacer { flex: 1; }
+.collection-name { font-size: 15px; }
+.collection-optional { margin: 16px 0 8px; font-size: 14px; }
 .ts-share { display: flex; gap: 14px; align-items: baseline; margin-bottom: 10px; font-size: 13px; }
 .chip.ok { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
 .modal input[type="text"] { width: 100%; margin-top: 8px; }

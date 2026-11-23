@@ -134,6 +134,55 @@ pub enum Sort {
     Name,
 }
 
+/// A collection, as a game's list of them shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollectionSummary {
+    /// Its id in URLs (`nexusmods.com/games/<domain>/collections/<slug>`).
+    pub slug: String,
+    pub name: String,
+    pub summary: String,
+    pub author: Option<String>,
+    pub endorsements: u64,
+    pub downloads: u64,
+    pub tile: Option<String>,
+    pub adult_content: bool,
+    /// Its latest published revision, and that revision's mod count and size.
+    pub revision: Option<u64>,
+    pub mod_count: u64,
+    pub size: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CollectionPage {
+    pub total: u64,
+    pub collections: Vec<CollectionSummary>,
+}
+
+/// A revision of a collection: the mod files it lists, in its order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Collection {
+    pub slug: String,
+    pub name: String,
+    pub revision: u64,
+    /// The game's Nexus domain.
+    pub domain: String,
+    pub files: Vec<CollectionFile>,
+}
+
+/// One mod file a collection lists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollectionFile {
+    pub mod_id: u64,
+    pub file_id: u64,
+    pub optional: bool,
+    /// The mod's name, and the file's.
+    pub mod_name: String,
+    pub file_name: String,
+    pub version: String,
+    pub size: Option<u64>,
+    pub thumbnail: Option<String>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Search {
     pub text: String,
@@ -262,6 +311,192 @@ impl<'a> Graph<'a> {
         Ok(ModPage {
             total: d.mods.total_count,
             mods: d.mods.nodes,
+        })
+    }
+
+    /// A page of a game's collections. Collections cannot be sorted by name: that sorts by
+    /// endorsements.
+    pub fn collections(&self, domain: &str, s: &Search) -> Result<CollectionPage> {
+        let mut filter = json!({ "gameDomain": [{ "value": domain, "op": "EQUALS" }] });
+        let text = s.text.trim();
+        if !text.is_empty() {
+            filter["name"] = json!([{ "value": text, "op": "WILDCARD" }]);
+        }
+        if !s.include_adult {
+            filter["adultContent"] = json!([{ "value": false }]);
+        }
+        let sort = match s.sort {
+            Sort::Downloads => json!({ "downloads": { "direction": "DESC" } }),
+            Sort::Updated => json!({ "updatedAt": { "direction": "DESC" } }),
+            Sort::Endorsements | Sort::Name => json!({ "endorsements": { "direction": "DESC" } }),
+        };
+        #[derive(Deserialize)]
+        struct Named {
+            name: String,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Tile {
+            thumbnail_url: Option<String>,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Rev {
+            revision_number: u64,
+            #[serde(default)]
+            mod_count: u64,
+            #[serde(default, deserialize_with = "big_int")]
+            total_size: Option<u64>,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Node {
+            slug: String,
+            name: String,
+            #[serde(default)]
+            summary: Option<String>,
+            #[serde(default)]
+            endorsements: u64,
+            #[serde(default)]
+            total_downloads: u64,
+            #[serde(default)]
+            adult_content: bool,
+            user: Option<Named>,
+            tile_image: Option<Tile>,
+            latest_published_revision: Option<Rev>,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Page {
+            total_count: u64,
+            nodes: Vec<Node>,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct D {
+            collections_v2: Page,
+        }
+        let d: D = self.query(
+            "query($f: CollectionsSearchFilter, $s: [CollectionsSearchSort!], $o: Int, $c: Int) { collectionsV2(filter: $f, sort: $s, offset: $o, count: $c) { totalCount nodes { slug name summary endorsements totalDownloads adultContent user { name } tileImage { thumbnailUrl(size: small) } latestPublishedRevision { revisionNumber modCount totalSize } } } }",
+            json!({ "f": filter, "s": [sort], "o": s.offset, "c": s.count.clamp(1, 80) }),
+            "collection search",
+        )?;
+        Ok(CollectionPage {
+            total: d.collections_v2.total_count,
+            collections: d
+                .collections_v2
+                .nodes
+                .into_iter()
+                .map(|n| CollectionSummary {
+                    slug: n.slug,
+                    name: n.name,
+                    summary: n.summary.unwrap_or_default(),
+                    author: n.user.map(|u| u.name),
+                    endorsements: n.endorsements,
+                    downloads: n.total_downloads,
+                    tile: n.tile_image.and_then(|t| t.thumbnail_url),
+                    adult_content: n.adult_content,
+                    revision: n
+                        .latest_published_revision
+                        .as_ref()
+                        .map(|r| r.revision_number),
+                    mod_count: n
+                        .latest_published_revision
+                        .as_ref()
+                        .map_or(0, |r| r.mod_count),
+                    size: n.latest_published_revision.and_then(|r| r.total_size),
+                })
+                .collect(),
+        })
+    }
+
+    /// A revision of a collection (`None`: the latest published one), with its files.
+    pub fn collection(&self, slug: &str, revision: Option<u64>) -> Result<Collection> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Domain {
+            domain_name: String,
+        }
+        #[derive(Deserialize)]
+        struct Coll {
+            name: String,
+            slug: String,
+            game: Domain,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct ModOf {
+            name: String,
+            thumbnail_url: Option<String>,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct File {
+            mod_id: u64,
+            name: String,
+            #[serde(default)]
+            version: Option<String>,
+            #[serde(default, deserialize_with = "big_int")]
+            size_in_bytes: Option<u64>,
+            #[serde(rename = "mod")]
+            of: Option<ModOf>,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Entry {
+            file_id: u64,
+            #[serde(default)]
+            optional: bool,
+            file: Option<File>,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Rev {
+            revision_number: u64,
+            collection: Coll,
+            #[serde(default)]
+            mod_files: Vec<Entry>,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct D {
+            collection_revision: Option<Rev>,
+        }
+        let d: D = self.query(
+            "query($s: String, $r: Int) { collectionRevision(slug: $s, revision: $r, viewAdultContent: true) { revisionNumber collection { name slug game { domainName } } modFiles { fileId optional file { modId name version sizeInBytes mod { name thumbnailUrl } } } } }",
+            json!({ "s": slug, "r": revision }),
+            "collection",
+        )?;
+        let r = d
+            .collection_revision
+            .ok_or_else(|| NexusError::NotFound(format!("collection {slug}")))?;
+        Ok(Collection {
+            slug: r.collection.slug,
+            name: r.collection.name,
+            revision: r.revision_number,
+            domain: r.collection.game.domain_name,
+            // A file Nexus no longer has (deleted by its author) has no details: left out.
+            files: r
+                .mod_files
+                .into_iter()
+                .filter_map(|e| {
+                    let f = e.file?;
+                    let (mod_name, thumbnail) = match f.of {
+                        Some(m) => (m.name, m.thumbnail_url),
+                        None => (f.name.clone(), None),
+                    };
+                    Some(CollectionFile {
+                        mod_id: f.mod_id,
+                        file_id: e.file_id,
+                        optional: e.optional,
+                        mod_name,
+                        file_name: f.name,
+                        version: f.version.unwrap_or_default(),
+                        size: f.size_in_bytes,
+                        thumbnail,
+                    })
+                })
+                .collect(),
         })
     }
 
@@ -439,6 +674,79 @@ pub(crate) mod tests {
       {"fileId": 507, "name": "DIDMM version 3.1", "version": "3.1", "category": "MAIN", "date": 300, "sizeInBytes": "2", "uri": "DIDMM version 3.1-14-3-1-300.zip", "groupId": 9},
       {"fileId": 733, "name": "Audio Fix", "version": "1", "category": "OPTIONAL", "date": 250, "sizeInBytes": "3", "uri": "e5/de/59/e5de594b", "groupId": 11}
     ]}}"#;
+
+    #[test]
+    fn reads_collections_and_a_revisions_files() {
+        let http = FakeHttp::default()
+            .with_post(
+                GRAPHQL_URL,
+                "collectionsV2(",
+                r#"{"data": {"collectionsV2": {"totalCount": 24, "nodes": [
+                  {"slug": "g14kxi", "name": "Witchcore", "summary": "Magic.", "endorsements": 703,
+                   "totalDownloads": 134725, "adultContent": false, "user": {"name": "Jenna"},
+                   "tileImage": {"thumbnailUrl": "https://media.nexusmods.com/t.webp"},
+                   "latestPublishedRevision": {"revisionNumber": 70, "modCount": 86, "totalSize": "367177716"}}]}}}"#,
+            )
+            .with_post(
+                GRAPHQL_URL,
+                "collectionRevision(",
+                r#"{"data": {"collectionRevision": {"revisionNumber": 70,
+                  "collection": {"name": "Witchcore", "slug": "g14kxi", "game": {"domainName": "stardewvalley"}},
+                  "modFiles": [
+                    {"fileId": 99177, "optional": false, "file": {"modId": 22565, "name": "Bathhouse Hotspring", "version": "1.3.1", "sizeInBytes": "4166633",
+                     "mod": {"name": "Bathhouse Hot Spring - Continued", "thumbnailUrl": "https://staticdelivery.nexusmods.com/x.png"}}},
+                    {"fileId": 172381, "optional": true, "file": {"modId": 30063, "name": "Earthy Maps", "version": "1.2.0", "sizeInBytes": null, "mod": null}},
+                    {"fileId": 5, "optional": false, "file": null}
+                  ]}}}"#,
+            );
+        let g = Graph::new(&http, "0.4.0");
+        let page = g
+            .collections(
+                "stardewvalley",
+                &Search {
+                    text: "witch".into(),
+                    sort: Sort::Name,
+                    count: 20,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(page.total, 24);
+        let c = &page.collections[0];
+        assert_eq!(
+            (
+                c.slug.as_str(),
+                c.author.as_deref(),
+                c.revision,
+                c.mod_count,
+                c.size
+            ),
+            ("g14kxi", Some("Jenna"), Some(70), 86, Some(367177716))
+        );
+        let (_, body) = http.posts.lock().unwrap()[0].clone();
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["variables"]["f"]["name"][0]["value"], "witch");
+        assert!(
+            v["variables"]["s"][0]["endorsements"].is_object(),
+            "no name sort: endorsements"
+        );
+
+        let col = g.collection("g14kxi", None).unwrap();
+        assert_eq!((col.revision, col.domain.as_str()), (70, "stardewvalley"));
+        assert_eq!(col.files.len(), 2, "a file Nexus no longer has is left out");
+        assert_eq!(col.files[0].mod_name, "Bathhouse Hot Spring - Continued");
+        assert_eq!(
+            (
+                col.files[1].mod_name.as_str(),
+                col.files[1].optional,
+                col.files[1].size
+            ),
+            ("Earthy Maps", true, None)
+        );
+        let (_, body) = http.posts.lock().unwrap()[1].clone();
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["variables"]["r"], Value::Null, "the latest revision");
+    }
 
     #[test]
     fn searches_with_variables_and_reads_pages() {

@@ -78,7 +78,22 @@ const S = {
   ts: { game: null, query: { text: "", category: "", sort: "rating", installedOnly: false, offset: 0, limit: 40 }, page: null, busy: null },
   // Nexus Mods tab: the game's Nexus game, the query and page shown, installed mods' updates,
   // and an install in progress ({ message }).
-  nexus: { game: null, picker: null, query: { text: "", sort: "endorsements", offset: 0, count: 40, installed: false }, page: null, updates: null, busy: null },
+  nexus: {
+    game: null,
+    picker: null,
+    query: { text: "", sort: "endorsements", offset: 0, count: 40, installed: false },
+    page: null,
+    updates: null,
+    busy: null,
+    // "mods" or "collections"; the collections search, its results, and the collection
+    // open as a checklist ({ slug, revision, data }), with the walk through its missing files.
+    view: "mods",
+    cquery: { text: "", sort: "endorsements", offset: 0, count: 20 },
+    cpage: null,
+    open: null,
+    optional: false,
+    walk: null,
+  },
 };
 
 /// Shows a message for long enough to read it: longer for longer text and for errors, longer
@@ -501,6 +516,8 @@ function tabs() {
             if (id === "actions") loadActions();
             if (id === "thunderstore" && (!S.ts.page || S.ts.game !== S.gameId || S.ts.stale)) loadTs(true);
             if (id === "nexus" && (!S.nexus.page || S.nexus.game?.game !== S.gameId || S.nexus.stale)) loadNexus(true);
+            // What is installed may have changed in another tab.
+            else if (id === "nexus" && S.nexus.view === "collections") refreshCollections();
           },
         },
         label,
@@ -1443,6 +1460,7 @@ async function handleNxmLink(url) {
 }
 
 async function handleInstallLink(url) {
+  if (/^nxm:\/\/[^/]+\/collections\//i.test(url)) return handleCollectionLink(url);
   if (/^nxm:\/\//i.test(url)) return handleNxmLink(url);
   const l = await attempt(() => api.resolveLink(url));
   if (!l) return;
@@ -1476,6 +1494,155 @@ async function handleInstallLink(url) {
 
 // ----- Nexus Mods tab -----
 
+/// A Nexus Mods collection link (the website's install button, or a link pasted into the
+/// collection search): opens the collection as a checklist, for the game picked.
+async function handleCollectionLink(url) {
+  const l = await attempt(() => api.nexusCollectionLink(url));
+  if (l === undefined) return;
+  if (!l) return toast("Not a Nexus Mods collection link", "error");
+  const ok1 = (text) => modal({ title: "Open this collection?", body: h("p", {}, text), actions: [{ label: "OK", value: true, class: "primary", focus: true }] });
+  if (!l.games.length) return ok1(`None of your games can take files from nexusmods.com/${l.domain}: add the game first.`);
+  const matching = l.games.filter((g) => g.matches);
+  let id = matching.length === 1 ? matching[0].id : null;
+  if (!id) {
+    const shown = matching.length ? matching : l.games;
+    const pick = h("select", { "aria-label": "Game" }, shown.map((g) => h("option", { value: g.id, selected: g.id === S.gameId }, g.name)));
+    const go = await modal({
+      title: "Open this collection?",
+      body: [
+        h("p", {}, "UMM shows the collection’s mods as a checklist, with what is installed for the game you pick."),
+        h("label", { class: "field" }, h("span", {}, "Game"), pick),
+        !matching.length && h("p", { class: "muted small" }, `None of your games is set to nexusmods.com/${l.domain} yet. Set the game you pick to it in its Nexus Mods tab first.`),
+      ],
+      actions: [
+        { label: "Cancel", value: null, class: "ghost" },
+        { label: "Open", value: "go", class: "primary", focus: true },
+      ],
+    });
+    if (go !== "go") return;
+    id = pick.value;
+  }
+  if (S.gameId !== id) {
+    S.gameId = id;
+    S.profileName = "Default";
+    await refreshAll();
+  }
+  S.tab = "nexus";
+  S.nexus.view = "collections";
+  if (S.nexus.game?.game !== S.gameId) loadNexus(true);
+  openCollection(l.slug, l.revision);
+}
+
+/// Loads a page of the game's collections (from the top unless `append`). A collection link
+/// typed into the search opens that collection instead.
+async function loadCollections(append = false) {
+  const game = S.gameId;
+  const N = S.nexus;
+  const q = N.cquery;
+  if (/^(https?|nxm):\/\//i.test(q.text.trim())) {
+    const link = q.text.trim();
+    q.text = "";
+    return handleCollectionLink(link);
+  }
+  if (!append) {
+    q.offset = 0;
+    N.cpage = null;
+    if (S.tab === "nexus") renderMain();
+  }
+  const p = await attempt(() => api.nexusCollections(game, { ...q, installed: false }));
+  if (S.gameId !== game) return;
+  N.cpage = storePage(N.cpage, p, append);
+  if (S.tab === "nexus") renderMain();
+}
+
+/// Shows the collections view's current state: checks the open collection again, or loads
+/// the list when there is none yet.
+function refreshCollections() {
+  const N = S.nexus;
+  if (N.open?.game === S.gameId) reloadCollection();
+  else if (!N.cpage) loadCollections();
+}
+
+/// Opens a collection as a checklist: its latest revision without `revision`.
+async function openCollection(slug, revision = null) {
+  const game = S.gameId;
+  const N = S.nexus;
+  N.view = "collections";
+  N.open = { slug, revision, data: null, game };
+  renderMain();
+  await reloadCollection();
+}
+
+/// Checks the open collection against what is installed again, showing the old checklist
+/// until the new one arrives.
+async function reloadCollection() {
+  const N = S.nexus;
+  const o = N.open;
+  if (!o) return;
+  const data = await attempt(() => api.nexusCollection(o.game, o.slug, o.revision));
+  if (N.open !== o) return;
+  if (data) o.data = data;
+  else if (!o.data) o.error = true;
+  if (S.tab === "nexus") renderMain();
+}
+
+/// The files of the open collection UMM can get: the missing ones, and the optional ones
+/// when they are included.
+function collectionTodo(c) {
+  return c.files.filter((f) => f.state === "missing" && (S.nexus.optional || !f.optional));
+}
+
+/// Gets the collection's missing files one after another, each through the website. Files
+/// with an installer, or whose place in the game folder UMM could not tell, wait in the mod
+/// list instead of asking now.
+async function getCollectionFiles() {
+  const N = S.nexus;
+  const o = N.open;
+  const c = o?.data;
+  if (!c || N.walk) return;
+  const todo = collectionTodo(c);
+  const walk = { at: 0, total: todo.length, got: 0, waiting: 0, place: 0, skipped: 0 };
+  N.walk = walk;
+  let stopped = false;
+  for (const f of todo) {
+    if (N.walk !== walk || S.gameId !== o.game) break;
+    walk.at++;
+    walk.name = f.modName;
+    renderMain();
+    const label = f.fileName && f.fileName !== f.modName ? `${f.modName} (${f.fileName})` : f.modName;
+    const r = await nexusGet(c.domain, f.modId, f.fileId, label, { quiet: true });
+    if (r) {
+      walk.got++;
+      if (r.installerWaiting) walk.waiting++;
+      else if (r.placementGuessed) walk.place++;
+      continue;
+    }
+    if (walk.at >= walk.total) break;
+    const v = await modal({
+      title: `${f.modName} was not installed`,
+      body: h("p", {}, `${plural(walk.total - walk.at, "file")} of the collection ${walk.total - walk.at === 1 ? "is" : "are"} still to get.`),
+      actions: [
+        { label: "Stop", value: null, class: "ghost" },
+        { label: "Skip it", value: "skip", class: "primary", focus: true },
+      ],
+    });
+    if (v !== "skip") {
+      stopped = true;
+      break;
+    }
+    walk.skipped++;
+  }
+  if (N.walk === walk) N.walk = null;
+  const notes = [
+    walk.waiting && `${plural(walk.waiting, "mod")} need${walk.waiting === 1 ? "s" : ""} its install options chosen in the Mods tab`,
+    walk.place && `${plural(walk.place, "mod")} need${walk.place === 1 ? "s" : ""} its place in the game folder checked`,
+    walk.skipped && `${walk.skipped} skipped`,
+  ].filter(Boolean);
+  toast(`${stopped ? "Stopped: got" : "Got"} ${walk.got} of ${plural(walk.total, "file")} from ${c.name}${notes.length ? `; ${notes.join("; ")}` : ""}`, walk.got ? "ok" : "info");
+  await refreshAll();
+  await reloadCollection();
+}
+
 async function loadActions() {
   loadLoaderChoice();
 }
@@ -1490,6 +1657,13 @@ async function loadNexus(reset, append = false) {
     N.page = null;
     N.updates = null;
     N.picker = null;
+    // Another game's collections are not this one's.
+    if (N.cgame !== game) {
+      N.cgame = game;
+      N.cpage = null;
+      N.open = null;
+      N.cquery.offset = 0;
+    }
     renderMain();
     const g = await attempt(() => api.nexusGame(game));
     if (S.gameId !== game) return;
@@ -1499,6 +1673,7 @@ async function loadNexus(reset, append = false) {
       if (!g) return;
       return nexusFindGames(S.details.game.name);
     }
+    if (N.view === "collections") refreshCollections();
     attempt(() => api.nexusUpdates(game)).then((u) => {
       if (S.gameId === game && u) {
         N.updates = u;
@@ -1585,6 +1760,47 @@ function nexusTab(d) {
     loadNexus(false);
   };
 
+  const header = [
+    h(
+      "div",
+      { class: "seg", role: "group", "aria-label": "Show" },
+      [
+        ["mods", "Mods"],
+        ["collections", "Collections"],
+      ].map(([v, l]) =>
+        h(
+          "button",
+          {
+            class: N.view === v ? "on" : "",
+            "aria-pressed": String(N.view === v),
+            onclick: () => {
+              if (N.view === v) return;
+              N.view = v;
+              if (v === "collections" && !N.cpage && !N.open) loadCollections();
+              else renderMain();
+            },
+          },
+          l,
+        ),
+      ),
+    ),
+    h("span", { class: "muted small" }, `Nexus Mods game: ${N.game.name || N.game.domain}`),
+    h("button", { class: "link", onclick: () => attempt(() => api.openNexusPage(N.game.url)) }, "Open on nexusmods.com", icon("external")),
+    h(
+      "button",
+      {
+        class: "link",
+        onclick: () => {
+          const name = N.game.name || g.name;
+          N.game = { domain: null, game: g.id };
+          nexusFindGames(name);
+        },
+      },
+      "Change…",
+    ),
+  ];
+  if (N.view === "collections") return collectionsView(g, header, locked, playing);
+
   const banners = storeBanners(N, g, playing);
   if (pending.length)
     banners.push(
@@ -1615,22 +1831,7 @@ function nexusTab(d) {
   };
 
   return storeTab({
-    header: [
-      h("span", { class: "muted small" }, `Nexus Mods game: ${N.game.name || N.game.domain}`),
-      h("button", { class: "link", onclick: () => attempt(() => api.openNexusPage(N.game.url)) }, "Open on nexusmods.com", icon("external")),
-      h(
-        "button",
-        {
-          class: "link",
-          onclick: () => {
-            const name = N.game.name || g.name;
-            N.game = { domain: null, game: g.id };
-            nexusFindGames(name);
-          },
-        },
-        "Change…",
-      ),
-    ],
+    header,
     toolbar: [
       storeSearch("Search mods by name", q, () => loadNexus(false)),
       storeSelect(
@@ -1654,6 +1855,161 @@ function nexusTab(d) {
       q.offset = p.items.length;
       loadNexus(false, true);
     }),
+  });
+}
+
+/// The Nexus tab's collections: a search over the game's collections, or the one open as a
+/// checklist.
+function collectionsView(g, header, locked, playing) {
+  const N = S.nexus;
+  if (N.open && N.open.game === g.id) return collectionChecklist(g, header, locked, playing);
+  const q = N.cquery;
+  const p = N.cpage;
+  const row = (c) =>
+    storeRow({
+      image: c.tile,
+      imageClass: "nexus-thumb",
+      name: c.name,
+      site: "nexusmods.com",
+      onOpen: () => attempt(() => api.openNexusPage(c.url)),
+      by: c.author,
+      version: c.revision && `revision ${c.revision}`,
+      text: c.summary,
+      meta: [plural(c.modCount, "mod"), c.size && fmtBytes(c.size), `${fmtCount(c.downloads)} downloads`, `${fmtCount(c.endorsements)} endorsements`],
+      action: h("button", { class: "small", onclick: () => openCollection(c.slug) }, "List mods…"),
+    });
+  return storeTab({
+    header,
+    toolbar: [
+      storeSearch("Search collections, or paste a collection link", q, () => loadCollections()),
+      storeSelect(
+        "Sort",
+        [
+          ["endorsements", "Most endorsed"],
+          ["downloads", "Most downloaded"],
+          ["updated", "Recently updated"],
+        ],
+        q.sort,
+        (v) => {
+          q.sort = v;
+          loadCollections();
+        },
+      ),
+      h("button", { class: "ghost small", onclick: () => loadCollections(), title: "Load the list again" }, "Refresh"),
+    ],
+    banners: storeBanners(N, g, playing),
+    count: p && !p.error && `${plural(p.total, "collection")} · UMM gets a collection’s mods one by one, each from its page on nexusmods.com`,
+    list: storeList(p, { loading: "Loading collections…", noun: "collection", retry: () => loadCollections(), row }),
+    more: storeMore(p, () => {
+      q.offset = p.items.length;
+      loadCollections(true);
+    }),
+  });
+}
+
+/// A collection as a checklist of its files: installed, installed at another version, or
+/// missing, with a button that gets the missing ones in a row.
+function collectionChecklist(g, header, locked, playing) {
+  const N = S.nexus;
+  const o = N.open;
+  const back = h(
+    "button",
+    {
+      class: "ghost small",
+      disabled: !!N.walk,
+      onclick: () => {
+        N.open = null;
+        if (!N.cpage) loadCollections();
+        else renderMain();
+      },
+    },
+    "← Collections",
+  );
+  const c = o.data;
+  if (!c)
+    return storeTab({
+      header,
+      toolbar: [back],
+      banners: [],
+      list: o.error
+        ? h("p", { class: "muted" }, "The collection could not be loaded.", " ", h("button", { class: "link", onclick: () => ((o.error = false), renderMain(), reloadCollection()) }, "Try again"))
+        : h("div", { class: "loading" }, h("span", { class: "spinner" }), "Loading the collection…"),
+    });
+  const required = c.files.filter((f) => !f.optional);
+  const optional = c.files.filter((f) => f.optional);
+  const have = (fs) => fs.filter((f) => f.state === "installed").length;
+  const todo = collectionTodo(c);
+  const banners = storeBanners(N, g, playing);
+  if (N.walk)
+    banners.unshift(
+      h(
+        "div",
+        { class: "ts-banner live" },
+        h("span", {}, h("span", { class: "spinner" }), ` Getting ${N.walk.at} of ${N.walk.total}: ${N.walk.name || ""}`),
+        h("button", { class: "small ghost", onclick: () => (N.walk = null), title: "Stop after the file being got now" }, "Stop after this one"),
+      ),
+    );
+  const stateOf = (f) => {
+    if (f.state === "installed") return h("span", { class: "chip ok" }, "Installed");
+    const get = (text, title) =>
+      h("button", { class: f.state === "missing" ? "primary small" : "small", disabled: locked || !!N.walk, title, onclick: () => nexusGet(c.domain, f.modId, f.fileId, f.modName) }, text);
+    if (f.state === "other")
+      return h("div", { class: "row" }, h("span", { class: "chip" }, `Installed ${f.installedVersion || "another file"}`), get(`Get ${f.version || "this file"}`, "Get the file this collection lists"));
+    return get("Get…", "Download it on its page on nexusmods.com");
+  };
+  const row = (f) =>
+    storeRow({
+      image: f.thumbnail,
+      imageClass: "nexus-thumb",
+      name: f.modName,
+      site: "nexusmods.com",
+      onOpen: () => attempt(() => api.openNexusPage(f.url)),
+      version: f.version,
+      chips: f.optional ? h("span", { class: "chip" }, "Optional") : null,
+      text: f.fileName !== f.modName ? f.fileName : "",
+      meta: [f.size && fmtBytes(f.size)],
+      action: stateOf(f),
+      dim: f.state === "installed",
+    });
+  const list = (files) => h("div", { class: "ts-list" }, files.map(row));
+  return storeTab({
+    header,
+    toolbar: [
+      back,
+      h("strong", { class: "collection-name" }, c.name),
+      h("span", { class: "muted small" }, `revision ${c.revision}`),
+      h("button", { class: "link", onclick: () => attempt(() => api.openNexusPage(c.url)) }, "Open on nexusmods.com", icon("external")),
+      h("span", { class: "spacer" }),
+      optional.length > 0 &&
+        storeCheck("Include optional mods", N.optional, (v) => {
+          N.optional = v;
+          renderMain();
+        }),
+      h("button", { class: "ghost small", disabled: !!N.walk, onclick: () => reloadCollection(), title: "Check what is installed again" }, "Refresh"),
+      h(
+        "button",
+        { class: "primary small", disabled: locked || !!N.walk || !todo.length, onclick: getCollectionFiles },
+        todo.length ? `Get ${plural(todo.length, "missing file")}` : "Nothing missing",
+      ),
+    ],
+    banners,
+    count: [
+      `${have(required)} of ${plural(required.length, "mod")} installed`,
+      optional.length && `${have(optional)} of ${optional.length} optional`,
+      `each file downloads on its page on nexusmods.com, into the profile “${S.profileName}”`,
+    ]
+      .filter(Boolean)
+      .join(" · "),
+    list: [
+      list(required),
+      optional.length > 0 && h("h3", { class: "collection-optional" }, "Optional"),
+      optional.length > 0 && list(optional),
+      h(
+        "p",
+        { class: "muted small" },
+        "The collection’s installer choices, load order and extra instructions are on its page on nexusmods.com.",
+      ),
+    ],
   });
 }
 
@@ -1852,12 +2208,18 @@ async function nexusToast(r) {
 async function nexusRun(title, call) {
   const r = await storeRun(S.nexus, title, call);
   await refreshAll();
-  if (S.tab === "nexus") loadNexus(true);
+  if (S.tab === "nexus") {
+    if (S.nexus.view === "collections" && S.nexus.open) reloadCollection();
+    else if (S.nexus.view === "collections") renderMain();
+    else loadNexus(true);
+  }
   return r;
 }
 
 /// Gets one file of a mod through the website: in UMM's Nexus Mods window, or the browser.
-async function nexusGet(domain, modId, fileId, label) {
+/// Resolves to what was installed, or null. `quiet`: no toast, and what the mod still needs
+/// (its install options, where its files go) waits in the mod list instead of asking now.
+async function nexusGet(domain, modId, fileId, label, { quiet = false } = {}) {
   const game = S.gameId;
   const dir = await attempt(() => api.nexusDownloadStart(game, domain, modId, fileId));
   if (!dir) return false;
@@ -1877,8 +2239,8 @@ async function nexusGet(domain, modId, fileId, label) {
     r = ok ? await nexusRun("Installing", () => api.nexusDownloadInstall(S.profileName, path, true)) : null;
     if (!ok) attempt(api.nexusDownloadCancel);
   }
-  if (r?.installed) await nexusToast(r.installed);
-  return !!r?.installed;
+  if (r?.installed && !quiet) await nexusToast(r.installed);
+  return r?.installed || null;
 }
 
 async function loadLoaderChoice() {

@@ -19,7 +19,7 @@ use std::io::Read;
 use std::path::Path;
 use umm_deploy::GameLock;
 use umm_gamedef::GameDef;
-use umm_nexus::graph::{self, Graph, ModFile, ModPage, ModSummary};
+use umm_nexus::graph::{self, Collection, CollectionPage, Graph, ModFile, ModPage, ModSummary};
 use umm_nexus::{NexusError, NxmLink};
 use umm_store::fsutil::IoCtx;
 use umm_store::{ImportOptions, ModMeta, NexusMeta};
@@ -114,6 +114,38 @@ pub enum NexusUpdateState {
     Outdated,
     /// No longer listed on Nexus.
     Gone,
+}
+
+/// A collection revision, checked against what is installed for the game.
+#[derive(Debug, Clone)]
+pub struct NexusCollectionCheck {
+    pub collection: Collection,
+    /// One per file of the collection, in its order.
+    pub states: Vec<CollectionFileState>,
+}
+
+/// What is installed of a file a collection lists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CollectionFileState {
+    /// That file is installed, as this UMM mod.
+    Installed {
+        id: String,
+    },
+    /// Another file of the same mod is installed (another version, mostly), as this UMM mod.
+    OtherFile {
+        id: String,
+        version: Option<String>,
+    },
+    Missing,
+}
+
+impl NexusCollectionCheck {
+    pub fn missing(&self) -> usize {
+        self.states
+            .iter()
+            .filter(|s| **s == CollectionFileState::Missing)
+            .count()
+    }
 }
 
 /// The file a downloaded archive was meant to be.
@@ -328,6 +360,83 @@ impl Session {
             .take(q.count.max(1) as usize)
             .collect();
         Ok(ModPage { total, mods })
+    }
+
+    /// A page of the game's collections on Nexus.
+    pub fn nexus_collections(
+        &self,
+        id: &str,
+        q: &NexusSearch,
+    ) -> Result<(NexusGame, CollectionPage)> {
+        let game = self
+            .nexus_game(id)?
+            .ok_or_else(|| CoreError::Invalid("pick this game's Nexus Mods game first".into()))?;
+        let page = self.graph().collections(&game.domain, q)?;
+        Ok((game, page))
+    }
+
+    /// A collection revision (`None`: its latest), with what is installed of each file.
+    /// A collection for another Nexus game is refused.
+    pub fn nexus_collection(
+        &self,
+        id: &str,
+        slug: &str,
+        revision: Option<u64>,
+    ) -> Result<NexusCollectionCheck> {
+        let game = self
+            .nexus_game(id)?
+            .ok_or_else(|| CoreError::Invalid("pick this game's Nexus Mods game first".into()))?;
+        let collection = self.graph().collection(slug, revision)?;
+        if collection.domain != game.domain {
+            return Err(CoreError::Invalid(format!(
+                "this collection is for nexusmods.com/{}, and this game is nexusmods.com/{}",
+                collection.domain, game.domain
+            )));
+        }
+        let installed = self.nexus_mods(id)?;
+        let ours: Vec<(&ModMeta, &NexusMeta)> = installed
+            .iter()
+            .filter_map(|m| Some((m, m.nexus.as_ref()?)))
+            .filter(|(_, n)| n.domain == game.domain)
+            .collect();
+        // An installed file stands for at most one file of the collection: the one it is, else
+        // a file of the same mod of the same name, else a required one (an optional file is
+        // rarely another version of the mod's main file).
+        let listed: std::collections::HashSet<u64> =
+            collection.files.iter().map(|f| f.file_id).collect();
+        let mut spare: Vec<(&ModMeta, &NexusMeta)> = ours
+            .iter()
+            .copied()
+            .filter(|(_, n)| !listed.contains(&n.file_id))
+            .collect();
+        let states = collection
+            .files
+            .iter()
+            .map(|f| {
+                if let Some((m, _)) = ours.iter().find(|(_, n)| n.file_id == f.file_id) {
+                    return CollectionFileState::Installed { id: m.id.clone() };
+                }
+                let at = spare
+                    .iter()
+                    .position(|(_, n)| n.mod_id == f.mod_id && n.file_name == f.file_name)
+                    .or_else(|| {
+                        (!f.optional)
+                            .then(|| spare.iter().position(|(_, n)| n.mod_id == f.mod_id))
+                            .flatten()
+                    });
+                match at {
+                    Some(i) => {
+                        let (m, n) = spare.remove(i);
+                        CollectionFileState::OtherFile {
+                            id: m.id.clone(),
+                            version: n.version.clone().or_else(|| m.version.clone()),
+                        }
+                    }
+                    None => CollectionFileState::Missing,
+                }
+            })
+            .collect();
+        Ok(NexusCollectionCheck { collection, states })
     }
 
     /// A mod's files (current ones first, newest first, then old ones) and the mods it needs.

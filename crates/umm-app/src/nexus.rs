@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Runtime, State};
 use umm_core::{
-    CoreError, DownloadWatch, ExpectedFile, NexusInstallReport, NexusModFile, NexusSearch,
-    NexusSort, NexusUpdateState, Session,
+    CollectionFileState, CoreError, DownloadWatch, ExpectedFile, NexusInstallReport, NexusModFile,
+    NexusSearch, NexusSort, NexusUpdateState, Session,
 };
 
 /// A download the user is making on the website, which UMM waits for: in its own window
@@ -83,6 +83,70 @@ pub struct NexusItemDto {
 pub struct NexusPageDto {
     pub total: u64,
     pub items: Vec<NexusItemDto>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NexusCollectionItemDto {
+    pub slug: String,
+    pub name: String,
+    pub summary: String,
+    pub author: Option<String>,
+    pub endorsements: u64,
+    pub downloads: u64,
+    pub tile: Option<String>,
+    pub revision: Option<u64>,
+    pub mod_count: u64,
+    pub size: Option<u64>,
+    pub url: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NexusCollectionPageDto {
+    pub total: u64,
+    pub items: Vec<NexusCollectionItemDto>,
+}
+
+/// A collection revision, as a checklist of its files.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NexusCollectionDto {
+    pub slug: String,
+    pub name: String,
+    pub revision: u64,
+    pub domain: String,
+    pub url: String,
+    pub files: Vec<NexusCollectionFileDto>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NexusCollectionFileDto {
+    pub mod_id: u64,
+    pub file_id: u64,
+    pub optional: bool,
+    pub mod_name: String,
+    pub file_name: String,
+    pub version: String,
+    pub size: Option<u64>,
+    pub thumbnail: Option<String>,
+    pub url: String,
+    /// `installed`, `other` (another file of the mod is) or `missing`.
+    pub state: &'static str,
+    /// The UMM mod installed for it, and that mod's version.
+    pub installed_id: Option<String>,
+    pub installed_version: Option<String>,
+}
+
+/// What a collection link names, and the games it can go into.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionLinkDto {
+    pub domain: String,
+    pub slug: String,
+    pub revision: Option<u64>,
+    pub games: Vec<NexusLinkGameDto>,
 }
 
 #[derive(Deserialize)]
@@ -276,12 +340,7 @@ pub async fn nexus_search(
     query: NexusQueryDto,
 ) -> Res<NexusPageDto> {
     blocking(&state, move |s| {
-        let sort = match query.sort.as_str() {
-            "downloads" => NexusSort::Downloads,
-            "updated" => NexusSort::Updated,
-            "name" => NexusSort::Name,
-            _ => NexusSort::Endorsements,
-        };
+        let sort = nexus_sort(&query.sort);
         let page = s.nexus_search(
             &game,
             &NexusSearch {
@@ -322,6 +381,132 @@ pub async fn nexus_search(
                 })
                 .collect(),
         })
+    })
+    .await
+}
+
+fn nexus_sort(sort: &str) -> NexusSort {
+    match sort {
+        "downloads" => NexusSort::Downloads,
+        "updated" => NexusSort::Updated,
+        "name" => NexusSort::Name,
+        _ => NexusSort::Endorsements,
+    }
+}
+
+/// A page of the game's collections on Nexus.
+#[tauri::command]
+pub async fn nexus_collections(
+    state: State<'_, AppState>,
+    game: String,
+    query: NexusQueryDto,
+) -> Res<NexusCollectionPageDto> {
+    blocking(&state, move |s| {
+        let (g, page) = s.nexus_collections(
+            &game,
+            &NexusSearch {
+                text: query.text,
+                sort: nexus_sort(&query.sort),
+                offset: query.offset,
+                count: query.count,
+                include_adult: true,
+            },
+        )?;
+        Ok(NexusCollectionPageDto {
+            total: page.total,
+            items: page
+                .collections
+                .into_iter()
+                .map(|c| NexusCollectionItemDto {
+                    url: umm_nexus::collection_url(&g.domain, &c.slug),
+                    slug: c.slug,
+                    name: c.name,
+                    summary: c.summary,
+                    author: c.author,
+                    endorsements: c.endorsements,
+                    downloads: c.downloads,
+                    tile: c.tile,
+                    revision: c.revision,
+                    mod_count: c.mod_count,
+                    size: c.size,
+                })
+                .collect(),
+        })
+    })
+    .await
+}
+
+/// A collection revision (its latest, without one) as a checklist of what is installed.
+#[tauri::command]
+pub async fn nexus_collection(
+    state: State<'_, AppState>,
+    game: String,
+    slug: String,
+    revision: Option<u64>,
+) -> Res<NexusCollectionDto> {
+    blocking(&state, move |s| {
+        let check = s.nexus_collection(&game, &slug, revision)?;
+        let c = check.collection;
+        let domain = c.domain.clone();
+        Ok(NexusCollectionDto {
+            url: umm_nexus::collection_url(&domain, &c.slug),
+            files: c
+                .files
+                .into_iter()
+                .zip(check.states)
+                .map(|(f, st)| {
+                    let (state, installed_id, installed_version) = match st {
+                        CollectionFileState::Installed { id } => ("installed", Some(id), None),
+                        CollectionFileState::OtherFile { id, version } => {
+                            ("other", Some(id), version)
+                        }
+                        CollectionFileState::Missing => ("missing", None, None),
+                    };
+                    NexusCollectionFileDto {
+                        url: umm_nexus::mod_url(&domain, f.mod_id),
+                        mod_id: f.mod_id,
+                        file_id: f.file_id,
+                        optional: f.optional,
+                        mod_name: f.mod_name,
+                        file_name: f.file_name,
+                        version: f.version,
+                        size: f.size,
+                        thumbnail: f.thumbnail,
+                        state,
+                        installed_id,
+                        installed_version,
+                    }
+                })
+                .collect(),
+            slug: c.slug,
+            name: c.name,
+            revision: c.revision,
+            domain,
+        })
+    })
+    .await
+}
+
+/// What a collection link names, or `None` when it is not one.
+#[tauri::command]
+pub async fn nexus_collection_link(
+    state: State<'_, AppState>,
+    url: String,
+) -> Res<Option<CollectionLinkDto>> {
+    let Some((domain, slug, revision)) = umm_nexus::parse_collection_url(&url) else {
+        return Ok(None);
+    };
+    blocking(&state, move |s| {
+        Ok(Some(CollectionLinkDto {
+            games: s
+                .nexus_link_games(&domain)?
+                .into_iter()
+                .map(|(id, name, matches)| NexusLinkGameDto { id, name, matches })
+                .collect(),
+            domain,
+            slug,
+            revision,
+        }))
     })
     .await
 }
@@ -429,6 +614,8 @@ fn open_download_window<R: Runtime>(
         .title("Download from Nexus Mods – UMM")
         .inner_size(1180.0, 860.0)
         .min_inner_size(640.0, 480.0)
+        // Shown once it is back where the user last left it.
+        .visible(false)
         // "Mod Manager Download" makes Slow download produce an `nxm://` link, which only
         // an app signed in to Nexus could use: go to the file's plain download page instead,
         // where Slow download gives the file itself.
@@ -489,7 +676,23 @@ fn open_download_window<R: Runtime>(
         })
         .build()
         .map_err(|e| format!("opening the Nexus Mods window: {e}"))?;
+    if let Some(g) = LAST_PLACE.lock().ok().and_then(|g| *g) {
+        let _ = window.set_size(g.size);
+        let _ = window.set_position(g.position);
+        if g.maximized {
+            let _ = window.maximize();
+        }
+    }
+    let _ = window.show();
+    let _ = window.set_focus();
+    let watched = window.clone();
     window.on_window_event(move |e| {
+        if matches!(
+            e,
+            tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_)
+        ) {
+            remember_place(&watched);
+        }
         if let tauri::WindowEvent::Destroyed = e {
             if let Ok(mut slot) = on_close.lock() {
                 if let Some(p) = slot.as_mut() {
@@ -499,6 +702,42 @@ fn open_download_window<R: Runtime>(
         }
     });
     Ok(())
+}
+
+/// Where the Nexus Mods window last was, so that it opens there again for the next download
+/// (until UMM closes).
+#[derive(Clone, Copy)]
+struct Place {
+    position: tauri::PhysicalPosition<i32>,
+    size: tauri::PhysicalSize<u32>,
+    maximized: bool,
+}
+
+static LAST_PLACE: std::sync::Mutex<Option<Place>> = std::sync::Mutex::new(None);
+
+/// Notes where the window is. A minimized window's place is not one to go back to, and a
+/// maximized one keeps the place it had before, for when it is restored.
+fn remember_place<R: Runtime>(w: &tauri::WebviewWindow<R>) {
+    if w.is_minimized().unwrap_or(true) || !w.is_visible().unwrap_or(false) {
+        return;
+    }
+    let Ok(mut last) = LAST_PLACE.lock() else {
+        return;
+    };
+    let maximized = w.is_maximized().unwrap_or(false);
+    if maximized {
+        if let Some(p) = last.as_mut() {
+            p.maximized = true;
+            return;
+        }
+    }
+    if let (Ok(position), Ok(size)) = (w.outer_position(), w.inner_size()) {
+        *last = Some(Place {
+            position,
+            size,
+            maximized,
+        });
+    }
 }
 
 fn close_download_window<R: Runtime>(app: &AppHandle<R>) {

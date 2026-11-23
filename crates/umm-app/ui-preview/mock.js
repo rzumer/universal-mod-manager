@@ -71,6 +71,18 @@ const nexusMods = [
   { modId: 45, name: "Lantern Oil Never Runs Out", summary: "For those who would rather not count oil.", author: "Dee", version: "1.0", endorsements: 52, downloads: 3_301, updatedAt: "2023-01-01T00:00:00Z", category: "Cheats" },
 ];
 let nexusPending = null;
+const nexusCollections = [
+  { slug: "lnt3rn", name: "Lantern Road", summary: "Brighter roads, quieter nights: the essentials for a first evening walk.", author: "Ann", endorsements: 703, downloads: 13_472, revision: 7, modCount: 5, size: 52_000_000, tile: null },
+  { slug: "qu13t5", name: "Quiet Country", summary: "Calmer sounds everywhere.", author: "Bob", endorsements: 120, downloads: 2_210, revision: 2, modCount: 2, size: 300_000, tile: null },
+];
+// The files of "Lantern Road", in its order.
+const collectionFiles = [
+  { modId: 77, fileId: 4100, optional: false, modName: "Lantern Light", fileName: "Lantern Light", version: "2.0.1", size: 1_800_000 },
+  { modId: 88, fileId: 8800, optional: false, modName: "Better Rocks", fileName: "Better Rocks", version: "2.0", size: 48_000_000 },
+  { modId: 12, fileId: 1200, optional: false, modName: "Quieter Footsteps", fileName: "Quieter Footsteps", version: "1.2", size: 150_000 },
+  { modId: 31, fileId: 3100, optional: false, modName: "Road Signs Reworked", fileName: "Road Signs Reworked", version: "0.8", size: 150_000 },
+  { modId: 77, fileId: 4101, optional: true, modName: "Lantern Light", fileName: "Warm Colours", version: "2.0.1", size: 220_000 },
+];
 let pendingTaken = false;
 const tsModId = (full) => full.toLowerCase().replace(/[^a-z0-9]+/g, "-");
 const tsInstalledVersion = (game, full) => {
@@ -605,6 +617,36 @@ const handlers = {
         installed: mods[game].filter((x) => x.nexusMod === m.modId).map((x) => x.version),
       })),
     };
+  },
+  nexus_collections: ({ game, query }) => {
+    const domain = handlers.nexus_game({ game }).domain;
+    let items = nexusCollections.filter((c) => c.name.toLowerCase().includes(query.text.toLowerCase()));
+    const by = { downloads: (c) => -c.downloads, updated: (c) => -c.revision, endorsements: (c) => -c.endorsements }[query.sort];
+    items = [...items].sort((a, b) => by(a) - by(b));
+    return { total: items.length, items: items.slice(query.offset, query.offset + query.count).map((c) => ({ ...c, url: `https://www.nexusmods.com/games/${domain}/collections/${c.slug}` })) };
+  },
+  nexus_collection: ({ game, slug, revision }) => {
+    const c = nexusCollections.find((x) => x.slug === slug);
+    if (!c) throw `Nexus Mods has no collection ${slug}`;
+    const domain = handlers.nexus_game({ game }).domain;
+    const files = (slug === "lnt3rn" ? collectionFiles : collectionFiles.slice(2, 4)).map((f) => {
+      const same = mods[game].find((x) => x.nexusFile === f.fileId);
+      const other = !same && !f.optional && mods[game].find((x) => x.nexusMod === f.modId && !collectionFiles.some((c) => c.fileId === x.nexusFile));
+      return {
+        ...f,
+        thumbnail: null,
+        url: `https://www.nexusmods.com/${domain}/mods/${f.modId}`,
+        state: same ? "installed" : other ? "other" : "missing",
+        installedId: (same || other)?.id || null,
+        installedVersion: other ? other.version : null,
+      };
+    });
+    return { slug, name: c.name, revision: revision || c.revision, domain, url: `https://www.nexusmods.com/games/${domain}/collections/${slug}`, files };
+  },
+  nexus_collection_link: ({ url }) => {
+    const m = url.match(/^(?:nxm:\/\/|https:\/\/(?:www\.|next\.)?nexusmods\.com\/(?:games\/)?)([a-z0-9_-]+)\/collections\/([a-z0-9]+)(?:\/revisions\/(\d+))?/i);
+    if (!m) return null;
+    return { domain: m[1].toLowerCase(), slug: m[2], revision: m[3] ? Number(m[3]) : null, games: Object.values(games).map((g) => ({ id: g.id, name: g.name, matches: g.id === "example-unity-game" })) };
   },
   nexus_files: ({ game, modId }) => {
     const m = nexusMods.find((x) => x.modId === modId);

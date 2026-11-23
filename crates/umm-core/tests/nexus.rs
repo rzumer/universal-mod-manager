@@ -5,7 +5,8 @@ use std::fs;
 use std::io::{Cursor, Write};
 use std::sync::Arc;
 use umm_core::{
-    CoreError, DownloadWatch, ExpectedFile, NexusSearch, NexusUpdateState, Session, DEFAULT_PROFILE,
+    CollectionFileState, CoreError, DownloadWatch, ExpectedFile, NexusSearch, NexusUpdateState,
+    Session, DEFAULT_PROFILE,
 };
 use umm_thunderstore::http::FakeHttp;
 
@@ -307,4 +308,86 @@ fn browses_and_installs_downloads_without_an_account() {
         err.to_string().contains("set up for the Nexus Mods game"),
         "{err}"
     );
+}
+
+#[test]
+fn a_collection_is_checked_against_what_is_installed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let old = zip_of(&[("Glow 3.0/glow.dll", "old")]);
+    let new = zip_of(&[("Glow 3.1/glow.dll", "new")]);
+    let revision = |domain: &str| {
+        format!(
+            r#"{{"data": {{"collectionRevision": {{"revisionNumber": 4,
+              "collection": {{"name": "Nights", "slug": "abc123", "game": {{"domainName": "{domain}"}}}},
+              "modFiles": [
+                {{"fileId": 733, "optional": true, "file": {{"modId": 14, "name": "Extras", "version": "1", "mod": {{"name": "Glow"}}}}}},
+                {{"fileId": 507, "optional": false, "file": {{"modId": 14, "name": "Glow 3.1", "version": "3.1", "mod": {{"name": "Glow"}}}}}},
+                {{"fileId": 900, "optional": false, "file": {{"modId": 29, "name": "Dark", "version": "1", "mod": {{"name": "Dark"}}}}}},
+                {{"fileId": 1000, "optional": false, "file": {{"modId": 30, "name": "Moon", "version": "1", "mod": {{"name": "Moon"}}}}}}
+              ]}}}}}}"#
+        )
+    };
+    let http = Arc::new(
+        FakeHttp::default()
+            .with_post(GQL, "game(domainName", GAME)
+            .with_post(GQL, "games(filter", GAMES)
+            .with_post(GQL, "\"abc123\"", revision("glowvalley"))
+            .with_post(GQL, "\"other1\"", revision("skyrim"))
+            .with_post(
+                GQL,
+                "\"same01\"",
+                r#"{"data": {"collectionRevision": {"revisionNumber": 1,
+                  "collection": {"name": "Same", "slug": "same01", "game": {"domainName": "glowvalley"}},
+                  "modFiles": [
+                    {"fileId": 733, "optional": true, "file": {"modId": 14, "name": "Extras", "version": "1"}},
+                    {"fileId": 491, "optional": false, "file": {"modId": 14, "name": "Glow 3.0", "version": "3.0"}}
+                  ]}}}"#,
+            )
+            .with_post(
+                GQL,
+                &md5_hex(&old),
+                hash_hit(491, "3.0", "OLD_VERSION", 200),
+            )
+            .with_post(GQL, &md5_hex(&new), hash_hit(507, "3.1", "MAIN", 300))
+            .with_post(GQL, "modFiles", FILES)
+            .with_post(GQL, "mod(modId", MOD),
+    );
+    let s = game(tmp.path(), http);
+    let archive = tmp.path().join("glow.zip");
+    fs::write(&archive, &old).unwrap();
+    s.nexus_install_download("glow", &archive, None, false, DEFAULT_PROFILE, &mut |_| {})
+        .unwrap();
+
+    // Glow 3.0 stands for Glow 3.1 (another version), not for Glow's optional Extras.
+    let c = s.nexus_collection("glow", "abc123", None).unwrap();
+    assert_eq!(c.collection.name, "Nights");
+    assert_eq!(
+        c.states,
+        [
+            CollectionFileState::Missing,
+            CollectionFileState::OtherFile {
+                id: "glow".into(),
+                version: Some("3.0".into())
+            },
+            CollectionFileState::Missing,
+            CollectionFileState::Missing,
+        ]
+    );
+    assert_eq!(c.missing(), 3);
+
+    // A collection listing Glow 3.0 itself: installed.
+    let c = s.nexus_collection("glow", "same01", None).unwrap();
+    assert_eq!(
+        c.states,
+        [
+            CollectionFileState::Missing,
+            CollectionFileState::Installed { id: "glow".into() },
+        ]
+    );
+
+    let err = s
+        .nexus_collection("glow", "other1", None)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("nexusmods.com/skyrim"), "{err}");
 }

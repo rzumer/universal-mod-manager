@@ -31,8 +31,9 @@ pub use link::{
 };
 pub use manual::FolderInfo;
 pub use nexus::{
-    ExpectedFile, NexusGame, NexusInstallReport, NexusItem, NexusModFiles, NexusPage,
-    NexusRequirement, NexusSearch, NexusSort, NexusUpdate, NexusUpdateState,
+    CollectionFileState, ExpectedFile, NexusCollectionCheck, NexusGame, NexusInstallReport,
+    NexusItem, NexusModFiles, NexusPage, NexusRequirement, NexusSearch, NexusSort, NexusUpdate,
+    NexusUpdateState,
 };
 pub use placement::{PlacedFile, PlacementView};
 pub use plugins::{IniPreview, PluginEntry, PluginList};
