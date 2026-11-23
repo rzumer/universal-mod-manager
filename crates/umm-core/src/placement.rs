@@ -7,7 +7,7 @@ use crate::{CoreError, ModMeta, Result, Session};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use umm_deploy::GameLock;
-use umm_gamedef::{CompiledDef, RelPath, IN_GAME_BACKUP_DIR};
+use umm_gamedef::{CompiledDef, PluginListFormat, RelPath, IN_GAME_BACKUP_DIR, PLUGIN_EXTENSIONS};
 use umm_store::{LeftOut, Placement};
 use walkdir::WalkDir;
 
@@ -110,6 +110,57 @@ fn ext(name: &str) -> Option<&str> {
         .filter(|e| !e.is_empty())
 }
 
+/// What goes in a Bethesda game's data folder (`Data`, `Data Files`) besides plugins: their
+/// archives, and the folders of loose files the engine reads from it. Script extenders read
+/// their plugins from `Data/<extender>/plugins`.
+const DATA_EXTENSIONS: &[&str] = &["bsa", "ba2"];
+const DATA_DIRS: &[&str] = &[
+    "meshes",
+    "textures",
+    "sound",
+    "music",
+    "menus",
+    "shaders",
+    "scripts",
+    "interface",
+    "fonts",
+    "strings",
+    "video",
+    "lodsettings",
+    "grass",
+    "trees",
+    "distantlod",
+    "seq",
+    "materials",
+    "config",
+    "fose",
+    "nvse",
+    "obse",
+    "skse",
+    "f4se",
+    "sfse",
+    "mwse",
+];
+
+/// The game's data folder (lower-cased), where plugins and their files go, for games with a
+/// Bethesda plugin list.
+fn data_folder(def: &CompiledDef) -> Option<String> {
+    let p = def.def.plugins.as_ref()?;
+    (p.format != PluginListFormat::RimworldXml && !p.folder.is_empty())
+        .then(|| p.folder.trim_matches('/').to_lowercase())
+}
+
+/// Whether `c` (relative to the mod's root) is something a data folder holds: a plugin or
+/// archive at its top, or a file in one of its usual folders.
+fn data_content(c: &RelPath) -> bool {
+    let first = c.first().unwrap_or_default().to_lowercase();
+    if c.depth() == 1 {
+        return ext(&first)
+            .is_some_and(|e| PLUGIN_EXTENSIONS.contains(&e) || DATA_EXTENSIONS.contains(&e));
+    }
+    DATA_DIRS.contains(&first.as_str())
+}
+
 fn join(t: &str, rel: &str) -> String {
     if t.is_empty() {
         rel.to_string()
@@ -149,6 +200,14 @@ pub fn is_doc(rel: &RelPath) -> bool {
     let stem = name.split('.').next().unwrap_or_default();
     let stem: String = stem.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
     let texty = matches!(e, "" | "txt");
+    // Named anywhere in the name ("StreetLights Wasteland Readme.txt", "fose_whatsnew.txt").
+    if texty
+        && ["readme", "changelog", "whatsnew", "versionhistory"]
+            .iter()
+            .any(|w| stem.contains(w))
+    {
+        return true;
+    }
     texty
         && [
             "readme",
@@ -347,6 +406,9 @@ fn targets(content: &[RelPath], game: &GameIndex, def: &CompiledDef) -> Vec<Stri
     // The folders where the install rules give each mod its own (`plugins/**` →
     // BepInEx/plugins/<mod>/).
     def.per_mod_top_dirs().iter().for_each(&mut add);
+    if let Some(d) = data_folder(def) {
+        add(&game.spelling(&d));
+    }
     let mut loose: HashSet<String> = HashSet::new();
     for c in content {
         let first = c.first().unwrap_or_default().to_lowercase();
@@ -379,6 +441,9 @@ fn evidence(c: &RelPath, target: &str, game: &GameIndex, def: &CompiledDef) -> u
     let path = join(target, &c.as_str().to_lowercase());
     if game.files.contains(&path) {
         return 3; // replaces a game file
+    }
+    if data_folder(def).is_some_and(|d| d == target.to_lowercase()) && data_content(c) {
+        return 2; // a plugin, an archive or a loose asset, in the data folder
     }
     let parent = c
         .parent()
@@ -745,6 +810,38 @@ mod tests {
     }
 
     #[test]
+    fn bethesda_mods_go_in_the_data_folder() {
+        let fo3 =
+            def("[plugins]\nlist = \"%LOCALAPPDATA%/Fallout3/plugins.txt\"\nfolder = \"Data\"");
+        // Plain Fallout 3: its plugins are .esm, its assets in archives.
+        let game = GameIndex::of(&[
+            "Fallout3.exe",
+            "Data/",
+            "Data/Fallout3.esm",
+            "Data/Fallout - Meshes.bsa",
+        ]);
+        let p = suggest(&["Mod.esp", "Read Me Mod.txt"], &game, &fo3).unwrap();
+        assert_eq!(
+            (p.root.as_str(), p.target.as_str(), p.guessed),
+            ("", "Data", false)
+        );
+        assert_eq!(p.skip, ["Read Me Mod.txt"]);
+        let p = suggest(&["Mod 1.0/meshes/a.nif", "Mod 1.0/Mod.esp"], &game, &fo3).unwrap();
+        assert_eq!((p.root.as_str(), p.target.as_str()), ("Mod 1.0", "Data"));
+        let p = suggest(&["fose/plugins/x.dll"], &game, &fo3).unwrap();
+        assert_eq!(p.target, "Data");
+        // Already laid out from the game folder: left as it is.
+        assert!(suggest(&["Data/Mod.esp"], &game, &fo3).is_none());
+        // The script extender's loader goes beside the game.
+        let p = suggest(
+            &["fose_loader.exe", "fose_1_7.dll", "fose_readme.txt"],
+            &game,
+            &fo3,
+        );
+        assert!(p.is_none_or(|p| p.target.is_empty()));
+    }
+
+    #[test]
     fn recognises_docs() {
         let doc = |p: &str| is_doc(&RelPath::parse(p).unwrap());
         for p in [
@@ -758,6 +855,10 @@ mod tests {
             "fomod/info.xml",
             "Screenshots/1.jpg",
             "guide.pdf",
+            "Read Me NCR Outcast.txt",
+            "StreetLights Wasteland Readme.txt",
+            "fellout-readme-quick.txt",
+            "fose_whatsnew.txt",
         ] {
             assert!(doc(p), "{p}");
         }

@@ -630,7 +630,7 @@ function modsTab(d) {
           m?.installer === "waiting"
             ? h("button", { class: "chip warn chip-button", title: "Nothing of this mod is installed until its installer's options are chosen", onclick: () => fomodDialog(m) }, "Choose its install options")
             : m?.placement?.guessed &&
-                h("button", { class: "chip warn chip-button", title: "UMM could not tell where this mod's files go", onclick: () => placementDialog(m) }, "Check where its files go"),
+                h("button", { class: "chip warn chip-button", title: "UMM could not tell where this mod's files go", onclick: () => placementDialog(m) }, "Check deployment"),
         ),
       ),
       h(
@@ -1634,8 +1634,8 @@ async function getCollectionFiles() {
   }
   if (N.walk === walk) N.walk = null;
   const notes = [
-    walk.waiting && `${plural(walk.waiting, "mod")} need${walk.waiting === 1 ? "s" : ""} its install options chosen in the Mods tab`,
-    walk.place && `${plural(walk.place, "mod")} need${walk.place === 1 ? "s" : ""} its place in the game folder checked`,
+    walk.waiting && `${plural(walk.waiting, "mod")} ${walk.waiting === 1 ? "needs its" : "need their"} install options chosen in the Mods tab`,
+    walk.place && `${plural(walk.place, "mod")} ${walk.place === 1 ? "needs its" : "need their"} deployment location checked in the Mods tab`,
     walk.skipped && `${walk.skipped} skipped`,
   ].filter(Boolean);
   toast(`${stopped ? "Stopped: got" : "Got"} ${walk.got} of ${plural(walk.total, "file")} from ${c.name}${notes.length ? `; ${notes.join("; ")}` : ""}`, walk.got ? "ok" : "info");
@@ -2406,7 +2406,7 @@ async function importPaths(paths) {
   if (done.length === 1) toast(`Imported ${done[0].name} (${done[0].files} files) into ${S.profileName}`, "ok");
   else if (done.length > 1) {
     const waiting = done.filter((m) => m.installer === "waiting").length;
-    toast(`Imported ${done.length} mods into ${S.profileName}${waiting ? `; ${waiting} need${waiting === 1 ? "s" : ""} its install options chosen` : ""}`, "ok");
+    toast(`Imported ${done.length} mods into ${S.profileName}${waiting ? `; ${waiting} ${waiting === 1 ? "needs its" : "need their"} install options chosen` : ""}`, "ok");
   }
   await refreshAll();
   if (paths.length === 1) await afterInstall(done[0]);
