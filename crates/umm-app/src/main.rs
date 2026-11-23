@@ -4,6 +4,7 @@
 //! through the same engine as the CLI; the webview only calls the commands in `commands.rs`.
 
 mod commands;
+mod config;
 mod dto;
 mod fomod;
 mod nexus;
@@ -84,6 +85,10 @@ macro_rules! umm_handlers {
             crate::nexus::open_nexus_page,
             crate::nexus::open_web_page,
             crate::fomod::fomod_view,
+            crate::config::config_files,
+            crate::config::read_config,
+            crate::config::set_config_values,
+            crate::config::set_config_text,
             crate::patcher::patcher_status,
             crate::patcher::run_patcher,
             crate::fomod::fomod_apply,

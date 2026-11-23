@@ -71,6 +71,43 @@ const nexusMods = [
   { modId: 45, name: "Lantern Oil Never Runs Out", summary: "For those who would rather not count oil.", author: "Dee", version: "1.0", endorsements: 52, downloads: 3_301, updatedAt: "2023-01-01T00:00:00Z", category: "Cheats" },
 ];
 let nexusPending = null;
+// The Configs tab's files: a BepInEx config of each setting type, and a plain one.
+const mockConfigs = {
+  "BepInEx/config/BepInEx.cfg": {
+    file: { path: "BepInEx/config/BepInEx.cfg", name: "BepInEx.cfg", version: null, guid: null, size: 4200, modifiedUnix: 1795400000, bepinex: true },
+    sections: [
+      { name: "Logging.Console", entries: [
+        { key: "Enabled", value: "true", description: "Enables showing a console for log output.", kind: "Boolean", default: "false", acceptable: [], range: null },
+        { key: "LogLevels", value: "Fatal, Error, Warning, Message, Info", description: "Only displays the specified log levels in the console output.", kind: "LogLevel", default: "Fatal, Error, Warning, Message, Info", acceptable: ["None", "Fatal", "Error", "Warning", "Message", "Info", "Debug", "All"], range: null },
+      ] },
+    ],
+  },
+  "BepInEx/config/com.example.betterui.cfg": {
+    file: { path: "BepInEx/config/com.example.betterui.cfg", name: "Better UI", version: "2.1.0", guid: "com.example.betterui", size: 900, modifiedUnix: 1795410000, bepinex: true },
+    sections: [
+      { name: "General", entries: [
+        { key: "Show Clock", value: "true", description: "Show the clock in the top right corner.", kind: "Boolean", default: "true", acceptable: [], range: null },
+        { key: "Scale", value: "1.25", description: "How big the interface is.", kind: "Single", default: "1", acceptable: [], range: ["0.5", "2"] },
+        { key: "Toggle Key", value: "F8", description: "Shows or hides the interface.", kind: "KeyboardShortcut", default: "F8", acceptable: [], range: null },
+      ] },
+      { name: "Colors", entries: [
+        { key: "Theme", value: "Dark", description: "", kind: "Theme", default: "Dark", acceptable: ["Dark", "Light", "System"], range: null },
+      ] },
+    ],
+  },
+  "BepInEx/config/lantern/settings.json": {
+    file: { path: "BepInEx/config/lantern/settings.json", name: "settings.json", version: null, guid: null, size: 60, modifiedUnix: 1795300000, bepinex: false },
+    text: '{\n  "brightness": 1.4,\n  "warm": true\n}\n',
+  },
+};
+function mockConfigView(path) {
+  const c = mockConfigs[path];
+  if (!c) throw `${path} is not a config file`;
+  const text = c.sections
+    ? c.sections.map((s) => `[${s.name}]\n\n` + s.entries.map((e) => `## ${e.description}\n# Setting type: ${e.kind}\n# Default value: ${e.default}\n${e.key} = ${e.value}\n`).join("\n")).join("\n")
+    : c.text;
+  return { file: { ...c.file }, text, sections: c.sections ? structuredClone(c.sections) : null };
+}
 const patcherState = { exe: "Patcher.exe", approved: false, state: "notRun", files: [], output: "", error: null, ranUnix: 0 };
 const nexusCollections = [
   { slug: "lnt3rn", name: "Lantern Road", summary: "Brighter roads, quieter nights: the essentials for a first evening walk.", author: "Ann", endorsements: 703, downloads: 13_472, revision: 7, modCount: 5, size: 52_000_000, tile: null },
@@ -346,6 +383,25 @@ const handlers = {
     });
     const suggested = (modSuggestions[id] ??= { root: "", target: "", skip: [], guessed: false, chosen: false, ...(m.placement || {}), chosen: false });
     return { placement: { ...p }, suggested, folders, gameFolders: ["BepInEx", "BepInEx/plugins", "Example_Data", "Example_Data/StreamingAssets", "MonoBleedingEdge"], files: placed };
+  },
+  config_files: ({ game }) => ({
+    dir: String.raw`C:\Users\you\AppData\Roaming\umm\games\example-unity-game\runtime\Default`,
+    files: game === "example-unity-game" && !q.has("noconfigs") ? Object.values(mockConfigs).map((c) => c.file) : [],
+  }),
+  read_config: ({ path }) => mockConfigView(path),
+  set_config_values: ({ path, changes }) => {
+    const c = mockConfigs[path];
+    for (const ch of changes) {
+      const e = c.sections.find((s) => s.name === ch.section)?.entries.find((x) => x.key === ch.key);
+      if (!e) throw `this file has no setting ${ch.key} in [${ch.section}]`;
+      e.value = ch.value;
+    }
+    c.file.modifiedUnix = Math.floor(Date.now() / 1000);
+    return mockConfigView(path);
+  },
+  set_config_text: ({ path, text }) => {
+    mockConfigs[path].text = text;
+    return mockConfigView(path);
   },
   patcher_status: ({ id }) => (id === "anniversary-patcher" ? { ...patcherState } : null),
   run_patcher: async () => {

@@ -1,5 +1,6 @@
 //! `Session`: the one API the CLI and the Tauri app both call.
 
+mod config;
 mod doctor;
 mod downloads;
 mod fomod;
@@ -18,6 +19,7 @@ mod share;
 mod steam;
 mod ts;
 
+pub use config::{ConfigChange, ConfigEntry, ConfigFile, ConfigSection, ConfigView};
 pub use doctor::{Finding, Level};
 pub use downloads::{downloads_dir, DownloadWatch};
 pub use fomod::{FomodGroupView, FomodOptionView, FomodStepView, FomodView};

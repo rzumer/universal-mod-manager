@@ -179,8 +179,8 @@ label.inline select { min-width: 130px; }
 button.launch { justify-content: center; font-size: 16px; padding: 11px 18px; border-radius: 10px; }
 .hint { font-size: 12px; color: var(--muted); max-width: 300px; }
 
-.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 18px; }
-.tabs button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 9px 12px; color: var(--muted); font-weight: 550; }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 18px; overflow-x: auto; scrollbar-width: thin; }
+.tabs button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 9px 12px; white-space: nowrap; flex: none; color: var(--muted); font-weight: 550; }
 .tabs button.active { color: var(--text); border-bottom-color: var(--accent); }
 .tabs button:hover:not(:disabled) { color: var(--text); }
 .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
@@ -398,6 +398,20 @@ button.ts-name:hover svg, button.ts-name:focus-visible svg { opacity: 1; fill: v
 .ts-desc { font-size: 13px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ts-meta { font-size: 12px; margin-top: 2px; }
 .ts-row > button, .ts-row > .chip { flex: none; }
+/* An element hidden by its attribute stays hidden whatever its class's display. */
+[hidden] { display: none !important; }
+.config-list { display: flex; flex-direction: column; }
+.config-row { display: flex; align-items: center; gap: 12px; padding: 10px 4px; border-top: 1px solid var(--border); }
+.config-row:first-child { border-top: none; }
+.config-section { margin-top: 14px; }
+.config-section h3 { font-size: 14px; margin: 0 0 4px; }
+.config-entry { display: grid; grid-template-columns: minmax(120px, 30%) minmax(0, 1fr); gap: 4px 14px; align-items: center; padding: 10px 0; border-top: 1px solid var(--border); }
+.config-key { font-weight: 600; overflow-wrap: anywhere; }
+.config-value input[type=text], .config-value input[type=number], .config-value select { width: min(100%, 420px); }
+.config-desc { grid-column: 2; font-size: 12.5px; color: var(--muted); white-space: pre-line; }
+.config-desc .link { font-size: 12.5px; }
+.config-text { width: 100%; min-height: 55vh; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; padding: 10px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface-2); color: var(--text); resize: vertical; }
+@media (max-width: 640px) { .config-entry { grid-template-columns: 1fr; } .config-desc { grid-column: 1; } }
 .patcher-output { max-height: 180px; overflow: auto; padding: 8px 10px; border-radius: var(--radius); background: var(--surface-2); font-size: 12px; white-space: pre-wrap; }
 .version-list { display: flex; flex-direction: column; max-height: 320px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius); }
 .version-row { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-top: 1px solid var(--border); cursor: pointer; }
