@@ -33,6 +33,83 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
     }
 }
 
+/// Stands in for a WeiDU installer, `setup-<m>.exe`, run in the game folder: the components
+/// come from `--force-install-list`, else from `<m>/answers.txt` (the user's answers; `fail`
+/// fails). Each writes `override/<m>_<n>.itm` and adds to the dialog table and `WeiDU.log`.
+/// Its arguments go to `override/<m>_args.txt`.
+fn weidu(m: &str) {
+    let args: Vec<String> = env::args().skip(1).collect();
+    // Like WeiDU, it runs only in a game folder, whatever it is asked.
+    if !Path::new("chitin.key").is_file() {
+        println!("FATAL ERROR: Failure(\"Not a game directory\")");
+        std::process::exit(1);
+    }
+    // What WeiDU lists without installing: two languages, three components (two of them
+    // alternatives of a group).
+    if args.iter().any(|a| a == "--list-languages") {
+        println!("Possible languages:\n0:English\n1:Francais");
+        return;
+    }
+    // `fail` in `<m>/answers.txt`: the install fails.
+    if fs::read_to_string(format!("{m}/answers.txt"))
+        .unwrap_or_default()
+        .trim()
+        == "fail"
+        && !args.iter().any(|a| a.starts_with("--list"))
+    {
+        fs::write(format!("setup-{m}.debug"), "ERROR: it failed").unwrap();
+        std::process::exit(1);
+    }
+    if let Some(i) = args.iter().position(|a| a == "--list-components") {
+        let lang = args.get(i + 2).cloned().unwrap_or_default();
+        let t = m.to_uppercase();
+        for (n, name) in [
+            (0, "Core"),
+            (1, "Portraits -> Original"),
+            (2, "Portraits -> New"),
+        ] {
+            let name = if lang == "1" {
+                format!("{name} (fr)")
+            } else {
+                name.to_string()
+            };
+            println!("~{t}/{t}.TP2~ #{lang} #{n} // {name}");
+        }
+        return;
+    }
+    let listed: Vec<String> = match args.iter().position(|a| a == "--force-install-list") {
+        Some(i) => args[i + 1..]
+            .iter()
+            .take_while(|a| !a.starts_with("--"))
+            .cloned()
+            .collect(),
+        None => {
+            let answers = fs::read_to_string(format!("{m}/answers.txt")).unwrap_or_default();
+            if answers.trim() == "fail" {
+                fs::write(format!("setup-{m}.debug"), "ERROR: it failed").unwrap();
+                std::process::exit(1);
+            }
+            answers.split_whitespace().map(str::to_string).collect()
+        }
+    };
+    fs::create_dir_all("override").unwrap();
+    fs::write(format!("override/{m}_args.txt"), args.join(" ")).unwrap();
+    let mut log = fs::read_to_string("WeiDU.log").unwrap_or_default();
+    let mut tlk = fs::read_to_string("lang/en_US/dialog.tlk").unwrap();
+    for c in &listed {
+        fs::write(format!("override/{m}_{c}.itm"), format!("{m} {c}")).unwrap();
+        tlk.push_str(&format!("+{m}{c}"));
+        log.push_str(&format!(
+            "~{}/{}.TP2~ #0 #{c} // Component {c}\n",
+            m.to_uppercase(),
+            m.to_uppercase()
+        ));
+    }
+    fs::write("lang/en_US/dialog.tlk", tlk).unwrap();
+    fs::write("WeiDU.log", log).unwrap();
+    fs::write(format!("setup-{m}.debug"), format!("installed {listed:?}")).unwrap();
+}
+
 // The child is deliberately not waited on: it imitates a launcher handing off to the game.
 #[allow(clippy::zombie_processes)]
 fn main() {
@@ -42,6 +119,13 @@ fn main() {
         .unwrap_or_default()
         .to_string_lossy()
         .to_lowercase();
+    if let Some(m) = name
+        .strip_prefix("setup-")
+        .and_then(|n| n.strip_suffix(".exe"))
+    {
+        weidu(m);
+        return;
+    }
     if name.contains("patcher") {
         // `go`: Game.exe here; `esm`: Data/Game.esm here; `real:<dir>`: <dir>/Game.exe, like
         // a patcher that finds the game folder by itself; `add:<dir>`: it also adds

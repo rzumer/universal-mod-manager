@@ -18,6 +18,7 @@ mod setup;
 mod share;
 mod steam;
 mod ts;
+mod weidu;
 
 pub use config::{ConfigChange, ConfigEntry, ConfigFile, ConfigSection, ConfigView};
 pub use doctor::{Finding, Level};
@@ -68,6 +69,9 @@ pub use umm_store::{
     Profile, ProfileEntry, StoreError, DEFAULT_PROFILE,
 };
 pub use umm_thunderstore::index::Package;
+pub use weidu::{
+    is_weidu_setup, weidu_setup_of, WeiduChoice, WeiduState, WeiduStatus, WEIDU_SCRATCH,
+};
 
 pub use umm_gamedef::LoaderSetup;
 pub use umm_thunderstore::{Ecosystem, Http, TsError, UreqHttp};
@@ -430,6 +434,9 @@ impl Session {
             return Err(CoreError::Deployed(id.into()));
         }
         umm_store::remove_mod(&game, mod_id)?;
+        // What UMM made from it goes too: imported again, it starts over.
+        patcher::forget_mod(&game, mod_id);
+        weidu::forget_mod(&game, mod_id);
         for name in umm_store::list_profiles(&game) {
             let mut p = umm_store::load_profile(&game, &name)?;
             let before = p.mods.len();
@@ -512,6 +519,7 @@ impl Session {
         let mut plan = build_plan(&game, &def, &profile, root.as_deref())?;
         if let Some(r) = &root {
             self.add_patches(&def, &profile, r, &mut plan, false)?;
+            self.add_weidu(&def, &profile, r, &mut plan, false)?;
         }
         Ok(plan)
     }

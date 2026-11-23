@@ -105,6 +105,11 @@ fn patch_dir(game: &GameDir, mod_id: &str) -> PathBuf {
     game.generated_dir().join(PATCHES).join(mod_id)
 }
 
+/// Forgets a deleted mod's patcher run: approval and results.
+pub(crate) fn forget_mod(game: &GameDir, mod_id: &str) {
+    let _ = fs::remove_dir_all(patch_dir(game, mod_id));
+}
+
 fn load_record(game: &GameDir, mod_id: &str) -> Record {
     fs::read(patch_dir(game, mod_id).join(RECORD))
         .ok()
@@ -185,7 +190,11 @@ pub(crate) fn scratch_dir(game: &GameDir) -> PathBuf {
 impl Session {
     /// A mod's files where they would go in the game folder (its placement and the install
     /// rules applied), with their stored copies.
-    fn placed_files(&self, def: &CompiledDef, meta: &ModMeta) -> Vec<(RelPath, PathBuf, String)> {
+    pub(crate) fn placed_files(
+        &self,
+        def: &CompiledDef,
+        meta: &ModMeta,
+    ) -> Vec<(RelPath, PathBuf, String)> {
         let game = self.data.game(&def.def.id);
         let files_root = game.mod_files_dir(&meta.id);
         meta.files

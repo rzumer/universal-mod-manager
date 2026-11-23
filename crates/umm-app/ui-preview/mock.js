@@ -108,6 +108,20 @@ function mockConfigView(path) {
     : c.text;
   return { file: { ...c.file }, text, sections: c.sections ? structuredClone(c.sections) : null };
 }
+const weiduState = {
+  state: "needsChoices",
+  // `?noweidu`: a mod comes without its installer, and no WeiDU is at hand.
+  needsWeidu: q.has("noweidu"),
+  installed: [],
+  files: 0,
+  output: "",
+  error: null,
+  ranUnix: 0,
+  mods: [
+    { modId: "ascension", setup: "setup-ascension.exe", chosen: false, components: [] },
+    { modId: "tweaks-anthology", setup: "setup-cdtweaks.exe", chosen: false, components: [] },
+  ],
+};
 const patcherState = { exe: "Patcher.exe", approved: false, state: "notRun", files: [], output: "", error: null, ranUnix: 0 };
 const nexusCollections = [
   { slug: "lnt3rn", name: "Lantern Road", summary: "Brighter roads, quieter nights: the essentials for a first evening walk.", author: "Ann", endorsements: 703, downloads: 13_472, revision: 7, modCount: 5, size: 52_000_000, tile: null },
@@ -152,6 +166,12 @@ const mods = {
     { id: "old-map-mod", name: "Old Map Mod", version: "0.3", files: 2, size: 40_000, placeable: true, placement: { root: "OldMap", target: "", skip: [], guessed: true, chosen: false } },
     { id: "rock-textures", name: "Better Rocks", version: "2.0", files: 9, size: 48_000_000, placeable: true, installer: "waiting", nexusUrl: "https://www.nexusmods.com/exampleunitygame/mods/88", nexusMod: 88, nexusFile: 8800 },
     { id: "anniversary-patcher", name: "Anniversary Patcher", version: "1.5", files: 6, size: 6_600_000, placeable: true, patcher: "Patcher.exe" },
+    ...(q.has("weidu")
+      ? [
+          { id: "ascension", name: "Ascension", version: "2.0.24", files: 120, size: 2_400_000, placeable: true, weidu: "setup-ascension.exe" },
+          { id: "tweaks-anthology", name: "Tweaks Anthology", version: "v19", files: 900, size: 9_100_000, placeable: true, weidu: "setup-cdtweaks.exe" },
+        ]
+      : []),
     { id: "lantern-light", name: "Lantern Light", version: "1.9", files: 6, size: 1_700_000, nexusUrl: "https://www.nexusmods.com/exampleunitygame/mods/77", nexusMod: 77, nexusFile: 3900, placeable: true },
   ],
   "example-asi-game": [],
@@ -259,6 +279,7 @@ const profiles = {
         { id: "lantern-light", enabled: true },
         { id: "rock-textures", enabled: true },
         { id: "anniversary-patcher", enabled: true },
+        ...(q.has("weidu") ? [{ id: "ascension", enabled: true }, { id: "tweaks-anthology", enabled: true }] : []),
       ],
     },
     Vanilla: { name: "Vanilla", mods: [{ id: "bepinex", enabled: true }] },
@@ -402,6 +423,46 @@ const handlers = {
   set_config_text: ({ path, text }) => {
     mockConfigs[path].text = text;
     return mockConfigView(path);
+  },
+  weidu_status: () => (q.has("weidu") ? structuredClone(weiduState) : null),
+  weidu_components: async ({ id, language }) => {
+    await sleep(500);
+    const lang = language ?? weiduState.mods.find((m) => m.modId === id)?.language ?? 0;
+    const fr = lang === 1 ? " (fr)" : "";
+    const components =
+      id === "ascension"
+        ? [[0, `Ascension (core)${fr}`], [10, `Tougher Irenicus${fr}`], [20, `Final Battle -> Original Ending${fr}`], [21, `Final Battle -> Extended Ending${fr}`]]
+        : [[1, `Remove Helmet Animations${fr}`], [2050, `Higher HP on Level Up${fr}`], [3000, `Stores -> Sell Everything${fr}`], [3001, `Stores -> Buy Everything${fr}`]];
+    const m = weiduState.mods.find((x) => x.modId === id);
+    return {
+      languages: [[0, "English"], [1, "Francais"]],
+      language: lang,
+      components,
+      chosen: m?.chosen ? { language: m.language ?? 0, components: m.components.map(([n]) => n) } : null,
+    };
+  },
+  set_weidu_choice: ({ id, language, components }) => {
+    const m = weiduState.mods.find((x) => x.modId === id);
+    Object.assign(m, { chosen: true, language, components });
+    if (weiduState.state === "current") weiduState.state = "outdated";
+    else if (weiduState.state === "needsChoices") weiduState.state = "notRun";
+    return structuredClone(weiduState);
+  },
+  set_weidu_exe: () => {
+    weiduState.needsWeidu = false;
+    return null;
+  },
+  run_weidu: async () => {
+    await sleep(1200);
+    Object.assign(weiduState, {
+      installed: weiduState.mods.filter((m) => m.chosen).map((m) => m.modId),
+      state: "current",
+      files: 214,
+      error: null,
+      ranUnix: Math.floor(Date.now() / 1000),
+      output: "=== Ascension (setup-ascension.exe) ===\nSUCCESSFULLY INSTALLED      Ascension (core)\n=== Tweaks Anthology (setup-cdtweaks.exe) ===\nSUCCESSFULLY INSTALLED      Remove Helmet Animations\nSUCCESSFULLY INSTALLED      Higher HP on Level Up",
+    });
+    return structuredClone(weiduState);
   },
   patcher_status: ({ id }) => (id === "anniversary-patcher" ? { ...patcherState } : null),
   run_patcher: async () => {

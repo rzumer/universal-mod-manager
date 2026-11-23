@@ -91,6 +91,11 @@ macro_rules! umm_handlers {
             crate::config::set_config_text,
             crate::patcher::patcher_status,
             crate::patcher::run_patcher,
+            crate::patcher::weidu_status,
+            crate::patcher::run_weidu,
+            crate::patcher::set_weidu_exe,
+            crate::patcher::weidu_components,
+            crate::patcher::set_weidu_choice,
             crate::fomod::fomod_apply,
             crate::fomod::mod_image,
         ]

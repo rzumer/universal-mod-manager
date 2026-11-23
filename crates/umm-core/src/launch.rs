@@ -124,6 +124,8 @@ impl Session {
         let mut plan = build_plan(&game, &def, &profile, Some(&root))?;
         // Patchers' results replace the game's files (a patcher out of date runs first).
         self.add_patches(&def, &profile, &root, &mut plan, true)?;
+        // WeiDU mods' installed result (installed again first, when out of date).
+        self.add_weidu(&def, &profile, &root, &mut plan, true)?;
         let rl = def.def.runtime_loader();
         // The Godot Mod Loader's own files go to the game folder when UMM sets it up.
         let mut godotml_in_game = false;

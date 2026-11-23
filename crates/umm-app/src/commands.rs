@@ -148,13 +148,16 @@ pub async fn preview_plan(
     .await
 }
 
-/// Opens a native picker. `kind` is "archive" (a .zip) or "folder".
+/// Opens a native picker. `kind` is "archive" (a .zip, .7z or .rar), "exe" (a program) or
+/// "folder".
 #[tauri::command]
 pub async fn pick_path<R: Runtime>(app: AppHandle<R>, kind: String) -> Res<Option<String>> {
     tauri::async_runtime::spawn_blocking(move || {
         let d = app.dialog().file();
         let picked = if kind == "folder" {
             d.blocking_pick_folder()
+        } else if kind == "exe" {
+            d.add_filter("Program", &["exe"]).blocking_pick_file()
         } else {
             d.add_filter("Mod archive", &["zip", "7z", "rar"])
                 .blocking_pick_file()

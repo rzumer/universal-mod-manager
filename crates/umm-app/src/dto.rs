@@ -72,6 +72,8 @@ pub struct ModDto {
     pub installer: Option<&'static str>,
     /// Its patcher program (`Patcher.exe`), when the mod is a patcher of the game's files.
     pub patcher: Option<String>,
+    /// Its WeiDU installer (`setup-<mod>.exe`), when it is a WeiDU mod.
+    pub weidu: Option<String>,
 }
 
 /// Where a mod's files go; see `umm_store::Placement`.
@@ -157,9 +159,15 @@ impl From<umm_core::PlacementView> for PlacementViewDto {
 impl From<ModMeta> for ModDto {
     fn from(m: ModMeta) -> Self {
         let patcher = umm_core::patcher_of(&m);
+        let weidu = umm_core::weidu_setup_of(&m);
+        let is_weidu = weidu.is_some();
         ModDto {
             patcher,
-            placeable: m.layout == umm_core::ModLayout::Raw && m.thunderstore.is_none(),
+            weidu,
+            // A WeiDU mod goes to the game folder as it is laid out: no placement to choose.
+            placeable: m.layout == umm_core::ModLayout::Raw
+                && m.thunderstore.is_none()
+                && !is_weidu,
             installer: m
                 .fomod
                 .as_ref()

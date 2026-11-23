@@ -400,6 +400,19 @@ button.ts-name:hover svg, button.ts-name:focus-visible svg { opacity: 1; fill: v
 .ts-row > button, .ts-row > .chip { flex: none; }
 /* An element hidden by its attribute stays hidden whatever its class's display. */
 [hidden] { display: none !important; }
+.weidu-panel { margin: 0 0 12px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); font-size: 13px; }
+.weidu-panel.warn { background: var(--warn-soft); border-color: transparent; }
+.weidu-panel.ok { border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); }
+.weidu-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.weidu-mods { margin: 8px 0 0; font-size: 12.5px; }
+.weidu-need { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 8px; font-size: 12.5px; }
+.weidu-mods li { margin: 2px 0; display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.weidu-component-list { max-height: 55vh; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 10px; }
+.weidu-component { display: flex; align-items: baseline; gap: 8px; padding: 4px 0; cursor: pointer; }
+.weidu-component .muted { margin-left: auto; }
+.weidu-group { border: none; border-top: 1px solid var(--border); margin: 6px 0; padding: 6px 0 0; }
+.weidu-group legend { font-weight: 600; font-size: 12.5px; padding: 0 4px 0 0; }
+.weidu-log { max-height: 60vh; }
 .config-list { display: flex; flex-direction: column; }
 .config-row { display: flex; align-items: center; gap: 12px; padding: 10px 4px; border-top: 1px solid var(--border); }
 .config-row:first-child { border-top: none; }
