@@ -140,12 +140,14 @@ fn revert_op(
             hash,
             orig_hash,
             backup,
+            tolerated,
             ..
         } => revert_external(
             path,
             hash,
             orig_hash.as_deref(),
             backup,
+            tolerated,
             quarantine,
             report,
             faults,
@@ -258,11 +260,30 @@ fn copy_into(from: &Path, to: &Path, faults: &mut Faults) -> Result<(), DeployEr
 /// Undoes a file written outside the game folder: the original comes back (or the file goes,
 /// if there was none). A version neither UMM's nor the original (the game or the user changed
 /// it meanwhile) is set aside in quarantine first.
+/// Whether a list file holds only entries the game may write itself (and comments): the game
+/// rewriting its plugin list on start (Fallout 3 adds its header and its own masters).
+fn only_tolerated(path: &Path, tolerated: &[String]) -> bool {
+    if tolerated.is_empty() {
+        return false;
+    }
+    let Ok(bytes) = fs::read(path) else {
+        return false;
+    };
+    String::from_utf8_lossy(&bytes)
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| l.trim_start_matches('*').to_lowercase())
+        .all(|l| tolerated.contains(&l))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn revert_external(
     path: &Path,
     hash: &str,
     orig_hash: Option<&str>,
     backup: &Path,
+    tolerated: &[String],
     quarantine: &Path,
     report: &mut RevertReport,
     faults: &mut Faults,
@@ -276,6 +297,9 @@ fn revert_external(
     };
     let name = path.file_name().map(|n| n.to_owned()).unwrap_or_default();
     let set_aside = |report: &mut RevertReport, faults: &mut Faults| -> Result<(), DeployError> {
+        if only_tolerated(path, tolerated) {
+            return Ok(());
+        }
         let q = quarantine.join(crate::apply::EXTERNAL_BACKUPS).join(&name);
         faults.tick()?;
         if let Some(parent) = q.parent() {

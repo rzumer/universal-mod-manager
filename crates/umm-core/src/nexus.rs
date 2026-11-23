@@ -249,6 +249,17 @@ impl Session {
         Ok((g.domain, gid))
     }
 
+    /// A Nexus file's size in bytes, when Nexus says.
+    pub fn nexus_file_size(&self, id: &str, mod_id: u64, file_id: u64) -> Result<Option<u64>> {
+        let (_, gid) = self.require_nexus_game(id)?;
+        Ok(self
+            .graph()
+            .files(gid, mod_id)?
+            .into_iter()
+            .find(|f| f.file_id == file_id)
+            .and_then(|f| f.size_in_bytes))
+    }
+
     /// Sets the game's `[nexus] domain`, or removes it with `None`.
     pub fn set_nexus_domain(&self, id: &str, domain: Option<&str>) -> Result<GameDef> {
         self.edit_game_file(id, |text, origin| {
@@ -456,22 +467,33 @@ impl Session {
             .requirements(game_id, mod_id)
             .unwrap_or_default()
             .into_iter()
-            .filter(|r| r.mod_id != Some(mod_id))
-            .map(|r| {
-                let here = r.mod_id.filter(|_| r.game_id.is_none_or(|g| g == game_id));
-                NexusRequirement {
-                    url: match here {
-                        Some(m) => Some(umm_nexus::mod_url(&domain, m)),
-                        None => r
-                            .url
-                            .filter(|u| u.starts_with("https://") || u.starts_with("http://")),
-                    },
-                    installed: here.is_some_and(|m| installed.contains(&m)),
-                    elsewhere: here.is_none(),
-                    mod_id: here,
-                    name: r.name,
-                    notes: r.notes,
-                }
+            .filter_map(|r| {
+                // Authors often list a Nexus mod as an "external" requirement with a link to
+                // its page: a mod of this game all the same.
+                let here = r
+                    .mod_id
+                    .filter(|_| r.game_id.is_none_or(|g| g == game_id))
+                    .or_else(|| {
+                        r.url
+                            .as_deref()
+                            .and_then(umm_nexus::parse_mod_url)
+                            .filter(|(d, _)| d.eq_ignore_ascii_case(&domain))
+                            .map(|(_, m)| m)
+                    });
+                (here != Some(mod_id)).then_some((r, here))
+            })
+            .map(|(r, here)| NexusRequirement {
+                url: match here {
+                    Some(m) => Some(umm_nexus::mod_url(&domain, m)),
+                    None => r
+                        .url
+                        .filter(|u| u.starts_with("https://") || u.starts_with("http://")),
+                },
+                installed: here.is_some_and(|m| installed.contains(&m)),
+                elsewhere: here.is_none(),
+                mod_id: here,
+                name: r.name,
+                notes: r.notes,
             })
             .collect();
         Ok(f)
@@ -678,6 +700,10 @@ impl Session {
             })
             .or_else(|| hits.first());
         let (domain, game_id, mod_id, file_id) = match (hit, expected) {
+            // Another mod's file: not the download awaited, whatever the user says.
+            (Some(h), Some(e)) if h.mod_id != e.mod_id || h.domain != e.domain => {
+                return Err(CoreError::NexusOtherMod(h.mod_name.clone()))
+            }
             (Some(h), _) => (h.domain.clone(), h.game_id, h.mod_id, h.file.file_id),
             (None, Some(e)) if trust => {
                 let gid = self.nexus_game_info(&e.domain)?.id;

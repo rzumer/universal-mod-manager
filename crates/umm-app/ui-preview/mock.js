@@ -71,6 +71,7 @@ const nexusMods = [
   { modId: 45, name: "Lantern Oil Never Runs Out", summary: "For those who would rather not count oil.", author: "Dee", version: "1.0", endorsements: 52, downloads: 3_301, updatedAt: "2023-01-01T00:00:00Z", category: "Cheats" },
 ];
 let nexusPending = null;
+const patcherState = { exe: "Patcher.exe", approved: false, state: "notRun", files: [], output: "", error: null, ranUnix: 0 };
 const nexusCollections = [
   { slug: "lnt3rn", name: "Lantern Road", summary: "Brighter roads, quieter nights: the essentials for a first evening walk.", author: "Ann", endorsements: 703, downloads: 13_472, revision: 7, modCount: 5, size: 52_000_000, tile: null },
   { slug: "qu13t5", name: "Quiet Country", summary: "Calmer sounds everywhere.", author: "Bob", endorsements: 120, downloads: 2_210, revision: 2, modCount: 2, size: 300_000, tile: null },
@@ -113,6 +114,7 @@ const mods = {
     { id: "quality-of-life", name: "Quality of Life Tweaks", version: "0.9.2", files: 5, size: 95_000 },
     { id: "old-map-mod", name: "Old Map Mod", version: "0.3", files: 2, size: 40_000, placeable: true, placement: { root: "OldMap", target: "", skip: [], guessed: true, chosen: false } },
     { id: "rock-textures", name: "Better Rocks", version: "2.0", files: 9, size: 48_000_000, placeable: true, installer: "waiting", nexusUrl: "https://www.nexusmods.com/exampleunitygame/mods/88", nexusMod: 88, nexusFile: 8800 },
+    { id: "anniversary-patcher", name: "Anniversary Patcher", version: "1.5", files: 6, size: 6_600_000, placeable: true, patcher: "Patcher.exe" },
     { id: "lantern-light", name: "Lantern Light", version: "1.9", files: 6, size: 1_700_000, nexusUrl: "https://www.nexusmods.com/exampleunitygame/mods/77", nexusMod: 77, nexusFile: 3900, placeable: true },
   ],
   "example-asi-game": [],
@@ -219,6 +221,7 @@ const profiles = {
         { id: "quality-of-life", enabled: false },
         { id: "lantern-light", enabled: true },
         { id: "rock-textures", enabled: true },
+        { id: "anniversary-patcher", enabled: true },
       ],
     },
     Vanilla: { name: "Vanilla", mods: [{ id: "bepinex", enabled: true }] },
@@ -343,6 +346,16 @@ const handlers = {
     });
     const suggested = (modSuggestions[id] ??= { root: "", target: "", skip: [], guessed: false, chosen: false, ...(m.placement || {}), chosen: false });
     return { placement: { ...p }, suggested, folders, gameFolders: ["BepInEx", "BepInEx/plugins", "Example_Data", "Example_Data/StreamingAssets", "MonoBleedingEdge"], files: placed };
+  },
+  patcher_status: ({ id }) => (id === "anniversary-patcher" ? { ...patcherState } : null),
+  run_patcher: async () => {
+    await sleep(900);
+    if (q.has("patchfail")) {
+      Object.assign(patcherState, { approved: true, state: "failed", error: "it changed none of the game's files (an unsupported game version?)", output: "Invalid executable", ranUnix: Math.floor(Date.now() / 1000) });
+      throw "Patcher.exe did not patch the game: it changed none of the game's files (an unsupported game version?)";
+    }
+    Object.assign(patcherState, { approved: true, state: "current", files: ["Fallout3.exe"], output: "Patched Fallout3.exe (1.7.0.4 -> 1.7.0.3)", error: null, ranUnix: Math.floor(Date.now() / 1000) });
+    return { ...patcherState };
   },
   fomod_view: ({ choices, target }) => runRockInstaller(choices ?? rockSaved?.choices, target),
   fomod_apply: ({ game, id, choices, target }) => {
@@ -685,9 +698,15 @@ const handlers = {
     nexusPending = null;
     return null;
   },
+  nexus_download_pass: () => null,
   nexus_download_install: async ({ profile, path, trust }) => {
     if (!nexusPending) throw "no download is waiting";
     if (q.has("unrecognised") && !trust) return { installed: null, unrecognised: true };
+    // `?othermod`: the first archive found is another mod's, passed over.
+    if (q.has("othermod") && !nexusPending.passed) {
+      nexusPending.passed = true;
+      return { installed: null, unrecognised: false, other: "Fallout Script Extender (FOSE)" };
+    }
     const p = nexusPending;
     nexusPending = null;
     return { installed: await nexusInstall(p.game, profile, p.modId, p.fileId), unrecognised: false };

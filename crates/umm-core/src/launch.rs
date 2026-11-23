@@ -27,6 +27,16 @@ use umm_store::Profile;
 pub enum LaunchEvent {
     /// A deployment left over from a crash was reverted before launching.
     Recovered(RevertReport),
+    /// These game files were replaced by a patcher's versions for the session.
+    Patched {
+        files: Vec<String>,
+    },
+    /// A script extender's loader starts the game, so that the extender loads.
+    /// `started_steam`: Steam was not running, and was started first (a Steam game).
+    ExtenderLoader {
+        loader: String,
+        started_steam: bool,
+    },
     Deployed {
         game_files: usize,
         runtime: Option<SyncReport>,
@@ -84,7 +94,9 @@ impl Session {
                 continue;
             }
             let profile = umm_store::load_profile(&game, &name)?;
-            let (inside, _) = split_runtime(build_plan(&game, &def, &profile)?.files, &rl);
+            let root = self.install_path(&def.def)?.map(|(p, _)| p);
+            let plan = build_plan(&game, &def, &profile, root.as_deref())?;
+            let (inside, _) = split_runtime(plan.files, &rl);
             runtime::sync(&dir, &inside)?;
         }
         Ok(())
@@ -109,7 +121,9 @@ impl Session {
         let root = self.require_install(&def.def)?;
         self.ensure_not_running(&def.def)?;
         let profile = umm_store::load_profile(&game, profile_name)?;
-        let mut plan = build_plan(&game, &def, &profile)?;
+        let mut plan = build_plan(&game, &def, &profile, Some(&root))?;
+        // Patchers' results replace the game's files (a patcher out of date runs first).
+        self.add_patches(&def, &profile, &root, &mut plan, true)?;
         let rl = def.def.runtime_loader();
         // The Godot Mod Loader's own files go to the game folder when UMM sets it up.
         let mut godotml_in_game = false;
@@ -345,8 +359,33 @@ impl Session {
 
         let game = self.data.game(id);
         let profile = umm_store::load_profile(&game, profile_name)?;
+        // A patched game exe starts its script extender itself (the Fallout Anniversary
+        // Patcher's loads FOSE): the extender's own loader would fail on it.
+        let patched = self.patched_in(id, &journal);
+        let mut def_launch = def.def.clone();
+        if let Some(l) = def_launch.launch.as_mut() {
+            if patched.iter().any(|p| p.eq_ignore_ascii_case(&l.exe)) {
+                l.ignore_extender_loader = true;
+            }
+        }
+        if !patched.is_empty() {
+            on_event(LaunchEvent::Patched { files: patched });
+        }
+        if let Some(loader) = extender_loader(&def_launch, &journal.game_root) {
+            // A Steam game started outside Steam restarts itself through Steam (without the
+            // extender) when Steam is not running: start Steam first.
+            let via_steam = def_launch
+                .launch
+                .as_ref()
+                .is_some_and(|l| l.steam_relaunch == SteamRelaunch::ViaSteam);
+            let started_steam = via_steam && ensure_steam(find_steam_exe());
+            on_event(LaunchEvent::ExtenderLoader {
+                loader: loader.file_name().unwrap_or_default().to_string(),
+                started_steam,
+            });
+        }
         let spec = build_spec(
-            &def.def,
+            &def_launch,
             &journal.game_root,
             &game.runtime_dir(&profile.name),
             &profile,
@@ -781,6 +820,80 @@ fn steam_appid_file(dir: &Path, app_id: u32) -> Result<PlannedFile> {
     })
 }
 
+/// The script extender loader beside the game's exe, unless the definition says to launch
+/// the game as usual.
+pub(crate) fn extender_loader(def: &GameDef, game_root: &Path) -> Option<RelPath> {
+    let launch = def.launch.as_ref()?;
+    if launch.ignore_extender_loader {
+        return None;
+    }
+    let exe = RelPath::parse(&launch.exe).ok()?;
+    let dir = exe.parent().unwrap_or_else(RelPath::root);
+    umm_gamedef::EXTENDER_LOADERS.iter().find_map(|name| {
+        let rel = dir.join(&RelPath::parse(name).ok()?);
+        rel.to_path(game_root).is_file().then_some(rel)
+    })
+}
+
+/// The game's process names, and its own launcher's beside its exe (`Fallout3Launcher.exe`),
+/// which Steam may start first: the game counts as running while either is, so a launcher
+/// closed without playing ends the session instead of a wait for the game.
+fn with_launchers(def: &GameDef, game_root: &Path) -> Vec<String> {
+    let mut names = def.process_names();
+    let dir = def
+        .launch
+        .as_ref()
+        .and_then(|l| RelPath::parse(&l.exe).ok())
+        .and_then(|e| e.parent())
+        .unwrap_or_else(RelPath::root)
+        .to_path(game_root);
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let lower = name.to_lowercase();
+            if lower.ends_with(".exe")
+                && lower.contains("launcher")
+                && !names.iter().any(|n| n.eq_ignore_ascii_case(&name))
+            {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
+
+/// How long to wait for Steam to start and sign in before launching a game outside it.
+const STEAM_START_WAIT: std::time::Duration = std::time::Duration::from_secs(45);
+/// Steam's process is up some time before it has signed in and can answer games.
+const STEAM_SETTLE: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// Starts Steam (minimised to the tray) if it is not running, and waits for it. Returns
+/// whether it had to be started.
+fn ensure_steam(steam: Option<PathBuf>) -> bool {
+    let names = ["steam.exe".to_string()];
+    if umm_launch::is_any_running(&names).unwrap_or(true) {
+        return false;
+    }
+    let Some(steam) = steam else { return false };
+    if std::process::Command::new(&steam)
+        .arg("-silent")
+        .spawn()
+        .is_err()
+    {
+        return false;
+    }
+    let start = std::time::Instant::now();
+    while start.elapsed() < STEAM_START_WAIT {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        // Its web helper starts once Steam is past its own updates and signing in.
+        if umm_launch::is_any_running(&["steamwebhelper.exe".to_string()]).unwrap_or(false) {
+            std::thread::sleep(STEAM_SETTLE);
+            break;
+        }
+    }
+    true
+}
+
 fn find_steam_exe() -> Option<PathBuf> {
     if cfg!(windows) {
         steam_roots()
@@ -940,6 +1053,26 @@ pub(crate) fn build_spec(
     }
     game_args.extend(profile.launch_args.iter().cloned());
 
+    // A script extender's loader starts the game itself, with the extender loaded; a Steam
+    // game started so still talks to the Steam client (overlay, playtime, achievements).
+    // The loader exits once the game is up: the game is followed by its process names.
+    if let Some(loader) = extender_loader(def, game_root) {
+        let path = loader.to_path(game_root);
+        // The loader too: one that fails (a game version it does not support) shows its error
+        // and exits before the game starts, which ends the session instead of waiting.
+        let mut names = def.process_names();
+        if let Some(n) = loader.file_name() {
+            names.push(n.to_string());
+        }
+        return Ok(LaunchSpec {
+            cwd: path.parent().map(Path::to_path_buf),
+            program: path,
+            args: game_args,
+            env: Vec::new(),
+            tracking: Tracking::names(names),
+        });
+    }
+
     if launch.steam_relaunch == SteamRelaunch::ViaSteam {
         let app_id = def.detect.steam_app_id.ok_or_else(|| {
             CoreError::Invalid("steam_relaunch = \"via_steam\" needs steam_app_id".into())
@@ -952,7 +1085,7 @@ pub(crate) fn build_spec(
             args,
             env: Vec::new(),
             cwd: None,
-            tracking: Tracking::names(def.process_names()),
+            tracking: Tracking::names(with_launchers(def, game_root)),
         });
     }
     Ok(LaunchSpec {
@@ -1468,6 +1601,48 @@ mod tests {
         assert_eq!(spec.program, PathBuf::from("steam.exe"));
         assert_eq!(spec.args, ["-applaunch", "480"]);
         assert_eq!(spec.tracking, Tracking::names(vec!["Game.exe".into()]));
+    }
+
+    #[test]
+    fn a_script_extenders_loader_starts_the_game() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("Fallout3.exe"), "exe").unwrap();
+        std::fs::write(root.join("fose_loader.exe"), "loader").unwrap();
+        let launch = "[launch]\nexe = \"Fallout3.exe\"\nsteam_relaunch = \"via_steam\"\n";
+        let spec = |d: &GameDef| {
+            build_spec(
+                d,
+                root,
+                Path::new("/rt"),
+                &Profile::new("Default"),
+                None,
+                Some(PathBuf::from("steam.exe")),
+            )
+            .unwrap()
+        };
+        // Run in Steam's place, followed by its own process name and the game's.
+        let s = spec(&def(launch));
+        assert_eq!(s.program, root.join("fose_loader.exe"));
+        assert_eq!(s.cwd.as_deref(), Some(root));
+        assert!(s.args.is_empty());
+        assert_eq!(
+            s.tracking,
+            Tracking::names(vec!["Fallout3.exe".into(), "fose_loader.exe".into()])
+        );
+        // Set up in Steam (or a patched exe): launched through Steam as usual.
+        let s = spec(&def(&format!("{launch}ignore_extender_loader = true\n")));
+        assert_eq!(s.program, PathBuf::from("steam.exe"));
+        // No loader deployed (a vanilla profile): through Steam, which starts the game's
+        // launcher first: followed too.
+        std::fs::remove_file(root.join("fose_loader.exe")).unwrap();
+        std::fs::write(root.join("Fallout3Launcher.exe"), "launcher").unwrap();
+        let s = spec(&def(launch));
+        assert_eq!(s.program, PathBuf::from("steam.exe"));
+        assert_eq!(
+            s.tracking,
+            Tracking::names(vec!["Fallout3.exe".into(), "Fallout3Launcher.exe".into()])
+        );
     }
 
     #[test]

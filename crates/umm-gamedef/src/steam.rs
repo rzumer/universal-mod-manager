@@ -99,6 +99,9 @@ pub enum Engine {
     UnityMono,
     UnityIl2cpp,
     Unreal,
+    /// Bethesda's engines (NetImmerse, Gamebryo, Creation Engine): a data folder of plugins
+    /// and archives.
+    Bethesda,
     Unknown,
 }
 
@@ -108,6 +111,7 @@ impl Engine {
             Engine::UnityMono => "Unity (Mono)",
             Engine::UnityIl2cpp => "Unity (IL2CPP)",
             Engine::Unreal => "Unreal Engine",
+            Engine::Bethesda => "Gamebryo / Creation Engine",
             Engine::Unknown => "Unknown engine",
         }
     }
@@ -209,6 +213,8 @@ pub struct Inspection {
     /// Every exe that could be the game, the likely one first.
     pub exes: Vec<String>,
     pub unreal_project: Option<String>,
+    /// A Bethesda game's data folder (`Data`, `Data Files`), as spelled on disk.
+    pub data_folder: Option<String>,
 }
 
 fn by_size(mut exes: Vec<(String, u64)>) -> Vec<String> {
@@ -245,6 +251,17 @@ pub fn inspect_folder(root: &Path) -> Inspection {
             exe,
             exes,
             unreal_project: None,
+            data_folder: None,
+        };
+    }
+    // Bethesda: a data folder at the top holding a master plugin (`Fallout3.esm`).
+    if let Some(data) = bethesda_data_folder(root) {
+        return Inspection {
+            engine: Engine::Bethesda,
+            exe: exes.first().cloned().unwrap_or_default(),
+            exes,
+            unreal_project: None,
+            data_folder: Some(data),
         };
     }
     if exists_ci(root, "Engine") {
@@ -268,6 +285,7 @@ pub fn inspect_folder(root: &Path) -> Inspection {
             exe: exes.first().cloned().unwrap_or_default(),
             exes,
             unreal_project: project,
+            data_folder: None,
         };
     }
     Inspection {
@@ -275,7 +293,26 @@ pub fn inspect_folder(root: &Path) -> Inspection {
         exe: exes.first().cloned().unwrap_or_default(),
         exes,
         unreal_project: None,
+        data_folder: None,
     }
+}
+
+/// The folder at the top of a game folder named `Data` or `Data Files` that holds an `.esm`
+/// master, as spelled on disk.
+fn bethesda_data_folder(root: &Path) -> Option<String> {
+    let rd = fs::read_dir(root).ok()?;
+    rd.flatten()
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.eq_ignore_ascii_case("Data") || n.eq_ignore_ascii_case("Data Files"))
+        .find(|n| {
+            fs::read_dir(root.join(n)).is_ok_and(|rd| {
+                rd.flatten().any(|e| {
+                    let name = e.file_name().to_string_lossy().to_lowercase();
+                    name.ends_with(".esm") && e.path().is_file()
+                })
+            })
+        })
 }
 
 /// Where a draft's game comes from: everything besides the files that goes in its definition.
@@ -652,6 +689,27 @@ fn build(
                 ));
             }
         }
+        Engine::Bethesda => {
+            if let Some(d) = found
+                .data_folder
+                .as_ref()
+                .filter(|_| setup == LoaderSetup::Generic)
+            {
+                install.extend(
+                    crate::setup::bethesda_rules(d)
+                        .into_iter()
+                        .filter(|r| r.pattern != "**"),
+                );
+                notes.push(Note::new(
+                    "bethesda",
+                    format!(
+                        "Bethesda game: plugins, archives and asset folders (meshes, textures, \
+                         sound, script extender plugins…) go to {d}/, and FOMOD installers \
+                         install there. Everything else keeps its path."
+                    ),
+                ));
+            }
+        }
         Engine::Unknown if setup == LoaderSetup::Generic => notes.push(Note::new(
             "unknown-engine",
             "Engine not recognised: mod files keep their paths relative to the game folder.",
@@ -721,6 +779,18 @@ fn build(
                 }
             }
         }
+        // The game's own launcher beside its exe (Fallout3Launcher.exe), which Steam may start
+        // first: the game counts as running while either is, and a launcher closed without
+        // playing ends the session.
+        let dir = |p: &str| p.rsplit_once('/').map_or("", |(d, _)| d).to_lowercase();
+        for e in found.exes.iter().filter(|e| dir(e) == dir(exe)) {
+            let name = file(e);
+            if name.to_lowercase().contains("launcher")
+                && !process_names.iter().any(|n| n.eq_ignore_ascii_case(&name))
+            {
+                process_names.push(name);
+            }
+        }
         // Games whose exe hands off to processes of other names.
         for (launcher, others) in HANDED_OFF {
             if file(exe).eq_ignore_ascii_case(launcher) {
@@ -732,6 +802,7 @@ fn build(
             args: Vec::new(),
             steam_relaunch: origin.relaunch,
             process_names,
+            ignore_extender_loader: false,
         })
     };
 
@@ -1004,6 +1075,7 @@ mod tests {
         // A game added by hand (a GOG install, say) is recognised the same way.
         let manual = tempfile::tempdir().unwrap();
         touch(&manual.path().join("FalloutNV.exe"), 100);
+        touch(&manual.path().join("FalloutNVLauncher.exe"), 10);
         touch(&manual.path().join("Data/FalloutNV.esm"), 1);
         let found = inspect_folder(manual.path());
         let d = draft_manual(
@@ -1016,9 +1088,48 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            d.def.plugins.unwrap().list,
+            d.def.plugins.as_ref().unwrap().list,
             "%LOCALAPPDATA%/FalloutNV/plugins.txt"
         );
+        // Its launcher, which Steam starts first, is followed too.
+        assert_eq!(
+            d.def.launch.as_ref().unwrap().process_names,
+            ["FalloutNV.exe", "FalloutNVLauncher.exe"]
+        );
+        // Recognised by its data folder, which plugins, archives and assets go to.
+        assert_eq!(found.engine, Engine::Bethesda);
+        assert_eq!(found.data_folder.as_deref(), Some("Data"));
+        let c = d.def.compile().unwrap();
+        let map = |p: &str| {
+            c.map_mod_file("m", &crate::RelPath::parse(p).unwrap())
+                .unwrap()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(map("Mod.esp"), "Data/Mod.esp");
+        assert_eq!(map("Mod - Main.bsa"), "Data/Mod - Main.bsa");
+        assert_eq!(map("meshes/a/b.nif"), "Data/meshes/a/b.nif");
+        assert_eq!(map("nvse/plugins/x.dll"), "Data/nvse/plugins/x.dll");
+        assert_eq!(map("src/nvse/x.cpp"), "src/nvse/x.cpp");
+        assert_eq!(map("nvse/x.cpp"), "nvse/x.cpp");
+        assert_eq!(map("Data/textures/t.dds"), "Data/textures/t.dds");
+        assert_eq!(map("nvse_loader.exe"), "nvse_loader.exe");
+        assert_eq!(map("sub/Mod.esp"), "sub/Mod.esp");
+        assert!(d.notes.iter().any(|n| n.key == "bethesda"));
+        // Set to generic again from another setup, the rules come back.
+        let other = d
+            .def
+            .with_setup(LoaderSetup::Bepinex, None)
+            .unwrap()
+            .with_setup(LoaderSetup::Generic, None)
+            .unwrap();
+        assert_eq!(other.install.len(), d.def.install.len());
+        // Morrowind's is `Data Files`.
+        let mw_dir = tempfile::tempdir().unwrap();
+        touch(&mw_dir.path().join("Morrowind.exe"), 100);
+        touch(&mw_dir.path().join("Data Files/Morrowind.esm"), 1);
+        let mw_found = inspect_folder(mw_dir.path());
+        assert_eq!(mw_found.data_folder.as_deref(), Some("Data Files"));
 
         // Other games keeping a list: in the game folder, or with a folder per mod.
         let or = exe("OblivionRemastered.exe").plugins(manual.path());

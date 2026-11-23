@@ -73,6 +73,10 @@ const S = {
   busy: false,
   session: { game: null, phase: "idle", log: [] }, // phase: idle|deploying|running|waiting|reverting
   lastReport: {},
+  // Patcher mods' status, by `game/mod`: `{ s, gen, loading }`, loaded as their rows show
+  // and again after each refresh (`patchersGen`).
+  patchers: {},
+  patchersGen: 0,
   // Thunderstore tab: the query, the page shown (null while loading), and an install/update
   // in progress ({ message }).
   ts: { game: null, query: { text: "", category: "", sort: "rating", installedOnly: false, offset: 0, limit: 40 }, page: null, busy: null },
@@ -251,6 +255,9 @@ async function refreshAll() {
   // tabs' "installed" and "update" marks are out of date until they load again.
   S.ts.stale = true;
   S.nexus.stale = true;
+  // A launch may have run a patcher again (after a game update): checked again, showing the
+  // last state meanwhile.
+  S.patchersGen++;
   forgetMissingIcons();
   await loadGames();
   await loadGame();
@@ -627,7 +634,9 @@ function modsTab(d) {
           "div",
           { class: "mod-meta" },
           m ? `${m.thunderstore ? "Thunderstore · " : m.nexusUrl ? "Nexus Mods · " : ""}${e.id} · ${m.files} file${m.files === 1 ? "" : "s"} · ${fmtBytes(m.size)}` : "No longer installed — remove it from the profile or import it again",
-          m?.installer === "waiting"
+          m?.patcher
+            ? patcherChip(m)
+            : m?.installer === "waiting"
             ? h("button", { class: "chip warn chip-button", title: "Nothing of this mod is installed until its installer's options are chosen", onclick: () => fomodDialog(m) }, "Choose its install options")
             : m?.placement?.guessed &&
                 h("button", { class: "chip warn chip-button", title: "UMM could not tell where this mod's files go", onclick: () => placementDialog(m) }, "Check deployment"),
@@ -2134,6 +2143,7 @@ function waitForDownload(dir, label) {
       if (p) finish({ path: p });
     };
     const how = h("p", {}, "Its page is open in a UMM window. Click “Slow download” there; log in to Nexus Mods in that window first if the page asks. UMM installs the file as soon as it has downloaded.");
+    const resumable = h("p", { class: "muted small" }, `A resumable download asks where to save the file: save it in ${dir}, where UMM looks for it, or choose the file here once it is done.`);
     const waiting = h("div", { class: "loading" }, h("span", { class: "spinner" }), "Waiting for the download…");
     const note = h("p", { class: "muted small" }, "Logging in there keeps you logged in for next time.");
     const reopen = h(
@@ -2161,7 +2171,7 @@ function waitForDownload(dir, label) {
           inBrowser = true;
           browserBtn.remove();
           if (reopen.isConnected) reopen.replaceWith(waiting);
-          how.textContent = "Its page is open in your browser. Click “Slow download” there; log in to Nexus Mods first if the page asks.";
+          how.textContent = "Its page is open in your browser. Click “Slow download” there; log in to Nexus Mods first if the page asks. A resumable download asks where to save the file: save it in your Downloads folder.";
           waiting.lastChild.textContent = `Waiting for it in ${dir}…`;
           note.textContent = "If your browser saves downloads somewhere else, choose the file once it is done.";
         },
@@ -2172,7 +2182,7 @@ function waitForDownload(dir, label) {
       "div",
       { class: "modal", role: "dialog", "aria-modal": "true", "aria-label": `Download ${label}` },
       h("h2", {}, `Download ${label}`),
-      h("div", { class: "modal-body" }, how, waiting, note),
+      h("div", { class: "modal-body" }, how, waiting, resumable, note),
       h(
         "div",
         { class: "modal-actions" },
@@ -2222,25 +2232,45 @@ async function nexusRun(title, call) {
 async function nexusGet(domain, modId, fileId, label, { quiet = false } = {}) {
   const game = S.gameId;
   const dir = await attempt(() => api.nexusDownloadStart(game, domain, modId, fileId));
-  if (!dir) return false;
-  const got = await waitForDownload(dir, label);
-  if (!got) {
-    attempt(api.nexusDownloadCancel);
-    return false;
+  if (!dir) return null;
+  // An archive that turns out to be something else (another download finished meanwhile, in
+  // the Downloads folder) is passed over, and the wait goes on: the window keeps downloading.
+  for (;;) {
+    const got = await waitForDownload(dir, label);
+    if (!got) {
+      attempt(api.nexusDownloadCancel);
+      return null;
+    }
+    const path = got.path;
+    const file = path.split(/[\\/]/).pop();
+    let r = await nexusRun("Installing", () => api.nexusDownloadInstall(S.profileName, path, false));
+    if (r?.other) {
+      toast(`Passed over ${file}: it is ${r.other} on Nexus Mods, not ${label}. Still waiting for ${label}.`, "info");
+      continue;
+    }
+    if (r?.unrecognised) {
+      const v = await modal({
+        title: "Install this file?",
+        body: h("p", {}, `Nexus Mods does not recognise ${file} by its contents, so UMM cannot check that it is ${label}. Install it as that file anyway?`),
+        actions: [
+          { label: "Cancel the download", value: "cancel", class: "ghost" },
+          { label: "Not this file: keep waiting", value: "wait", class: "" },
+          { label: "Install", value: "install", class: "primary", focus: true },
+        ],
+      });
+      if (v === "wait") {
+        await attempt(() => api.nexusDownloadPass(path));
+        continue;
+      }
+      if (v !== "install") {
+        attempt(api.nexusDownloadCancel);
+        return null;
+      }
+      r = await nexusRun("Installing", () => api.nexusDownloadInstall(S.profileName, path, true));
+    }
+    if (r?.installed && !quiet) await nexusToast(r.installed);
+    return r?.installed || null;
   }
-  const path = got.path;
-  let r = await nexusRun("Installing", () => api.nexusDownloadInstall(S.profileName, path, false));
-  if (r?.unrecognised) {
-    const ok = await confirmModal(
-      "Install this file?",
-      `Nexus Mods does not recognise ${path.split(/[\\/]/).pop()} by its contents, so UMM cannot check that it is ${label}. Install it as that file anyway?`,
-      "Install",
-    );
-    r = ok ? await nexusRun("Installing", () => api.nexusDownloadInstall(S.profileName, path, true)) : null;
-    if (!ok) attempt(api.nexusDownloadCancel);
-  }
-  if (r?.installed && !quiet) await nexusToast(r.installed);
-  return r?.installed || null;
 }
 
 async function loadLoaderChoice() {
@@ -2417,6 +2447,9 @@ async function importPaths(paths) {
 /// `fresh`: a new mod, not an update; cancelling its installer removes it again, since
 /// nothing of it would ever be installed.
 async function afterInstall(m, fresh = true) {
+  // A patcher does nothing until it has run: offered right away.
+  const mod = S.details?.mods?.find((x) => x.id === m?.id);
+  if (fresh && mod?.patcher) return patcherDialog(mod);
   if (m?.installer === "waiting") {
     const saved = await fomodDialog(m);
     if (!saved && fresh) {
@@ -2619,6 +2652,81 @@ async function fomodDialog(m) {
 
 /// Where a mod's files go: the folder inside it they install from, the game folder they go
 /// into, and the files left out. `asked` when UMM could not tell and opened it after an install.
+/// A patcher mod's state in its row, loading it the first time the row shows.
+function patcherChip(m) {
+  const game = S.gameId;
+  const key = `${game}/${m.id}`;
+  const entry = S.patchers[key];
+  const st = entry?.s;
+  if (!entry || (entry.gen !== S.patchersGen && !entry.loading)) {
+    const gen = S.patchersGen;
+    S.patchers[key] = { s: st, gen: entry?.gen, loading: true };
+    api
+      .patcherStatus(game, m.id)
+      .then((s) => {
+        S.patchers[key] = { s, gen };
+        if (S.gameId === game && S.tab === "mods") renderMain();
+      })
+      .catch(() => {
+        S.patchers[key] = { s: st, gen };
+      });
+  }
+  const [cls, text, title] = !st
+    ? ["chip", "Patcher", "Its program patches the game's files"]
+    : st.state === "current"
+      ? ["chip ok", `Patches ${st.files.join(", ")}`, "While mods are deployed, its patched files replace the game's"]
+      : st.state === "outdated"
+        ? ["chip", "Patcher runs again at the next launch", "The game changed since it last ran (an update)"]
+        : st.state === "failed"
+          ? ["chip warn", "Patcher failed", st.error || ""]
+          : ["chip warn", `Run ${st.exe}`, "Nothing of this mod is used until its patcher has run"];
+  return h("button", { class: `${cls} chip-button`, title, onclick: () => patcherDialog(m) }, text);
+}
+
+/// A patcher mod: what running it does, its last run, and running it (the user's approval
+/// to run it again by itself after a game update).
+async function patcherDialog(m) {
+  const game = S.gameId;
+  const key = `${game}/${m.id}`;
+  const st = await attempt(() => api.patcherStatus(game, m.id));
+  if (!st) return;
+  S.patchers[key] = { s: st, gen: S.patchersGen };
+  const when = st.ranUnix ? new Date(st.ranUnix * 1000).toLocaleString() : null;
+  const body = [
+    h(
+      "p",
+      {},
+      `${m.name} is a patcher: its program, ${st.exe}, changes the game's own files. UMM runs it, keeps the files it changed, and puts the game's own files back afterwards.`,
+    ),
+    h(
+      "p",
+      { class: "muted" },
+      "While mods are deployed, the patched files replace the game's, and the originals come back afterwards, so Steam still sees the game as it shipped. After a game update, UMM runs the patcher again by itself before the next launch.",
+    ),
+    st.files.length > 0 && h("p", {}, h("strong", {}, "Patches: "), st.files.join(", ")),
+    st.error && h("p", { class: "error-text" }, st.error),
+    when && h("p", { class: "muted small" }, `Last run ${when}.`),
+    st.output && h("pre", { class: "patcher-output" }, st.output),
+  ];
+  const v = await modal({
+    title: `${m.name}: patcher`,
+    body,
+    actions: [
+      { label: "Close", value: null, class: "ghost" },
+      { label: st.approved ? `Run ${st.exe} again` : `Run ${st.exe}`, value: "run", class: "primary", focus: !st.approved },
+    ],
+  });
+  if (v !== "run") return;
+  S.busy = `Running ${st.exe}…`;
+  renderMain();
+  const r = await attempt(() => api.runPatcher(game, m.id));
+  S.busy = false;
+  S.patchers[key] = { s: r || (await api.patcherStatus(game, m.id).catch(() => undefined)), gen: S.patchersGen };
+  if (r) toast(`${st.exe} patched ${r.files.join(", ")}; the patched files replace the game's while mods are deployed`, "ok");
+  renderMain();
+  if (!r && S.patchers[key]?.s?.output) await patcherDialog(m);
+}
+
 async function placementDialog(m, asked = false) {
   const game = S.gameId;
   let view = await attempt(() => api.placementView(game, m.id, null));
@@ -3034,13 +3142,21 @@ function onSession(e) {
       // The health check shown beside the session should describe the deployed state.
       if (S.tab === "health" && S.gameId === e.game) loadHealth();
       break;
+    case "extenderLoader":
+      S.session.loader = e.loader;
+      if (e.startedSteam) logLine("Started Steam first, so the game can connect to it");
+      logLine(`Starting the game with ${e.loader}, so that its script extender loads`);
+      break;
+    case "patched":
+      logLine(`Swapped in the patched ${e.files.join(", ")}`);
+      break;
     case "started":
       S.session.phase = "running";
       logLine(`Started the game (process ${e.pid})`);
       break;
     case "waitingForGame":
       S.session.phase = "waiting";
-      logLine("Launched through Steam; waiting for the game to appear");
+      logLine(S.session.loader ? `Started ${S.session.loader}; waiting for the game to appear` : "Launched through Steam; waiting for the game to appear");
       break;
     case "gameDetected":
       S.session.phase = "running";

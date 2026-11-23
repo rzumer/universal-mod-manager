@@ -7,7 +7,11 @@ use crate::{CoreError, ModMeta, Result, Session};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use umm_deploy::GameLock;
-use umm_gamedef::{CompiledDef, PluginListFormat, RelPath, IN_GAME_BACKUP_DIR, PLUGIN_EXTENSIONS};
+use umm_gamedef::setup::bethesda_data_folder;
+use umm_gamedef::{
+    CompiledDef, RelPath, DATA_ARCHIVE_EXTENSIONS, DATA_DIRS, EXTENDER_DIRS, IN_GAME_BACKUP_DIR,
+    PLUGIN_EXTENSIONS,
+};
 use umm_store::{LeftOut, Placement};
 use walkdir::WalkDir;
 
@@ -110,44 +114,10 @@ fn ext(name: &str) -> Option<&str> {
         .filter(|e| !e.is_empty())
 }
 
-/// What goes in a Bethesda game's data folder (`Data`, `Data Files`) besides plugins: their
-/// archives, and the folders of loose files the engine reads from it. Script extenders read
-/// their plugins from `Data/<extender>/plugins`.
-const DATA_EXTENSIONS: &[&str] = &["bsa", "ba2"];
-const DATA_DIRS: &[&str] = &[
-    "meshes",
-    "textures",
-    "sound",
-    "music",
-    "menus",
-    "shaders",
-    "scripts",
-    "interface",
-    "fonts",
-    "strings",
-    "video",
-    "lodsettings",
-    "grass",
-    "trees",
-    "distantlod",
-    "seq",
-    "materials",
-    "config",
-    "fose",
-    "nvse",
-    "obse",
-    "skse",
-    "f4se",
-    "sfse",
-    "mwse",
-];
-
 /// The game's data folder (lower-cased), where plugins and their files go, for games with a
 /// Bethesda plugin list.
 fn data_folder(def: &CompiledDef) -> Option<String> {
-    let p = def.def.plugins.as_ref()?;
-    (p.format != PluginListFormat::RimworldXml && !p.folder.is_empty())
-        .then(|| p.folder.trim_matches('/').to_lowercase())
+    bethesda_data_folder(&def.def).map(str::to_lowercase)
 }
 
 /// Whether `c` (relative to the mod's root) is something a data folder holds: a plugin or
@@ -155,10 +125,13 @@ fn data_folder(def: &CompiledDef) -> Option<String> {
 fn data_content(c: &RelPath) -> bool {
     let first = c.first().unwrap_or_default().to_lowercase();
     if c.depth() == 1 {
-        return ext(&first)
-            .is_some_and(|e| PLUGIN_EXTENSIONS.contains(&e) || DATA_EXTENSIONS.contains(&e));
+        return ext(&first).is_some_and(|e| {
+            PLUGIN_EXTENSIONS.contains(&e) || DATA_ARCHIVE_EXTENSIONS.contains(&e)
+        });
     }
+    let second = c.components().nth(1).unwrap_or_default().to_lowercase();
     DATA_DIRS.contains(&first.as_str())
+        || (c.depth() > 2 && EXTENDER_DIRS.contains(&first.as_str()) && second == "plugins")
 }
 
 fn join(t: &str, rel: &str) -> String {
@@ -174,10 +147,20 @@ fn join(t: &str, rel: &str) -> String {
 pub fn is_doc(rel: &RelPath) -> bool {
     let name = rel.file_name().unwrap_or_default().to_lowercase();
     let e = ext(&name).unwrap_or("");
-    // Anywhere: links, checksums, release notes and OS clutter.
+    // Anywhere: links, checksums, release notes, build projects and OS clutter.
     if matches!(
         e,
-        "url" | "nfo" | "sfv" | "md5" | "sha1" | "sha256" | "sha512"
+        "url"
+            | "nfo"
+            | "sfv"
+            | "md5"
+            | "sha1"
+            | "sha256"
+            | "sha512"
+            | "sln"
+            | "vcproj"
+            | "vcxproj"
+            | "filters"
     ) || matches!(name.as_str(), "thumbs.db" | "desktop.ini" | ".ds_store")
     {
         return true;
@@ -187,7 +170,16 @@ pub fn is_doc(rel: &RelPath) -> bool {
         let top = rel.first().unwrap_or_default().to_lowercase();
         return matches!(
             top.as_str(),
-            "fomod" | "screenshots" | "screenshot" | "docs" | "documentation" | "__macosx"
+            "fomod"
+                | "screenshots"
+                | "screenshot"
+                | "docs"
+                | "documentation"
+                | "__macosx"
+                // Source code some tools ship beside their build (a script extender's `src/`).
+                | "src"
+                | "source"
+                | "sources"
         );
     }
     // At the root: documents, and readme-like text files.
@@ -591,6 +583,7 @@ impl Session {
         let (def, meta) = self.placeable(game_id, mod_id)?;
         let files: Vec<&str> = meta.files.keys().map(String::as_str).collect();
         let ix = self.game_index(&def);
+        let root = self.install_path(&def.def)?.map(|(p, _)| p);
         let suggested = suggest(&files, &ix, &def).unwrap_or_default();
         let placement = match placement {
             Some(p) => p
@@ -620,11 +613,18 @@ impl Session {
                 ),
                 Ok(p) => match def.map_mod_file(mod_id, &p)? {
                     None => (None, Some("no install rule matches".to_string()), false),
-                    Some(t) if def.is_protected(&t) => (
-                        None,
-                        Some(format!("{t} is protected by the game definition")),
-                        false,
-                    ),
+                    Some(t)
+                        if def.is_protected(&t)
+                            && root.as_ref().is_none_or(|r| t.to_path(r).exists()) =>
+                    {
+                        (
+                            None,
+                            Some(format!(
+                                "{t} is a game file protected by the game definition"
+                            )),
+                            false,
+                        )
+                    }
                     Some(t) => (Some(t.to_string()), None, false),
                 },
             };
@@ -832,13 +832,31 @@ mod tests {
         assert_eq!(p.target, "Data");
         // Already laid out from the game folder: left as it is.
         assert!(suggest(&["Data/Mod.esp"], &game, &fo3).is_none());
-        // The script extender's loader goes beside the game.
+        // The script extender's loader goes beside the game, and its source code nowhere: the
+        // archive's top stays its root.
         let p = suggest(
             &["fose_loader.exe", "fose_1_7.dll", "fose_readme.txt"],
             &game,
             &fo3,
         );
         assert!(p.is_none_or(|p| p.target.is_empty()));
+        let mut fose = vec![
+            "fose_loader.exe",
+            "fose_1_7.dll",
+            "fose_1_7ng.dll",
+            "fose_readme.txt",
+        ];
+        let src: Vec<String> = (0..98)
+            .map(|i| format!("src/fose/f{i}.cpp"))
+            .chain((0..72).map(|i| format!("src/common/c{i}.h")))
+            .collect();
+        fose.extend(src.iter().map(String::as_str));
+        let p = suggest(&fose, &game, &fo3);
+        assert!(
+            p.as_ref()
+                .is_none_or(|p| p.root.is_empty() && p.target.is_empty()),
+            "{p:?}"
+        );
     }
 
     #[test]
@@ -856,6 +874,8 @@ mod tests {
             "Screenshots/1.jpg",
             "guide.pdf",
             "Read Me NCR Outcast.txt",
+            "src/fose/GameAPI.cpp",
+            "loader.vcxproj",
             "StreetLights Wasteland Readme.txt",
             "fellout-readme-quick.txt",
             "fose_whatsnew.txt",

@@ -209,7 +209,8 @@ button.launch { justify-content: center; font-size: 16px; padding: 11px 18px; bo
 .mod-main { min-width: 0; }
 .steam-row .mod-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .version { font-weight: 400; font-size: 12px; color: var(--muted); }
-.mod-meta { font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Wraps rather than cutting off: its chip (what the mod still needs) must stay readable. */
+.mod-meta { font-size: 12.5px; color: var(--muted); display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; min-width: 0; overflow-wrap: anywhere; }
 .row-actions { display: flex; gap: 4px; align-items: center; }
 .toggle { position: relative; display: inline-flex; cursor: pointer; }
 .toggle input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
@@ -356,7 +357,7 @@ button.inline-link { display: inline; padding: 0; font-size: inherit; }
 .place-file code { overflow-wrap: anywhere; }
 .place-to { font-size: 12.5px; }
 .error-text { color: var(--danger, #c0392b); }
-.mod-meta .chip-button { margin-left: 8px; }
+.mod-meta .chip-button { flex: none; white-space: nowrap; }
 .nexus-reqs { margin-top: 14px; }
 .nexus-reqs h3 { font-size: 13px; margin: 0 0 6px; }
 .nexus-req { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 4px 0; }
@@ -397,6 +398,7 @@ button.ts-name:hover svg, button.ts-name:focus-visible svg { opacity: 1; fill: v
 .ts-desc { font-size: 13px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ts-meta { font-size: 12px; margin-top: 2px; }
 .ts-row > button, .ts-row > .chip { flex: none; }
+.patcher-output { max-height: 180px; overflow: auto; padding: 8px 10px; border-radius: var(--radius); background: var(--surface-2); font-size: 12px; white-space: pre-wrap; }
 .version-list { display: flex; flex-direction: column; max-height: 320px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius); }
 .version-row { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-top: 1px solid var(--border); cursor: pointer; }
 .version-row:first-child { border-top: none; }

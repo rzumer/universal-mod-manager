@@ -352,6 +352,51 @@ pub fn archive_kind(p: &Path) -> Option<ArchiveKind> {
     }
 }
 
+impl ArchiveKind {
+    pub fn extension(self) -> &'static str {
+        match self {
+            ArchiveKind::Zip => "zip",
+            ArchiveKind::SevenZip => "7z",
+            ArchiveKind::Rar => "rar",
+        }
+    }
+}
+
+/// The archive format of a file, by its first bytes: for files saved under a name that says
+/// nothing (a download a page handed over without one, saved as `<id>.txt`).
+pub fn sniff_archive(p: &Path) -> Option<ArchiveKind> {
+    use std::io::Read;
+    let mut head = [0u8; 8];
+    let n = fs::File::open(p).and_then(|mut f| f.read(&mut head)).ok()?;
+    let head = &head[..n];
+    if head.starts_with(b"PK\x03\x04") || head.starts_with(b"PK\x05\x06") {
+        Some(ArchiveKind::Zip)
+    } else if head.starts_with(&[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C]) {
+        Some(ArchiveKind::SevenZip)
+    } else if head.starts_with(b"Rar!\x1A\x07") {
+        Some(ArchiveKind::Rar)
+    } else {
+        None
+    }
+}
+
+/// An archive saved under a name that does not say what it is, renamed with its format's
+/// extension (`<id>.txt` → `<id>.7z`). Other files, and archives named as such, are left
+/// as they are. Returns the file's path afterwards.
+pub fn name_archive(p: &Path) -> PathBuf {
+    if archive_kind(p).is_some() {
+        return p.to_path_buf();
+    }
+    let Some(kind) = sniff_archive(p) else {
+        return p.to_path_buf();
+    };
+    let named = p.with_extension(kind.extension());
+    match fs::rename(p, &named) {
+        Ok(()) => named,
+        Err(_) => p.to_path_buf(),
+    }
+}
+
 /// Where an archive entry named `name` goes under `dst`; refused if it would leave `dst`.
 /// `None` for the archive's root itself.
 fn entry_path(dst: &Path, name: &str) -> Result<Option<PathBuf>> {
@@ -729,5 +774,27 @@ mod tests {
             Err(StoreError::EmptyMod)
         ));
         assert!(!g.mod_dir("empty").exists());
+    }
+}
+
+#[cfg(test)]
+mod sniff_tests {
+    use super::*;
+
+    #[test]
+    fn names_an_archive_saved_without_its_extension() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path();
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        w.start_file("a.esp", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        fs::write(d.join("92ceb69f.txt"), w.finish().unwrap().into_inner()).unwrap();
+        let named = name_archive(&d.join("92ceb69f.txt"));
+        assert_eq!(named, d.join("92ceb69f.zip"));
+        assert!(named.is_file() && !d.join("92ceb69f.txt").exists());
+        fs::write(d.join("x.txt"), [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, 0, 4]).unwrap();
+        assert_eq!(name_archive(&d.join("x.txt")), d.join("x.7z"));
+        fs::write(d.join("notes.txt"), "hello").unwrap();
+        assert_eq!(name_archive(&d.join("notes.txt")), d.join("notes.txt"));
     }
 }

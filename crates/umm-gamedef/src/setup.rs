@@ -5,8 +5,9 @@
 
 use crate::{
     loader_name, thunderstore_inject, GameDef, GameDefError, Inject, InstallRule, Loader,
-    Thunderstore, BEPINEX_KIND, BEPISLOADER_KIND, GDWEAVE_KIND, GODOTML_KIND, LOVELY_KIND,
-    MIO_KIND, NORTHSTAR_KIND, RECURSIVE_MELONLOADER_KIND, RIVET_KIND, ROM_KIND, SHIMLOADER_KIND,
+    PluginListFormat, Thunderstore, BEPINEX_KIND, BEPISLOADER_KIND, DATA_ARCHIVE_EXTENSIONS,
+    DATA_DIRS, EXTENDER_DIRS, GDWEAVE_KIND, GODOTML_KIND, LOVELY_KIND, MIO_KIND, NORTHSTAR_KIND,
+    PLUGIN_EXTENSIONS, RECURSIVE_MELONLOADER_KIND, RIVET_KIND, ROM_KIND, SHIMLOADER_KIND,
     THUNDERSTORE_SOURCE, UMM_KIND,
 };
 use serde::{Deserialize, Serialize};
@@ -53,6 +54,37 @@ fn rule(m: &str, t: &str) -> InstallRule {
         pattern: m.into(),
         target: t.into(),
     }
+}
+
+/// Install rules for a Bethesda game without a mod loader: plugins, archives and the data
+/// folder's usual folders go to the data folder (`Data`); everything else, a mod laid out from
+/// the game folder (`Data/…`) included, keeps its path.
+pub fn bethesda_rules(data: &str) -> Vec<InstallRule> {
+    let data = data.trim_matches('/');
+    let mut v: Vec<InstallRule> = PLUGIN_EXTENSIONS
+        .iter()
+        .chain(DATA_ARCHIVE_EXTENSIONS)
+        .map(|e| rule(&format!("*.{e}"), &format!("{data}/")))
+        .collect();
+    v.extend(
+        DATA_DIRS
+            .iter()
+            .map(|d| rule(&format!("{d}/**"), &format!("{data}/{d}/"))),
+    );
+    v.extend(
+        EXTENDER_DIRS
+            .iter()
+            .map(|d| rule(&format!("{d}/plugins/**"), &format!("{data}/{d}/plugins/"))),
+    );
+    v.push(rule("**", ""));
+    v
+}
+
+/// The data folder of a definition's Bethesda plugin list (not RimWorld's mod list).
+pub fn bethesda_data_folder(def: &GameDef) -> Option<&str> {
+    let p = def.plugins.as_ref()?;
+    let folder = p.folder.trim_matches('/');
+    (p.format != PluginListFormat::RimworldXml && !folder.is_empty()).then_some(folder)
 }
 
 /// Install rules for BepInEx mods that are not already laid out for the game.
@@ -269,7 +301,11 @@ impl GameDef {
             .paths
             .retain(|p| !LOADER_CONFIGS.contains(&p.as_str()));
         let (loader, rules, config) = match setup {
-            LoaderSetup::Generic => (None, vec![rule("**", "")], None),
+            LoaderSetup::Generic => (
+                None,
+                bethesda_data_folder(self).map_or_else(|| vec![rule("**", "")], bethesda_rules),
+                None,
+            ),
             LoaderSetup::Bepinex => (
                 Some(Loader {
                     kind: BEPINEX_KIND.into(),

@@ -57,7 +57,8 @@ pub struct GameDef {
     pub ini: Vec<IniSetting>,
     #[serde(default)]
     pub install: Vec<InstallRule>,
-    /// Game paths that are never replaced, even if a mod ships them.
+    /// Game paths that are never replaced, even if a mod ships them. A mod may still add a
+    /// file matching them that the game does not have (a script extender's loader `.exe`).
     #[serde(default)]
     pub protect: PathSet,
     /// Game paths that are always copied rather than hardlinked, because the game writes to them.
@@ -90,7 +91,26 @@ pub struct Launch {
     pub steam_relaunch: SteamRelaunch,
     #[serde(default)]
     pub process_names: Vec<String>,
+    /// Launch the game as usual even when a script extender's loader (`fose_loader.exe`,
+    /// `skse64_loader.exe`…) is beside its exe: for an extender set up in Steam's launch
+    /// options, or loaded by a patched game exe.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ignore_extender_loader: bool,
 }
+
+/// Script extenders' loaders: run instead of the game's exe, they start it with the extender
+/// loaded. Found beside the game's exe.
+pub const EXTENDER_LOADERS: &[&str] = &[
+    "skse64_loader.exe",
+    "sksevr_loader.exe",
+    "skse_loader.exe",
+    "f4se_loader.exe",
+    "f4sevr_loader.exe",
+    "sfse_loader.exe",
+    "nvse_loader.exe",
+    "fose_loader.exe",
+    "obse_loader.exe",
+];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -178,6 +198,33 @@ pub enum PluginListFormat {
 /// The file extensions of plugins.
 pub const PLUGIN_EXTENSIONS: &[&str] = &["esm", "esl", "esp"];
 
+/// What a Bethesda game's data folder (`Data`, `Data Files`) holds besides plugins: their
+/// archives at its top, and the folders of loose files the engine reads from it.
+pub const DATA_ARCHIVE_EXTENSIONS: &[&str] = &["bsa", "ba2"];
+pub const DATA_DIRS: &[&str] = &[
+    "meshes",
+    "textures",
+    "sound",
+    "music",
+    "menus",
+    "shaders",
+    "scripts",
+    "interface",
+    "fonts",
+    "strings",
+    "video",
+    "lodsettings",
+    "grass",
+    "trees",
+    "distantlod",
+    "seq",
+    "materials",
+];
+
+/// Script extenders, whose plugins go in `Data/<extender>/plugins/`. Only that folder: their
+/// own archives also hold a `src/<extender>/` folder of source code, which goes nowhere.
+pub const EXTENDER_DIRS: &[&str] = &["fose", "nvse", "obse", "skse", "f4se", "sfse"];
+
 impl Plugins {
     /// The list file's path, with variables filled in (see [`expand_path`]), or in the game
     /// folder `root` when relative. `None` when a variable is not set.
@@ -233,6 +280,10 @@ pub fn expand_path(s: &str) -> Option<PathBuf> {
         rest = &after[j + 1..];
     }
     out.push_str(rest);
+    // Definitions write `/`; shown to the user, the path should read as the system writes it.
+    if cfg!(windows) {
+        out = out.replace('/', "\\");
+    }
     let p = PathBuf::from(out);
     p.is_absolute().then_some(p)
 }
@@ -1036,6 +1087,15 @@ impl CompiledDef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expanded_paths_read_as_the_system_writes_them() {
+        let p = expand_path("%LOCALAPPDATA%/Fallout3/plugins.txt").unwrap();
+        assert!(p.ends_with("Fallout3/plugins.txt"));
+        if cfg!(windows) {
+            assert!(!p.display().to_string().contains('/'), "{}", p.display());
+        }
+    }
 
     const DEF: &str = r#"
 schema = 1

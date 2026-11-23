@@ -1,6 +1,6 @@
 use crate::DeployError;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use umm_gamedef::{CompiledDef, RelPath, IN_GAME_BACKUP_DIR};
 use umm_store::{load_mod, GameDir, Layout, Profile, StoreError};
 
@@ -40,6 +40,10 @@ pub struct PlannedExternal {
     /// UMM's version of it, already written in the data folder.
     pub source: PathBuf,
     pub hash: String,
+    /// For a list of names (a plugin list): the entries the game itself may add or keep while
+    /// playing (lower-cased). A version holding only these, besides comments, is the game's
+    /// own bookkeeping, not a change to set aside. Empty: any change is set aside.
+    pub tolerated: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -75,10 +79,14 @@ struct Entry {
 
 /// Priority, lowest first: the loader, then the profile's enabled mods in order.
 /// For each target path, the highest-priority source wins.
+/// The files a profile deploys. `root`, the game folder, tells protected game files (which
+/// are never replaced) from new files that only match a protected pattern; without it, every
+/// match is left out.
 pub fn build_plan(
     game: &GameDir,
     def: &CompiledDef,
     profile: &Profile,
+    root: Option<&Path>,
 ) -> Result<Plan, DeployError> {
     let loader = def
         .def
@@ -198,9 +206,9 @@ pub fn build_plan(
                 skipped.push(skip("reserved for UMM backups"));
                 continue;
             }
-            if def.is_protected(&target) {
+            if def.is_protected(&target) && root.is_none_or(|r| target.to_path(r).exists()) {
                 skipped.push(skip(&format!(
-                    "{target} is protected by the game definition"
+                    "{target} is a game file protected by the game definition"
                 )));
                 continue;
             }

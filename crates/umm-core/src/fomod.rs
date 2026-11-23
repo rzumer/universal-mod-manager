@@ -11,6 +11,7 @@ use crate::{CoreError, ModMeta, Result, Session};
 use std::fs;
 use umm_deploy::GameLock;
 use umm_fomod::{Choice, Evaluated, FileState, Installer, PluginType};
+use umm_gamedef::setup::bethesda_data_folder;
 use umm_gamedef::{CompiledDef, RelPath};
 use umm_store::fsutil::IoCtx;
 use umm_store::{FomodChoice, FomodFile, FomodMeta, Placement};
@@ -160,7 +161,9 @@ impl Session {
         (e, files, missing)
     }
 
-    /// The game folder UMM suggests for files going to these destinations.
+    /// The game folder UMM suggests for files going to these destinations. In a Bethesda game
+    /// it is the data folder, which installers write their destinations from (as Vortex and
+    /// Mod Organizer read them), unless they all start with it already.
     fn fomod_target(
         &self,
         def: &CompiledDef,
@@ -168,6 +171,18 @@ impl Session {
         ix: &GameIndex,
     ) -> String {
         let dests: Vec<&str> = files.iter().map(|(_, d)| d.as_str()).collect();
+        if let Some(data) = bethesda_data_folder(&def.def) {
+            let inside = |d: &&str| {
+                d.len() > data.len()
+                    && d[..data.len()].eq_ignore_ascii_case(data)
+                    && matches!(d.as_bytes()[data.len()], b'/' | b'\\')
+            };
+            return if !dests.is_empty() && dests.iter().all(inside) {
+                String::new()
+            } else {
+                data.to_string()
+            };
+        }
         suggest(&dests, ix, def)
             .filter(|p| p.root.is_empty())
             .map(|p| p.target)
@@ -251,10 +266,12 @@ impl Session {
                 .unwrap_or_default()
         });
         let ix = self.game_index(&def);
-        // Conditions on game files need a game folder: the saved or given one, else none yet.
+        // Conditions on game files need a game folder: the saved or given one, else the data
+        // folder of a Bethesda game (where they name plugins from), else none yet.
         let first_target = target
             .clone()
             .or_else(|| saved.and(meta.placement.as_ref()).map(|p| p.target.clone()))
+            .or_else(|| bethesda_data_folder(&def.def).map(str::to_string))
             .unwrap_or_default();
         let (e, files, missing) =
             self.run_installer(&def, &meta, &root, &inst, &choices, &first_target);

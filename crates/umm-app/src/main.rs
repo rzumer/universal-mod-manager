@@ -7,6 +7,7 @@ mod commands;
 mod dto;
 mod fomod;
 mod nexus;
+mod patcher;
 #[cfg(test)]
 mod tests;
 
@@ -74,6 +75,7 @@ macro_rules! umm_handlers {
             crate::nexus::nexus_download_in_browser,
             crate::nexus::nexus_download_reopen,
             crate::nexus::nexus_download_install,
+            crate::nexus::nexus_download_pass,
             crate::nexus::nexus_resolve_link,
             crate::nexus::nexus_updates,
             crate::nexus::nexus_collections,
@@ -82,6 +84,8 @@ macro_rules! umm_handlers {
             crate::nexus::open_nexus_page,
             crate::nexus::open_web_page,
             crate::fomod::fomod_view,
+            crate::patcher::patcher_status,
+            crate::patcher::run_patcher,
             crate::fomod::fomod_apply,
             crate::fomod::mod_image,
         ]

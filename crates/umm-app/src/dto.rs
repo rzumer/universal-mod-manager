@@ -70,6 +70,8 @@ pub struct ModDto {
     pub placement: Option<PlacementDto>,
     /// A FOMOD installer: `waiting` until its options are chosen, then `done`.
     pub installer: Option<&'static str>,
+    /// Its patcher program (`Patcher.exe`), when the mod is a patcher of the game's files.
+    pub patcher: Option<String>,
 }
 
 /// Where a mod's files go; see `umm_store::Placement`.
@@ -154,7 +156,9 @@ impl From<umm_core::PlacementView> for PlacementViewDto {
 
 impl From<ModMeta> for ModDto {
     fn from(m: ModMeta) -> Self {
+        let patcher = umm_core::patcher_of(&m);
         ModDto {
+            patcher,
             placeable: m.layout == umm_core::ModLayout::Raw && m.thunderstore.is_none(),
             installer: m
                 .fomod
@@ -390,6 +394,15 @@ pub enum SessionEvent {
         game: String,
         pid: u32,
     },
+    Patched {
+        game: String,
+        files: Vec<String>,
+    },
+    ExtenderLoader {
+        game: String,
+        loader: String,
+        started_steam: bool,
+    },
     WaitingForGame {
         game: String,
     },
@@ -433,6 +446,15 @@ impl SessionEvent {
                 runtime: runtime.map(Into::into),
             },
             LaunchEvent::Started { pid } => SessionEvent::Started { game, pid },
+            LaunchEvent::Patched { files } => SessionEvent::Patched { game, files },
+            LaunchEvent::ExtenderLoader {
+                loader,
+                started_steam,
+            } => SessionEvent::ExtenderLoader {
+                game,
+                loader,
+                started_steam,
+            },
             LaunchEvent::WaitingForGame => SessionEvent::WaitingForGame { game },
             LaunchEvent::GameDetected => SessionEvent::GameDetected { game },
             LaunchEvent::Exited { code } => SessionEvent::Exited { game, code },

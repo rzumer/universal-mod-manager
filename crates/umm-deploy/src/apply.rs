@@ -134,6 +134,7 @@ pub fn prepare(
             backup: backup_root
                 .join(EXTERNAL_BACKUPS)
                 .join(format!("{i}-{name}")),
+            tolerated: e.tolerated.clone(),
         });
     }
     // Files the settings create: the first setting creates one, the next ones add to it.

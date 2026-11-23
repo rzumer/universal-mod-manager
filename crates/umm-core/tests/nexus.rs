@@ -23,7 +23,9 @@ const MODS: &str = r#"{"data": {"mods": {"totalCount": 2, "nodes": [
    "endorsements": 5, "downloads": 50, "updatedAt": "2020-01-01T00:00:00Z", "category": "Visuals"}]}}}"#;
 const REQS: &str = r#"{"data": {"mod": {"modRequirements": {"nexusRequirements": {"nodes": [
   {"modId": "29", "gameId": "1539", "modName": "Dark", "notes": "Needed for the night", "url": "", "externalRequirement": false},
-  {"modId": "0", "gameId": "1539", "modName": "Script Extender", "notes": "", "url": "https://example.org/se", "externalRequirement": true}]}}}}}"#;
+  {"modId": "0", "gameId": "1539", "modName": "Script Extender", "notes": "", "url": "https://example.org/se", "externalRequirement": true},
+  {"modId": "0", "gameId": "0", "modName": "Signs", "notes": "", "url": "https://www.nexusmods.com/glowvalley/mods/31", "externalRequirement": true},
+  {"modId": "0", "gameId": "0", "modName": "Other Game Thing", "notes": "", "url": "https://www.nexusmods.com/skyrim/mods/5", "externalRequirement": true}]}}}}}"#;
 const MOD: &str =
     r#"{"data": {"mod": {"modId": 14, "name": "Glow", "summary": "Brighter", "version": "3.1"}}}"#;
 const FILES: &str = r#"{"data": {"modFiles": [
@@ -139,6 +141,16 @@ fn browses_and_installs_downloads_without_an_account() {
         (r[1].mod_id, r[1].elsewhere, r[1].url.as_deref()),
         (None, true, Some("https://example.org/se"))
     );
+    // Listed as external with a link to its page on Nexus: a mod of this game all the same.
+    assert_eq!(
+        (r[2].mod_id, r[2].elsewhere, r[2].url.as_deref()),
+        (
+            Some(31),
+            false,
+            Some("https://www.nexusmods.com/glowvalley/mods/31")
+        )
+    );
+    assert_eq!((r[3].mod_id, r[3].elsewhere), (None, true));
     assert_eq!(
         Session::nexus_download_page("glowvalley", 14, 491),
         "https://www.nexusmods.com/glowvalley/mods/14?tab=files&file_id=491"
@@ -390,4 +402,37 @@ fn a_collection_is_checked_against_what_is_installed() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("nexusmods.com/skyrim"), "{err}");
+}
+
+#[test]
+fn another_mods_file_is_not_installed_as_the_one_awaited() {
+    let tmp = tempfile::tempdir().unwrap();
+    let old = zip_of(&[("Glow 3.0/glow.dll", "old")]);
+    let new = zip_of(&[("Glow 3.1/glow.dll", "new")]);
+    let s = game(tmp.path(), fake(&old, &new));
+    let archive = tmp.path().join("Glow 3.0-14-3-0-200.zip");
+    fs::write(&archive, &old).unwrap();
+    // Waiting for Dark's file, the Downloads folder gets Glow's: refused, even when trusted.
+    let dark = ExpectedFile {
+        domain: "glowvalley".into(),
+        mod_id: 29,
+        file_id: 900,
+    };
+    for trust in [false, true] {
+        match s.nexus_install_download(
+            "glow",
+            &archive,
+            Some(&dark),
+            trust,
+            DEFAULT_PROFILE,
+            &mut |_| {},
+        ) {
+            Err(CoreError::NexusOtherMod(name)) => assert_eq!(name, "Glow"),
+            other => panic!("{other:?}"),
+        }
+    }
+    assert!(
+        s.nexus_updates("glow").unwrap().is_empty(),
+        "nothing installed"
+    );
 }

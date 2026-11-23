@@ -9,6 +9,7 @@ mod launch;
 mod link;
 mod manual;
 mod nexus;
+mod patcher;
 mod placement;
 mod plugins;
 mod runtime;
@@ -35,6 +36,7 @@ pub use nexus::{
     NexusItem, NexusModFiles, NexusPage, NexusRequirement, NexusSearch, NexusSort, NexusUpdate,
     NexusUpdateState,
 };
+pub use patcher::{is_patcher_exe, patcher_of, PatchState, PatchedFile, PatcherStatus};
 pub use placement::{PlacedFile, PlacementView};
 pub use plugins::{IniPreview, PluginEntry, PluginList};
 pub use runtime::SyncReport;
@@ -60,8 +62,8 @@ pub use umm_nexus::graph::{
 };
 pub use umm_nexus::{NexusError, NxmLink};
 pub use umm_store::{
-    DataDir, GameDir, ImportOptions, Layout as ModLayout, ModMeta, Placement, Profile,
-    ProfileEntry, StoreError, DEFAULT_PROFILE,
+    name_archive, DataDir, GameDir, ImportOptions, Layout as ModLayout, ModMeta, Placement,
+    Profile, ProfileEntry, StoreError, DEFAULT_PROFILE,
 };
 pub use umm_thunderstore::index::Package;
 
@@ -106,6 +108,10 @@ pub enum CoreError {
     /// A downloaded archive Nexus does not know by its hash (re-packed, or not from there).
     #[error("Nexus Mods does not recognise this file, so UMM cannot tell which download it is")]
     NexusUnrecognised,
+    /// A downloaded archive Nexus knows as a file of another mod than the one awaited (another
+    /// download that landed in the Downloads folder meanwhile).
+    #[error("this file is {0} on Nexus Mods, not the one being downloaded")]
+    NexusOtherMod(String),
 }
 
 impl From<umm_gamedef::RelPathError> for CoreError {
@@ -500,7 +506,12 @@ impl Session {
         let def = self.def(id)?;
         let game = self.data.game(id);
         let profile = umm_store::load_profile(&game, profile)?;
-        Ok(build_plan(&game, &def, &profile)?)
+        let root = self.install_path(&def.def)?.map(|(p, _)| p);
+        let mut plan = build_plan(&game, &def, &profile, root.as_deref())?;
+        if let Some(r) = &root {
+            self.add_patches(&def, &profile, r, &mut plan, false)?;
+        }
+        Ok(plan)
     }
 
     /// Places the profile's mods in the game folder. Pair with [`Session::revert`].

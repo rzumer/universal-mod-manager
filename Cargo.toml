@@ -33,3 +33,9 @@ umm-thunderstore = { path = "crates/umm-thunderstore" }
 umm-net = { path = "crates/umm-net" }
 umm-nexus = { path = "crates/umm-nexus" }
 umm-fomod = { path = "crates/umm-fomod" }
+
+# Dependencies do the heavy lifting (7z/zip decoding, hashing, image decoding): optimised
+# even in debug builds, where unoptimised decoding is some 15 times slower. UMM's own crates
+# keep fast debug builds.
+[profile.dev.package."*"]
+opt-level = 3

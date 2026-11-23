@@ -182,6 +182,18 @@ fn launch(s: &Session, game: &str, profile: &str) -> Result<()> {
         LaunchEvent::Started { pid } => {
             println!("started (pid {pid}); waiting for the game to exit")
         }
+        LaunchEvent::Patched { files } => {
+            println!("patched game files for the session: {}", files.join(", "))
+        }
+        LaunchEvent::ExtenderLoader {
+            loader,
+            started_steam,
+        } => {
+            if started_steam {
+                println!("started Steam first");
+            }
+            println!("starting the game with {loader}, so that its script extender loads")
+        }
         LaunchEvent::WaitingForGame => {
             println!("launched through Steam; waiting for the game to start")
         }

@@ -30,6 +30,16 @@ pub struct PendingDownload {
 /// The label of the window showing nexusmods.com.
 const DOWNLOAD_WINDOW: &str = "nexus-download";
 
+/// Makes the page's "save as" dialog (used by resumable downloads) open in the Downloads
+/// folder unless the page says otherwise.
+const SAVE_IN_DOWNLOADS: &str = r#"(() => {
+  const pick = window.showSaveFilePicker;
+  if (typeof pick !== "function") return;
+  window.showSaveFilePicker = function (options) {
+    return pick.call(window, Object.assign({ startIn: "downloads" }, options || {}));
+  };
+})();"#;
+
 /// What has happened to the pending download.
 #[derive(Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -229,6 +239,31 @@ impl From<NexusInstallReport> for NexusInstallDto {
 pub struct NexusDownloadResultDto {
     pub installed: Option<NexusInstallDto>,
     pub unrecognised: bool,
+    /// The archive was another mod's file (named here): passed over, and the wait goes on.
+    pub other: Option<String>,
+}
+
+/// Passes over an archive that is not the pending download: a copy the window caught is
+/// deleted, one in the Downloads folder is left there and no longer picked up.
+fn pass_over(pending: &std::sync::Mutex<Option<PendingDownload>>, path: &std::path::Path) {
+    if let Ok(mut slot) = pending.lock() {
+        if let Some(p) = slot.as_mut() {
+            if p.caught.as_deref() == Some(path) {
+                p.caught = None;
+                let _ = std::fs::remove_file(path);
+            } else {
+                p.watch.ignore(path);
+            }
+        }
+    }
+}
+
+/// The user says this archive is not the pending download: it is passed over, and the wait
+/// goes on.
+#[tauri::command]
+pub fn nexus_download_pass(state: State<'_, AppState>, path: String) -> Res<()> {
+    pass_over(&state.nexus_download, std::path::Path::new(&path));
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -553,7 +588,18 @@ pub async fn nexus_download_start<R: Runtime>(
     file_id: u64,
 ) -> Res<String> {
     let dir = umm_core::downloads_dir().ok_or("cannot find your Downloads folder")?;
-    let watch = DownloadWatch::new(&dir).map_err(|e| format!("reading {}: {e}", dir.display()))?;
+    // Its size, so that only the finished file is picked up: a resumable download writes
+    // straight into the folder, in steps. Without it, any steady new archive will do.
+    let size = {
+        let game = game.clone();
+        blocking(&state, move |s| s.nexus_file_size(&game, mod_id, file_id))
+            .await
+            .ok()
+            .flatten()
+    };
+    let watch = DownloadWatch::new(&dir)
+        .map_err(|e| format!("reading {}: {e}", dir.display()))?
+        .with_size(size);
     let url = Session::nexus_download_page(&domain, mod_id, file_id);
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -612,6 +658,9 @@ fn open_download_window<R: Runtime>(
     let opener = app.clone();
     let window = WebviewWindowBuilder::new(app, DOWNLOAD_WINDOW, WebviewUrl::External(parsed))
         .title("Download from Nexus Mods – UMM")
+        // Resumable downloads skip the browser's downloads: the page writes the file where
+        // the user saves it. Offer the Downloads folder first, which UMM watches.
+        .initialization_script(SAVE_IN_DOWNLOADS)
         .inner_size(1180.0, 860.0)
         .min_inner_size(640.0, 480.0)
         // Shown once it is back where the user last left it.
@@ -665,7 +714,9 @@ fn open_download_window<R: Runtime>(
                 if let Ok(mut slot) = note.lock() {
                     if let Some(p) = slot.as_mut() {
                         match path.filter(|_| success) {
-                            Some(path) => p.caught = Some(path),
+                            // A resumable download is handed over by the page without a name,
+                            // and saved as `<id>.txt`: named by what it holds.
+                            Some(path) => p.caught = Some(umm_core::name_archive(&path)),
                             None => p.failed = true,
                         }
                     }
@@ -844,7 +895,18 @@ pub async fn nexus_download_install<R: Runtime>(
             Err(CoreError::NexusUnrecognised) => Ok(NexusDownloadResultDto {
                 installed: None,
                 unrecognised: true,
+                other: None,
             }),
+            // Another download (in the Downloads folder, or clicked in the window): passed
+            // over, and the window stays open for the file awaited.
+            Err(CoreError::NexusOtherMod(name)) => {
+                pass_over(&pending, &path);
+                Ok(NexusDownloadResultDto {
+                    installed: None,
+                    unrecognised: false,
+                    other: Some(name),
+                })
+            }
             r => {
                 let r = r?;
                 if let Ok(mut slot) = pending.lock() {
@@ -857,6 +919,7 @@ pub async fn nexus_download_install<R: Runtime>(
                 Ok(NexusDownloadResultDto {
                     installed: Some(r.into()),
                     unrecognised: false,
+                    other: None,
                 })
             }
         }

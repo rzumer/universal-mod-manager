@@ -89,6 +89,33 @@ fn targets(s: &Session) -> Vec<String> {
         .collect()
 }
 
+/// In a Bethesda game, installers write their destinations from the data folder, even when
+/// the game folder has nothing loose there to go by (plain Fallout 3).
+#[test]
+fn bethesda_installers_install_into_the_data_folder() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("game");
+    write(&root.join("Rocks.exe"), b"exe");
+    write(&root.join("Data/Rocks.esm"), b"esm");
+    let s = Session::open(Some(tmp.path().join("data"))).unwrap();
+    write(
+        &s.data().game(GAME).def_path(),
+        b"schema = 1\nname = \"Rocks\"\n[detect]\nmarker = \"Rocks.exe\"\n\
+          [plugins]\nlist = \"%LOCALAPPDATA%/Rocks/plugins.txt\"\nfolder = \"Data\"\n\
+          [[install]]\nmatch = \"**\"\ntarget = \"\"\n",
+    );
+    s.set_install_path(GAME, &root).unwrap();
+    let src = tmp.path().join("v1");
+    mod_src(&src, "Textures", "v1");
+    import(&s, &src, false);
+    let v = s.fomod_view(GAME, "better-rocks", None, None).unwrap();
+    assert_eq!(v.suggested_target, "Data");
+    assert_eq!(v.target, "Data");
+    s.fomod_apply(GAME, "better-rocks", Vec::new(), v.suggested_target)
+        .unwrap();
+    assert_eq!(targets(&s), ["Data/Rocks.esp", "Data/textures/rock.dds"]);
+}
+
 #[test]
 fn installer_choices_decide_the_files() {
     let tmp = tempfile::tempdir().unwrap();

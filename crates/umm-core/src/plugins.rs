@@ -431,10 +431,39 @@ impl Session {
         let src = self.data.game(&def.def.id).generated_dir().join(name);
         write_atomic(&src, &encode(&list.render(&original), list.format))
             .ctx(|| format!("writing {}", src.display()))?;
+        // What the game may write in the list itself: UMM's entries, and the plugins already
+        // in its data folder (its own masters and DLC, which some games add on every start).
+        let tolerated = match list.format {
+            Plain | Asterisk => {
+                let mut t: Vec<String> = list
+                    .render(&original)
+                    .lines()
+                    .map(|l| l.trim().trim_start_matches('*').to_lowercase())
+                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                    .collect();
+                let data = def
+                    .def
+                    .plugins
+                    .as_ref()
+                    .map(|p| root.join(p.folder.trim_matches('/')));
+                if let Some(rd) = data.and_then(|d| fs::read_dir(d).ok()) {
+                    t.extend(rd.flatten().filter_map(|e| {
+                        let n = e.file_name().to_string_lossy().to_lowercase();
+                        let ext = n.rsplit_once('.').map(|(_, x)| x.to_string())?;
+                        PLUGIN_EXTENSIONS.contains(&ext.as_str()).then_some(n)
+                    }));
+                }
+                t.sort();
+                t.dedup();
+                t
+            }
+            MorrowindIni | RimworldXml => Vec::new(),
+        };
         plan.external.push(PlannedExternal {
             hash: hash_file(&src).ctx(|| format!("hashing {}", src.display()))?,
             path: list.path,
             source: src,
+            tolerated,
         });
         Ok(())
     }
@@ -491,7 +520,8 @@ impl Session {
         let def = self.def(game_id)?;
         let game = self.data.game(game_id);
         let profile = umm_store::load_profile(&game, profile)?;
-        let plan = umm_deploy::build_plan(&game, &def, &profile)?;
+        let root = self.install_path(&def.def)?.map(|(p, _)| p);
+        let plan = umm_deploy::build_plan(&game, &def, &profile, root.as_deref())?;
         Ok(self
             .plugin_list(&def, &profile, &plan.files)?
             .map(|(l, _)| l))

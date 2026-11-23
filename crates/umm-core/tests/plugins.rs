@@ -195,7 +195,8 @@ fn a_list_changed_while_playing_is_set_aside() {
             .unwrap()
             .unwrap();
     assert_eq!(read(&fx.list), ORIGINAL);
-    assert_eq!(r.quarantined, [fx.list.display().to_string()]);
+    let quarantined: Vec<std::path::PathBuf> = r.quarantined.iter().map(Into::into).collect();
+    assert_eq!(quarantined, [fx.list.clone()]);
 }
 
 #[test]
@@ -431,4 +432,39 @@ fn rimworld_activates_mods_by_package_id() {
     g.s.revert("rimworld", false, &mut Faults::none()).unwrap();
     assert_eq!(read(&list), original);
     g.survives_crashes("rimworld", &list);
+}
+
+#[test]
+fn the_game_rewriting_its_list_is_not_set_aside() {
+    // Fallout 3 rewrites the list on every start: its header, the mods' entries kept, and
+    // every master in its data folder (one of the mods' a second time).
+    for original in [Some(ORIGINAL), None] {
+        let fx = setup(original);
+        fx.s.deploy(GAME, DEFAULT_PROFILE, &mut Faults::none())
+            .unwrap();
+        write(
+            &fx.list,
+            "# This file is used by the game to keep track of your downloaded content.\r\n\
+             A.esm\r\nSkyrim.esm\r\nA.esm\r\n*B.esp\r\n",
+        );
+        let r =
+            fx.s.revert(GAME, false, &mut Faults::none())
+                .unwrap()
+                .unwrap();
+        assert!(r.quarantined.is_empty(), "{:?}", r.quarantined);
+        match original {
+            Some(o) => assert_eq!(read(&fx.list), o),
+            None => assert!(!fx.list.exists()),
+        }
+    }
+    // A plugin the user enabled by hand while playing still sets the list aside.
+    let fx = setup(Some(ORIGINAL));
+    fx.s.deploy(GAME, DEFAULT_PROFILE, &mut Faults::none())
+        .unwrap();
+    write(&fx.list, "*Skyrim.esm\r\n*Unknown.esp\r\n");
+    let r =
+        fx.s.revert(GAME, false, &mut Faults::none())
+            .unwrap()
+            .unwrap();
+    assert_eq!(r.quarantined.len(), 1);
 }

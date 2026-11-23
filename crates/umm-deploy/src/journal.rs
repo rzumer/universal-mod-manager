@@ -56,6 +56,9 @@ pub enum Op {
         /// `None`: the file did not exist.
         orig_hash: Option<String>,
         backup: PathBuf,
+        /// See [`crate::PlannedExternal::tolerated`].
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tolerated: Vec<String>,
     },
     /// One key of an ini file outside the game folder, set while mods are deployed. Only the
     /// key is undone, so other changes to the file (the game's own settings) are kept.
