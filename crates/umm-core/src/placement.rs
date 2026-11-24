@@ -376,7 +376,8 @@ fn rimworld_root(rels: &[RelPath]) -> Option<Placement> {
 }
 
 /// A Paradox mod's folder is the one holding its `descriptor.mod` (an archive often has the
-/// launcher's `<mod>.mod` beside it, left out); without one, wrapper folders are dropped.
+/// launcher's `<mod>.mod` beside it, left out); without one, the folder beside the launcher's
+/// `<mod>.mod` (Crusader Kings II's mods), else wrapper folders are dropped.
 /// The install rules give it a folder of its own in the user folder's `mod/`.
 fn paradox_root(rels: &[RelPath], def: &CompiledDef) -> Option<Placement> {
     let root = rels
@@ -388,12 +389,41 @@ fn paradox_root(rels: &[RelPath], def: &CompiledDef) -> Option<Placement> {
         .map(|r| r.parent().unwrap_or_else(RelPath::root))
         .min_by_key(|r| r.depth())
         .map(|r| r.as_str().to_string())
+        .or_else(|| launcher_folder(rels))
         .unwrap_or_else(|| wrapper_chain(rels, def));
     let p = Placement {
         root,
         ..Default::default()
     };
     (p != Placement::default()).then_some(p)
+}
+
+/// The folder beside a Paradox mod's launcher `<mod>.mod` (the shallowest): the one named like
+/// it, or the only one there.
+fn launcher_folder(rels: &[RelPath]) -> Option<String> {
+    let m = rels
+        .iter()
+        .filter(|r| {
+            r.file_name()
+                .is_some_and(|n| n.to_ascii_lowercase().ends_with(".mod"))
+        })
+        .min_by_key(|r| r.depth())?;
+    let name = m.file_name()?;
+    let stem = &name[..name.len() - 4];
+    let parent = m.parent().unwrap_or_else(RelPath::root);
+    let mut dirs: Vec<String> = rels
+        .iter()
+        .filter_map(|r| under(r, parent.as_str()))
+        .filter(|c| c.depth() > 1)
+        .map(|c| c.first().unwrap_or_default().to_string())
+        .collect();
+    dirs.sort();
+    dirs.dedup();
+    let pick = dirs
+        .iter()
+        .find(|d| d.eq_ignore_ascii_case(stem))
+        .or_else(|| dirs.first().filter(|_| dirs.len() == 1))?;
+    Some(join(parent.as_str(), pick))
 }
 
 /// `rel` relative to `root`, if it is inside it.
@@ -651,6 +681,17 @@ impl Session {
                     }
                     Some(t) => (Some(t.to_string()), None, false),
                 },
+            };
+            // A Paradox mod's launcher `.mod`, beside its folder: UMM writes the game its own.
+            let launcher = def.def.paradox.is_some()
+                && f.to_ascii_lowercase().ends_with(".mod")
+                && !f.eq_ignore_ascii_case(crate::paradox::DESCRIPTOR);
+            let note = match note {
+                Some(_) if launcher && target.is_none() && !skipped => Some(
+                    "the mod's descriptor: UMM writes the game one from it, pointing at where the mod goes"
+                        .to_string(),
+                ),
+                n => n,
             };
             placed.push(PlacedFile {
                 file: f.to_string(),

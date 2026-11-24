@@ -8,8 +8,8 @@ use crate::detect::steam_libraries;
 use crate::vdf::{self, Value};
 use crate::{
     slug, Community, Detect, GameDef, GameDefError, GameIniCondition, IniSetting, InstallRule,
-    Launch, LoaderSetup, PathSet, PluginListFormat, Plugins, SteamRelaunch, Thunderstore,
-    SCHEMA_VERSION, SHIMLOADER_KIND,
+    Launch, LoaderSetup, ParadoxList, PathSet, PluginListFormat, Plugins, SteamRelaunch,
+    Thunderstore, SCHEMA_VERSION, SHIMLOADER_KIND,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -228,34 +228,57 @@ pub struct Inspection {
 pub struct ParadoxGame {
     pub exe: &'static str,
     pub user: &'static str,
+    /// Where it lists its enabled mods.
+    pub list: ParadoxList,
+    /// Its exe's arguments to start the game directly.
+    pub args: &'static [&'static str],
 }
 
-/// Paradox games whose mods go in their user folder and are enabled in `dlc_load.json`.
-/// (Crusader Kings II lists its mods in `settings.txt` instead: not here.)
+/// Paradox games whose mods go in their user folder.
 pub const PARADOX_GAMES: &[ParadoxGame] = &[
     ParadoxGame {
         exe: "binaries/ck3.exe",
         user: "Crusader Kings III",
+        list: ParadoxList::DlcLoad,
+        args: &[],
     },
     ParadoxGame {
         exe: "binaries/victoria3.exe",
         user: "Victoria 3",
+        list: ParadoxList::DlcLoad,
+        args: &[],
     },
     ParadoxGame {
         exe: "binaries/imperator.exe",
         user: "Imperator",
+        list: ParadoxList::DlcLoad,
+        args: &[],
     },
     ParadoxGame {
         exe: "stellaris.exe",
         user: "Stellaris",
+        list: ParadoxList::DlcLoad,
+        args: &[],
     },
     ParadoxGame {
         exe: "hoi4.exe",
         user: "Hearts of Iron IV",
+        list: ParadoxList::DlcLoad,
+        args: &[],
     },
     ParadoxGame {
         exe: "eu4.exe",
         user: "Europa Universalis IV",
+        list: ParadoxList::DlcLoad,
+        args: &[],
+    },
+    // Its own launcher, built into the exe, is skipped: the game is then given its mods as
+    // `-mod=` arguments, from `last_mods` in `settings.txt` (what that launcher shows ticked).
+    ParadoxGame {
+        exe: "CK2game.exe",
+        user: "Crusader Kings II",
+        list: ParadoxList::Settings,
+        args: &["-skiplauncher"],
     },
 ];
 
@@ -796,10 +819,19 @@ fn build(
                     "paradox",
                     format!(
                         "Paradox game: each mod goes in its own folder in Documents\\Paradox Interactive\\{}\\mod, \
-                         with a descriptor UMM writes, and is enabled in dlc_load.json while mods are deployed \
+                         with a descriptor UMM writes, and is enabled in {} while mods are deployed \
                          (your own list comes back afterwards). UMM starts the game directly, not through \
-                         Paradox's launcher, which would replace the list with its playset.",
-                        g.user
+                         {}.",
+                        g.user,
+                        match g.list {
+                            ParadoxList::DlcLoad => "dlc_load.json",
+                            ParadoxList::Settings => "settings.txt",
+                        },
+                        match g.list {
+                            ParadoxList::DlcLoad =>
+                                "Paradox's launcher, which would replace the list with its playset",
+                            ParadoxList::Settings => "its launcher",
+                        }
                     ),
                 ));
             }
@@ -897,7 +929,11 @@ fn build(
         }
         Some(Launch {
             exe: exe.to_string(),
-            args: Vec::new(),
+            args: found
+                .paradox
+                .filter(|g| exe.eq_ignore_ascii_case(g.exe))
+                .map(|g| g.args.iter().map(|a| a.to_string()).collect())
+                .unwrap_or_default(),
             // A Paradox game started through Steam runs Paradox's launcher, which writes the
             // list of enabled mods from its playset: started directly instead, Steam running.
             steam_relaunch: if found.paradox.is_some() && origin.relaunch == SteamRelaunch::ViaSteam
@@ -940,8 +976,9 @@ fn build(
                 .collect()
             })
             .unwrap_or_default(),
-        paradox: found.paradox.map(|_| crate::Paradox {
+        paradox: found.paradox.map(|g| crate::Paradox {
             folder: PARADOX_FOLDER.into(),
+            list: g.list,
         }),
     };
     let def = generic.with_setup(setup, community)?;
@@ -1097,6 +1134,31 @@ mod tests {
             .with_setup(LoaderSetup::Generic, None)
             .unwrap();
         assert_eq!(again.install[0].target, "@user/mod/{mod}/");
+    }
+
+    #[test]
+    fn crusader_kings_ii_lists_its_mods_in_its_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        touch(&root.join("CK2game.exe"), 100);
+        let found = inspect_folder(root);
+        assert_eq!(
+            (found.engine, found.exe.as_str()),
+            (Engine::Clausewitz, "CK2game.exe")
+        );
+        let d = draft_manual(root, "CK2", &found.exe, &found, LoaderSetup::Generic, None).unwrap();
+        assert_eq!(
+            d.def.folders.get(PARADOX_FOLDER).map(String::as_str),
+            Some("%DOCUMENTS%/Paradox Interactive/Crusader Kings II")
+        );
+        assert_eq!(d.def.paradox.as_ref().unwrap().list, ParadoxList::Settings);
+        assert_eq!(d.def.launch.as_ref().unwrap().args, ["-skiplauncher"]);
+        let note = d.notes.iter().find(|n| n.key == "paradox").unwrap();
+        assert!(note.text.contains("settings.txt"), "{}", note.text);
+        let text = to_toml(&d);
+        assert!(text.contains("list = \"settings\""), "{text}");
+        let back = GameDef::parse_game(&text, Path::new("game.toml"), "ck2").unwrap();
+        assert_eq!(back.paradox, d.def.paradox);
     }
 
     #[test]

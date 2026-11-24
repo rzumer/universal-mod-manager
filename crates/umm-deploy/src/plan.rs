@@ -17,6 +17,8 @@ pub struct Plan {
     pub external: Vec<PlannedExternal>,
     /// Ini settings outside the game folder set while deployed.
     pub ini: Vec<PlannedIni>,
+    /// Entries added to lists in files outside the game folder while deployed.
+    pub lists: Vec<PlannedList>,
     /// The game definition's folders outside the game folder, resolved: name → absolute
     /// path. A target `@<name>/…` goes there (see [`umm_gamedef::folder_of`]).
     pub folders: BTreeMap<String, PathBuf>,
@@ -33,6 +35,17 @@ pub struct PlannedIni {
     pub value: String,
     /// Create the file when missing (and delete it again afterwards if nothing else was added).
     pub create: bool,
+}
+
+/// Entries UMM adds to a list block of a file outside the game folder while mods are
+/// deployed (Crusader Kings II's `last_mods={…}` in `settings.txt`), and takes out again
+/// afterwards; the rest of the file is the game's. The file is created when missing.
+#[derive(Debug, Clone)]
+pub struct PlannedList {
+    /// Absolute.
+    pub path: PathBuf,
+    pub key: String,
+    pub entries: Vec<String>,
 }
 
 /// A file outside the game folder that UMM writes while mods are deployed.
@@ -271,6 +284,7 @@ pub fn build_plan(
         skipped,
         external: Vec::new(),
         ini: Vec::new(),
+        lists: Vec::new(),
         folders: BTreeMap::new(),
     })
 }

@@ -72,7 +72,8 @@ pub struct GameDef {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub folders: BTreeMap<String, String>,
     /// A Paradox game (Crusader Kings III, Stellaris…): mods are folders in its user folder's
-    /// `mod/`, each found by a `.mod` descriptor beside it, and enabled in `dlc_load.json`.
+    /// `mod/`, each found by a `.mod` descriptor beside it, and enabled in `dlc_load.json`
+    /// (Crusader Kings II: `settings.txt`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paradox: Option<Paradox>,
 }
@@ -84,6 +85,28 @@ pub struct Paradox {
     /// The [`GameDef::folders`] entry of the game's user folder (holding `mod/` and
     /// `dlc_load.json`).
     pub folder: String,
+    /// Where the game lists its enabled mods.
+    #[serde(default, skip_serializing_if = "ParadoxList::is_default")]
+    pub list: ParadoxList,
+}
+
+/// Where a Paradox game lists its enabled mods, in its user folder.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParadoxList {
+    /// `dlc_load.json`'s `enabled_mods` (the games of Paradox's launcher). Descriptors give
+    /// their mod's folder as an absolute path.
+    #[default]
+    DlcLoad,
+    /// `settings.txt`'s `last_mods={…}` (Crusader Kings II). Descriptors give their mod's
+    /// folder relative to the user folder (`mod/<mod>`).
+    Settings,
+}
+
+impl ParadoxList {
+    fn is_default(&self) -> bool {
+        *self == ParadoxList::DlcLoad
+    }
 }
 
 /// A path's named folder, when it starts with `@<name>/` and the definition has a folder of

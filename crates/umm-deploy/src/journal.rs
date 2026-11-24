@@ -77,6 +77,21 @@ pub enum Op {
         #[serde(default)]
         section_added: bool,
     },
+    /// Entries added to a list block of a file outside the game folder while mods are
+    /// deployed (Crusader Kings II's `last_mods` in `settings.txt`). Only these entries are
+    /// taken out again, so the game's own changes to the file are kept.
+    ListAdd {
+        path: PathBuf,
+        key: String,
+        /// The entries the list did not have.
+        added: Vec<String>,
+        /// UMM created the file; it is deleted again if nothing else was added to it.
+        #[serde(default)]
+        created: bool,
+        /// The file had no such list; it is removed again once empty.
+        #[serde(default)]
+        block_added: bool,
+    },
 }
 
 impl Op {
@@ -87,6 +102,7 @@ impl Op {
                 path.to_string()
             }
             Op::External { path, .. } => path.display().to_string(),
+            Op::ListAdd { path, key, .. } => format!("{} {key}", path.display()),
             Op::IniSet {
                 path, section, key, ..
             } => format!("{} [{section}] {key}", path.display()),

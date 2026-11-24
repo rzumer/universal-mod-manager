@@ -409,7 +409,7 @@ impl Session {
             // running to start, else it restarts itself through Steam.
             ensure_steam(find_steam_exe());
         }
-        let spec = build_spec(
+        let mut spec = build_spec(
             &def_launch,
             &journal.game_root,
             &game.runtime_dir(&profile.name),
@@ -417,6 +417,7 @@ impl Session {
             injection,
             find_steam_exe(),
         )?;
+        spec.args.extend(self.paradox_mod_args(&def));
 
         let outcome = umm_launch::run(&spec, stop, &mut |e| {
             on_event(match e {

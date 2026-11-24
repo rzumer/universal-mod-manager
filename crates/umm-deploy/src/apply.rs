@@ -205,6 +205,38 @@ pub fn prepare(
         });
     }
 
+    for l in &plan.lists {
+        if !l.path.is_absolute() {
+            return Err(DeployError::Changed(l.path.display().to_string()));
+        }
+        let text = match fs::read(&l.path) {
+            Ok(b) => Some(crate::block::decode(&b)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => {
+                return Err(
+                    umm_store::fsutil::io_err(e, format!("reading {}", l.path.display())).into(),
+                )
+            }
+        };
+        let current = text.as_deref().and_then(|t| crate::block::get(t, &l.key));
+        let added: Vec<String> = l
+            .entries
+            .iter()
+            .filter(|e| !current.iter().flatten().any(|c| c == *e))
+            .cloned()
+            .collect();
+        if added.is_empty() {
+            continue;
+        }
+        ops.push(Op::ListAdd {
+            path: l.path.clone(),
+            key: l.key.clone(),
+            added,
+            created: text.is_none(),
+            block_added: current.is_none(),
+        });
+    }
+
     Ok(Journal {
         version: JOURNAL_VERSION,
         game: plan.game.clone(),
@@ -386,6 +418,34 @@ fn apply_op(j: &Journal, op: &Op, faults: &mut Faults) -> Result<(), DeployError
             let new = crate::ini::set(&text, section, key, Some(value));
             write_text(path, &new, faults)
         }
+        Op::ListAdd {
+            path,
+            key,
+            added,
+            created,
+            ..
+        } => {
+            let text = if *created {
+                if fs::symlink_metadata(path).is_ok() {
+                    return Err(DeployError::Changed(op.label()));
+                }
+                faults.tick()?;
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent).ctx(|| format!("creating {}", parent.display()))?;
+                }
+                String::new()
+            } else {
+                crate::block::decode(&fs::read(path).ctx(|| format!("reading {}", path.display()))?)
+            };
+            let mut entries = crate::block::get(&text, key).unwrap_or_default();
+            for a in added {
+                if !entries.contains(a) {
+                    entries.push(a.clone());
+                }
+            }
+            let new = crate::block::set(&text, key, Some(&entries));
+            write_bytes(path, &crate::block::encode(&new), faults)
+        }
     }
 }
 
@@ -400,9 +460,18 @@ pub(crate) fn read_text(path: &Path) -> Result<String, DeployError> {
 
 /// Replaces a file's text through a temporary sibling, so it never holds a partial file.
 pub(crate) fn write_text(path: &Path, text: &str, faults: &mut Faults) -> Result<(), DeployError> {
+    write_bytes(path, text.as_bytes(), faults)
+}
+
+/// [`write_text`] for bytes.
+pub(crate) fn write_bytes(
+    path: &Path,
+    bytes: &[u8],
+    faults: &mut Faults,
+) -> Result<(), DeployError> {
     let tmp = tmp_path(path);
     faults.tick()?;
-    fs::write(&tmp, text).ctx(|| format!("writing {}", tmp.display()))?;
+    fs::write(&tmp, bytes).ctx(|| format!("writing {}", tmp.display()))?;
     faults.tick()?;
     fs::rename(&tmp, path).ctx(|| format!("replacing {}", path.display()))?;
     Ok(())

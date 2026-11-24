@@ -7,6 +7,7 @@
 //!    correct after a crash at any point and safe to run more than once.
 
 mod apply;
+pub mod block;
 mod faults;
 mod ini;
 mod journal;
@@ -18,7 +19,9 @@ pub use apply::{apply, prepare};
 pub use faults::Faults;
 pub use journal::{Journal, Method, Op, Phase, JOURNAL_VERSION};
 pub use lock::GameLock;
-pub use plan::{build_plan, Conflict, Plan, PlannedExternal, PlannedFile, PlannedIni, Skipped};
+pub use plan::{
+    build_plan, Conflict, Plan, PlannedExternal, PlannedFile, PlannedIni, PlannedList, Skipped,
+};
 pub use revert::{revert, RevertReport};
 
 use std::path::PathBuf;

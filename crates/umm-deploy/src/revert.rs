@@ -135,6 +135,46 @@ fn revert_op(
             }
             Ok(())
         }
+        Op::ListAdd {
+            path,
+            key,
+            added,
+            created,
+            block_added,
+        } => {
+            clean_tmp(path, faults)?;
+            if !exists(path) {
+                return Ok(()); // the file is gone: nothing to take out
+            }
+            let text = crate::block::decode(
+                &fs::read(path).ctx(|| format!("reading {}", path.display()))?,
+            );
+            let Some(entries) = crate::block::get(&text, key) else {
+                return Ok(()); // the game dropped the list
+            };
+            let left: Vec<String> = entries
+                .iter()
+                .filter(|e| !added.contains(e))
+                .cloned()
+                .collect();
+            if left.len() == entries.len() {
+                return Ok(());
+            }
+            let back = if left.is_empty() && *block_added {
+                crate::block::set(&text, key, None)
+            } else {
+                crate::block::set(&text, key, Some(&left))
+            };
+            faults.tick()?;
+            if *created && back.trim().is_empty() {
+                // UMM made the file and nothing else was put in it.
+                remove_file_force(path).ctx(|| format!("removing {}", path.display()))?;
+            } else {
+                crate::apply::write_bytes(path, &crate::block::encode(&back), faults)?;
+            }
+            report.restored += 1;
+            Ok(())
+        }
         Op::External {
             path,
             hash,
