@@ -77,6 +77,19 @@ pub struct GameDef {
     /// (Crusader Kings II: `settings.txt`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paradox: Option<Paradox>,
+    /// A Larian game (Baldur's Gate 3): mods are `.pak` files in its user folder's `Mods/`,
+    /// enabled in `PlayerProfiles/Public/modsettings.lsx`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub larian: Option<Larian>,
+}
+
+/// A Larian game's mod setup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Larian {
+    /// The [`GameDef::folders`] entry of the game's user folder (holding `Mods/` and
+    /// `PlayerProfiles/`).
+    pub folder: String,
 }
 
 /// A Paradox game's mod setup.
@@ -933,6 +946,21 @@ impl GameDef {
                 "[paradox] folder `{}` is not one of [folders]",
                 p.folder
             )));
+        }
+        if let Some(l) = self
+            .larian
+            .as_ref()
+            .filter(|l| !self.folders.contains_key(&l.folder))
+        {
+            return Err(GameDefError::Unsupported(format!(
+                "[larian] folder `{}` is not one of [folders]",
+                l.folder
+            )));
+        }
+        if self.paradox.is_some() && self.larian.is_some() {
+            return Err(GameDefError::Unsupported(
+                "a game has [paradox] or [larian], not both".into(),
+            ));
         }
         if let Some(n) = self.nexus.as_ref().filter(|n| !is_nexus_domain(&n.domain)) {
             return Err(GameDefError::Unsupported(format!(

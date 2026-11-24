@@ -210,7 +210,7 @@ pub fn prepare(
             return Err(DeployError::Changed(l.path.display().to_string()));
         }
         let text = match fs::read(&l.path) {
-            Ok(b) => Some(crate::block::decode(&b)),
+            Ok(b) => Some(l.format.decode(&b)),
             Err(e) if e.kind() == io::ErrorKind::NotFound => None,
             Err(e) => {
                 return Err(
@@ -218,11 +218,12 @@ pub fn prepare(
                 )
             }
         };
-        let current = text.as_deref().and_then(|t| crate::block::get(t, &l.key));
+        let current = text.as_deref().and_then(|t| l.format.get(t, &l.key));
+        let have: Vec<String> = current.iter().flatten().map(|c| l.format.id(c)).collect();
         let added: Vec<String> = l
             .entries
             .iter()
-            .filter(|e| !current.iter().flatten().any(|c| c == *e))
+            .filter(|e| !have.contains(&l.format.id(e)))
             .cloned()
             .collect();
         if added.is_empty() {
@@ -231,6 +232,7 @@ pub fn prepare(
         ops.push(Op::ListAdd {
             path: l.path.clone(),
             key: l.key.clone(),
+            format: l.format,
             added,
             created: text.is_none(),
             block_added: current.is_none(),
@@ -421,6 +423,7 @@ fn apply_op(j: &Journal, op: &Op, faults: &mut Faults) -> Result<(), DeployError
         Op::ListAdd {
             path,
             key,
+            format,
             added,
             created,
             ..
@@ -435,16 +438,20 @@ fn apply_op(j: &Journal, op: &Op, faults: &mut Faults) -> Result<(), DeployError
                 }
                 String::new()
             } else {
-                crate::block::decode(&fs::read(path).ctx(|| format!("reading {}", path.display()))?)
+                format.decode(&fs::read(path).ctx(|| format!("reading {}", path.display()))?)
             };
-            let mut entries = crate::block::get(&text, key).unwrap_or_default();
+            let mut entries = format.get(&text, key).unwrap_or_default();
             for a in added {
-                if !entries.contains(a) {
+                let id = format.id(a);
+                if !entries.iter().any(|e| format.id(e) == id) {
                     entries.push(a.clone());
                 }
             }
-            let new = crate::block::set(&text, key, Some(&entries));
-            write_bytes(path, &crate::block::encode(&new), faults)
+            // An `.lsx` file whose list is gone: changed since the plan.
+            let new = format
+                .set(&text, key, Some(&entries))
+                .ok_or_else(|| DeployError::Changed(op.label()))?;
+            write_bytes(path, &format.encode(&new), faults)
         }
     }
 }

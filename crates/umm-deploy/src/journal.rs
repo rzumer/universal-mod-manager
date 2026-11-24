@@ -83,6 +83,8 @@ pub enum Op {
     ListAdd {
         path: PathBuf,
         key: String,
+        #[serde(default, skip_serializing_if = "crate::ListFormat::is_default")]
+        format: crate::ListFormat,
         /// The entries the list did not have.
         added: Vec<String>,
         /// UMM created the file; it is deleted again if nothing else was added to it.

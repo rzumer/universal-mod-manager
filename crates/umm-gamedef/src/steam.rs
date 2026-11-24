@@ -106,6 +106,9 @@ pub enum Engine {
     Clausewitz,
     /// Factorio's own engine: a folder per mod in its user folder, enabled in `mod-list.json`.
     Factorio,
+    /// Larian's Divinity Engine: `.pak` mods in the game's user folder, enabled in
+    /// `modsettings.lsx`.
+    Divinity,
     Unknown,
 }
 
@@ -118,6 +121,7 @@ impl Engine {
             Engine::Bethesda => "Gamebryo / Creation Engine",
             Engine::Clausewitz => "Clausewitz / Jomini (Paradox)",
             Engine::Factorio => "Factorio (Wube)",
+            Engine::Divinity => "Divinity Engine (Larian)",
             Engine::Unknown => "Unknown engine",
         }
     }
@@ -223,6 +227,8 @@ pub struct Inspection {
     pub data_folder: Option<String>,
     /// A Paradox game, recognised by its exe.
     pub paradox: Option<&'static ParadoxGame>,
+    /// A Larian game, recognised by its exe.
+    pub larian: Option<&'static LarianGame>,
 }
 
 /// A Paradox game: its exe (relative to the game folder) and its user folder's name under
@@ -285,22 +291,44 @@ pub const PARADOX_GAMES: &[ParadoxGame] = &[
     },
 ];
 
+/// Whether `root` has the file at `rel` (`/`-separated), in any case.
+fn has_file_ci(root: &Path, rel: &str) -> bool {
+    let mut p = root.to_path_buf();
+    for c in rel.split('/') {
+        let Some(found) = fs::read_dir(&p).ok().and_then(|rd| {
+            rd.flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .find(|n| n.eq_ignore_ascii_case(c))
+        }) else {
+            return false;
+        };
+        p = p.join(found);
+    }
+    p.is_file()
+}
+
 /// The Paradox game installed in `root`, by its exe.
 pub fn paradox_game(root: &Path) -> Option<&'static ParadoxGame> {
-    PARADOX_GAMES.iter().find(|g| {
-        let mut p = root.to_path_buf();
-        for c in g.exe.split('/') {
-            let Some(found) = fs::read_dir(&p).ok().and_then(|rd| {
-                rd.flatten()
-                    .map(|e| e.file_name().to_string_lossy().into_owned())
-                    .find(|n| n.eq_ignore_ascii_case(c))
-            }) else {
-                return false;
-            };
-            p = p.join(found);
-        }
-        p.is_file()
-    })
+    PARADOX_GAMES.iter().find(|g| has_file_ci(root, g.exe))
+}
+
+/// A Larian game: its exe (relative to the game folder) and its user folder, with variables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LarianGame {
+    pub exe: &'static str,
+    pub user: &'static str,
+}
+
+/// Larian games whose mods go in their user folder.
+pub const LARIAN_GAMES: &[LarianGame] = &[LarianGame {
+    // Started directly, past Larian's launcher (`Launcher/LariLauncher.exe`).
+    exe: "bin/bg3.exe",
+    user: "%LOCALAPPDATA%/Larian Studios/Baldur's Gate 3",
+}];
+
+/// The Larian game installed in `root`, by its exe.
+pub fn larian_game(root: &Path) -> Option<&'static LarianGame> {
+    LARIAN_GAMES.iter().find(|g| has_file_ci(root, g.exe))
 }
 
 /// The name UMM gives a game's user folder outside the game folder in its definition
@@ -343,6 +371,7 @@ pub fn inspect_folder(root: &Path) -> Inspection {
             unreal_project: None,
             data_folder: None,
             paradox: None,
+            larian: None,
         };
     }
     // Paradox: its exe, often in `binaries/` (the top holds its launcher).
@@ -356,6 +385,21 @@ pub fn inspect_folder(root: &Path) -> Inspection {
             unreal_project: None,
             data_folder: None,
             paradox: Some(g),
+            larian: None,
+        };
+    }
+    // Larian: its exe in `bin/` (the top holds its launcher's folder).
+    if let Some(g) = larian_game(root) {
+        exes.retain(|e| !e.eq_ignore_ascii_case(g.exe));
+        exes.insert(0, g.exe.to_string());
+        return Inspection {
+            engine: Engine::Divinity,
+            exe: g.exe.to_string(),
+            exes,
+            unreal_project: None,
+            data_folder: None,
+            paradox: None,
+            larian: Some(g),
         };
     }
     // Factorio: its exe in `bin/x64/`, its base mod in `data/`.
@@ -369,6 +413,7 @@ pub fn inspect_folder(root: &Path) -> Inspection {
             unreal_project: None,
             data_folder: None,
             paradox: None,
+            larian: None,
         };
     }
     // Bethesda: a data folder at the top holding a master plugin (`Fallout3.esm`).
@@ -380,6 +425,7 @@ pub fn inspect_folder(root: &Path) -> Inspection {
             unreal_project: None,
             data_folder: Some(data),
             paradox: None,
+            larian: None,
         };
     }
     if exists_ci(root, "Engine") {
@@ -405,6 +451,7 @@ pub fn inspect_folder(root: &Path) -> Inspection {
             unreal_project: project,
             data_folder: None,
             paradox: None,
+            larian: None,
         };
     }
     Inspection {
@@ -414,6 +461,7 @@ pub fn inspect_folder(root: &Path) -> Inspection {
         unreal_project: None,
         data_folder: None,
         paradox: None,
+        larian: None,
     }
 }
 
@@ -885,6 +933,18 @@ fn build(
              (your own list comes back afterwards). Import mods as the .zip files from the mod \
              portal.",
         )),
+        Engine::Divinity => {
+            if found.larian.is_some() {
+                notes.push(Note::new(
+                    "larian",
+                    "Larian game: .pak mods go to the game's Mods folder in AppData\\Local\\Larian Studios, \
+                     and are enabled in modsettings.lsx while mods are deployed (your own mods there \
+                     stay). The game must have been started once, so that it has written that file. \
+                     Script Extender and bin/ or Data/ files go to the game folder. UMM starts the game \
+                     directly, not through Larian's launcher.",
+                ));
+            }
+        }
         Engine::Unknown if setup == LoaderSetup::Generic => notes.push(Note::new(
             "unknown-engine",
             "Engine not recognised: mod files keep their paths relative to the game folder.",
@@ -900,11 +960,13 @@ fn build(
                 format!("@{USER_FOLDER}/mods"),
             ),
         });
-    match (found.paradox, &factorio) {
+    match (found.paradox, found.larian, &factorio) {
         // Mods go in the user folder's `mod/`, not the game folder.
-        (Some(_), _) => install.extend(crate::setup::paradox_rules(USER_FOLDER)),
-        (None, Some((_, mods))) => install.extend(crate::setup::mod_folder_rules(mods)),
-        (None, None) => install.push(rule("**", "")),
+        (Some(_), _, _) => install.extend(crate::setup::paradox_rules(USER_FOLDER)),
+        // Paks in the user folder's `Mods/`.
+        (None, Some(_), _) => install.extend(crate::setup::larian_rules(USER_FOLDER)),
+        (None, None, Some((_, mods))) => install.extend(crate::setup::mod_folder_rules(mods)),
+        (None, None, None) => install.push(rule("**", "")),
     }
 
     match (setup, found.engine) {
@@ -995,7 +1057,9 @@ fn build(
                 .unwrap_or_default(),
             // A Paradox game started through Steam runs Paradox's launcher, which writes the
             // list of enabled mods from its playset: started directly instead, Steam running.
-            steam_relaunch: if found.paradox.is_some() && origin.relaunch == SteamRelaunch::ViaSteam
+            // Larian's launcher likewise stands before the game.
+            steam_relaunch: if (found.paradox.is_some() || found.larian.is_some())
+                && origin.relaunch == SteamRelaunch::ViaSteam
             {
                 SteamRelaunch::AppidFile
             } else {
@@ -1035,12 +1099,16 @@ fn build(
         folders: found
             .paradox
             .map(|g| format!("%DOCUMENTS%/Paradox Interactive/{}", g.user))
+            .or_else(|| found.larian.map(|g| g.user.to_string()))
             .or_else(|| factorio.and_then(|(user, _)| user))
             .map(|user| [(USER_FOLDER.to_string(), user)].into_iter().collect())
             .unwrap_or_default(),
         paradox: found.paradox.map(|g| crate::Paradox {
             folder: USER_FOLDER.into(),
             list: g.list,
+        }),
+        larian: found.larian.map(|_| crate::Larian {
+            folder: USER_FOLDER.into(),
         }),
     };
     let def = generic.with_setup(setup, community)?;
@@ -1281,6 +1349,50 @@ use-system-read-write-data-directories=true
             ("mods/mod-list.json", "mods")
         );
         assert_eq!(d.def.install[0].target, "mods/{mod}/");
+    }
+
+    #[test]
+    fn baldurs_gate_3_mods_go_to_its_user_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        touch(&root.join("bin/bg3.exe"), 100);
+        touch(&root.join("bin/bg3_dx11.exe"), 100);
+        touch(&root.join("Launcher/LariLauncher.exe"), 50);
+        let found = inspect_folder(root);
+        assert_eq!(
+            (found.engine, found.exe.as_str()),
+            (Engine::Divinity, "bin/bg3.exe")
+        );
+        let d = draft_manual(root, "BG3", &found.exe, &found, LoaderSetup::Generic, None).unwrap();
+        assert_eq!(
+            d.def.folders.get(USER_FOLDER).map(String::as_str),
+            Some("%LOCALAPPDATA%/Larian Studios/Baldur's Gate 3")
+        );
+        assert_eq!(d.def.larian.as_ref().unwrap().folder, USER_FOLDER);
+        assert!(d.notes.iter().any(|n| n.key == "larian"));
+        let c = d.def.compile().unwrap();
+        let map = |p: &str| {
+            c.map_mod_file("m", &crate::RelPath::parse(p).unwrap())
+                .unwrap()
+                .map(|t| t.to_string())
+        };
+        assert_eq!(map("Bags.pak").as_deref(), Some("@user/Mods/Bags.pak"));
+        assert_eq!(map("DWrite.dll").as_deref(), Some("bin/DWrite.dll"));
+        assert_eq!(
+            map("bin/NativeMods/x.dll").as_deref(),
+            Some("bin/NativeMods/x.dll")
+        );
+        assert_eq!(map("info.json"), None, "left out");
+        let text = to_toml(&d);
+        let back = GameDef::parse_game(&text, Path::new("game.toml"), "bg3").unwrap();
+        assert_eq!(back.larian, d.def.larian);
+        // Back to generic from another setup: the same rules.
+        let again = back
+            .with_setup(LoaderSetup::Bepinex, None)
+            .unwrap()
+            .with_setup(LoaderSetup::Generic, None)
+            .unwrap();
+        assert_eq!(again.install[0].target, "@user/Mods/");
     }
 
     #[test]

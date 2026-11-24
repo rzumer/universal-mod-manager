@@ -132,6 +132,8 @@ impl Session {
         self.plan_paradox(&def, &profile, &mut plan)?;
         // Factorio's mod folders, named as the game wants.
         self.plan_factorio(&def, &mut plan)?;
+        // A Larian game's enabled modules.
+        self.plan_larian(&def, &profile, &mut plan)?;
         let rl = def.def.runtime_loader();
         // The Godot Mod Loader's own files go to the game folder when UMM sets it up.
         let mut godotml_in_game = false;

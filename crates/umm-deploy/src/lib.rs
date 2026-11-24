@@ -11,13 +11,16 @@ pub mod block;
 mod faults;
 mod ini;
 mod journal;
+mod list;
 mod lock;
+pub mod lsx;
 mod plan;
 mod revert;
 
 pub use apply::{apply, prepare};
 pub use faults::Faults;
 pub use journal::{Journal, Method, Op, Phase, JOURNAL_VERSION};
+pub use list::ListFormat;
 pub use lock::GameLock;
 pub use plan::{
     build_plan, Conflict, Plan, PlannedExternal, PlannedFile, PlannedIni, PlannedList, Skipped,

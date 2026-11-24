@@ -138,6 +138,7 @@ fn revert_op(
         Op::ListAdd {
             path,
             key,
+            format,
             added,
             created,
             block_added,
@@ -146,31 +147,35 @@ fn revert_op(
             if !exists(path) {
                 return Ok(()); // the file is gone: nothing to take out
             }
-            let text = crate::block::decode(
-                &fs::read(path).ctx(|| format!("reading {}", path.display()))?,
-            );
-            let Some(entries) = crate::block::get(&text, key) else {
+            let text =
+                format.decode(&fs::read(path).ctx(|| format!("reading {}", path.display()))?);
+            let Some(entries) = format.get(&text, key) else {
                 return Ok(()); // the game dropped the list
             };
+            // By what makes them the same: the game may have written UMM's own differently.
+            let ours: Vec<String> = added.iter().map(|a| format.id(a)).collect();
             let left: Vec<String> = entries
                 .iter()
-                .filter(|e| !added.contains(e))
+                .filter(|e| !ours.contains(&format.id(e)))
                 .cloned()
                 .collect();
             if left.len() == entries.len() {
                 return Ok(());
             }
             let back = if left.is_empty() && *block_added {
-                crate::block::set(&text, key, None)
+                format.set(&text, key, None)
             } else {
-                crate::block::set(&text, key, Some(&left))
+                format.set(&text, key, Some(&left))
+            };
+            let Some(back) = back else {
+                return Ok(());
             };
             faults.tick()?;
             if *created && back.trim().is_empty() {
                 // UMM made the file and nothing else was put in it.
                 remove_file_force(path).ctx(|| format!("removing {}", path.display()))?;
             } else {
-                crate::apply::write_bytes(path, &crate::block::encode(&back), faults)?;
+                crate::apply::write_bytes(path, &format.encode(&back), faults)?;
             }
             report.restored += 1;
             Ok(())

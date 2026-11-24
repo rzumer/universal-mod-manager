@@ -312,6 +312,7 @@ impl Session {
                 path: user.join(SETTINGS),
                 key: LAST_MODS.into(),
                 entries: ours,
+                format: umm_deploy::ListFormat::Block,
             });
             return Ok(());
         }

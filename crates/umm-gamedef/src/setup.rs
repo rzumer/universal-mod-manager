@@ -86,6 +86,20 @@ pub fn paradox_rules(folder: &str) -> Vec<InstallRule> {
     vec![rule("**", &format!("@{folder}/mod/{{mod}}/"))]
 }
 
+/// Install rules for a Larian game: `.pak` files to the user folder's `Mods/` (named
+/// `folder` in the definition's folders), where the game finds them only at its top, and the
+/// game folder's own folders (`bin/` for the Script Extender) where they are. Other files
+/// (`info.json`, readmes) are left out.
+pub fn larian_rules(folder: &str) -> Vec<InstallRule> {
+    vec![
+        rule("*.pak", &format!("@{folder}/Mods/")),
+        rule("bin/**", "bin/"),
+        rule("Data/**", "Data/"),
+        // The Script Extender's loader.
+        rule("DWrite.dll", "bin/"),
+    ]
+}
+
 /// The data folder of a definition's Bethesda plugin list (not RimWorld's or Factorio's mod
 /// list).
 pub fn bethesda_data_folder(def: &GameDef) -> Option<&str> {
@@ -317,10 +331,13 @@ impl GameDef {
         let (loader, rules, config) = match setup {
             LoaderSetup::Generic => (
                 None,
-                match (&self.paradox, &self.plugins) {
-                    (Some(p), _) => paradox_rules(&p.folder),
-                    (None, Some(p)) if p.format.lists_mod_folders() => mod_folder_rules(&p.folder),
-                    (None, _) => bethesda_data_folder(self)
+                match (&self.paradox, &self.larian, &self.plugins) {
+                    (Some(p), _, _) => paradox_rules(&p.folder),
+                    (None, Some(l), _) => larian_rules(&l.folder),
+                    (None, None, Some(p)) if p.format.lists_mod_folders() => {
+                        mod_folder_rules(&p.folder)
+                    }
+                    (None, None, _) => bethesda_data_folder(self)
                         .map_or_else(|| vec![rule("**", "")], bethesda_rules),
                 },
                 None,

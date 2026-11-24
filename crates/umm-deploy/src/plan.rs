@@ -47,6 +47,7 @@ pub struct PlannedList {
     pub path: PathBuf,
     pub key: String,
     pub entries: Vec<String>,
+    pub format: crate::ListFormat,
 }
 
 /// A file outside the game folder that UMM writes while mods are deployed.
