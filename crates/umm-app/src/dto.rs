@@ -260,7 +260,8 @@ impl From<umm_core::PluginList> for PluginListDto {
         PluginListDto {
             path: l.path.display().to_string(),
             kind: match l.format {
-                umm_core::PluginListFormat::RimworldXml => "mods",
+                umm_core::PluginListFormat::RimworldXml
+                | umm_core::PluginListFormat::FactorioJson => "mods",
                 umm_core::PluginListFormat::MorrowindIni => "dated",
                 _ => "plugins",
             },

@@ -5,8 +5,8 @@
 
 use crate::{
     loader_name, thunderstore_inject, GameDef, GameDefError, Inject, InstallRule, Loader,
-    PluginListFormat, Thunderstore, BEPINEX_KIND, BEPISLOADER_KIND, DATA_ARCHIVE_EXTENSIONS,
-    DATA_DIRS, EXTENDER_DIRS, GDWEAVE_KIND, GODOTML_KIND, LOVELY_KIND, MIO_KIND, NORTHSTAR_KIND,
+    Thunderstore, BEPINEX_KIND, BEPISLOADER_KIND, DATA_ARCHIVE_EXTENSIONS, DATA_DIRS,
+    EXTENDER_DIRS, GDWEAVE_KIND, GODOTML_KIND, LOVELY_KIND, MIO_KIND, NORTHSTAR_KIND,
     PLUGIN_EXTENSIONS, RECURSIVE_MELONLOADER_KIND, RIVET_KIND, ROM_KIND, SHIMLOADER_KIND,
     THUNDERSTORE_SOURCE, UMM_KIND,
 };
@@ -86,11 +86,21 @@ pub fn paradox_rules(folder: &str) -> Vec<InstallRule> {
     vec![rule("**", &format!("@{folder}/mod/{{mod}}/"))]
 }
 
-/// The data folder of a definition's Bethesda plugin list (not RimWorld's mod list).
+/// The data folder of a definition's Bethesda plugin list (not RimWorld's or Factorio's mod
+/// list).
 pub fn bethesda_data_folder(def: &GameDef) -> Option<&str> {
     let p = def.plugins.as_ref()?;
     let folder = p.folder.trim_matches('/');
-    (p.format != PluginListFormat::RimworldXml && !folder.is_empty()).then_some(folder)
+    (!p.format.lists_mod_folders() && !folder.is_empty()).then_some(folder)
+}
+
+/// Install rules for a game listing mod folders (RimWorld, Factorio): each mod in its own
+/// folder in `folder`.
+pub fn mod_folder_rules(folder: &str) -> Vec<InstallRule> {
+    vec![rule(
+        "**",
+        &format!("{}/{{mod}}/", folder.trim_matches('/')),
+    )]
 }
 
 /// Install rules for BepInEx mods that are not already laid out for the game.
@@ -309,9 +319,10 @@ impl GameDef {
         let (loader, rules, config) = match setup {
             LoaderSetup::Generic => (
                 None,
-                match &self.paradox {
-                    Some(p) => paradox_rules(&p.folder),
-                    None => bethesda_data_folder(self)
+                match (&self.paradox, &self.plugins) {
+                    (Some(p), _) => paradox_rules(&p.folder),
+                    (None, Some(p)) if p.format.lists_mod_folders() => mod_folder_rules(&p.folder),
+                    (None, _) => bethesda_data_folder(self)
                         .map_or_else(|| vec![rule("**", "")], bethesda_rules),
                 },
                 None,

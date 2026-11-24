@@ -104,6 +104,8 @@ pub enum Engine {
     Bethesda,
     /// Paradox's engines: mods in the game's user folder, enabled in `dlc_load.json`.
     Clausewitz,
+    /// Factorio's own engine: a folder per mod in its user folder, enabled in `mod-list.json`.
+    Factorio,
     Unknown,
 }
 
@@ -115,6 +117,7 @@ impl Engine {
             Engine::Unreal => "Unreal Engine",
             Engine::Bethesda => "Gamebryo / Creation Engine",
             Engine::Clausewitz => "Clausewitz / Jomini (Paradox)",
+            Engine::Factorio => "Factorio (Wube)",
             Engine::Unknown => "Unknown engine",
         }
     }
@@ -354,6 +357,19 @@ pub fn inspect_folder(root: &Path) -> Inspection {
             paradox: Some(g),
         };
     }
+    // Factorio: its exe in `bin/x64/`, its base mod in `data/`.
+    if root.join(FACTORIO_EXE).is_file() && root.join("data/base/info.json").is_file() {
+        exes.retain(|e| !e.eq_ignore_ascii_case(FACTORIO_EXE));
+        exes.insert(0, FACTORIO_EXE.to_string());
+        return Inspection {
+            engine: Engine::Factorio,
+            exe: FACTORIO_EXE.to_string(),
+            exes,
+            unreal_project: None,
+            data_folder: None,
+            paradox: None,
+        };
+    }
     // Bethesda: a data folder at the top holding a master plugin (`Fallout3.esm`).
     if let Some(data) = bethesda_data_folder(root) {
         return Inspection {
@@ -400,6 +416,26 @@ pub fn inspect_folder(root: &Path) -> Inspection {
     }
 }
 
+/// Factorio's exe, relative to its folder.
+pub const FACTORIO_EXE: &str = "bin/x64/factorio.exe";
+
+/// Factorio's user folder when it uses the system's (`config-path.cfg` says so: Steam's and
+/// the installer's copies). A zip copy keeps everything in its own folder instead.
+const FACTORIO_USER: &str = "%APPDATA%/Factorio";
+
+/// Whether the Factorio copy in `root` keeps its mods in its own folder (`config-path.cfg`
+/// with `use-system-read-write-data-directories=false`, or none).
+fn factorio_portable(root: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(root.join("config-path.cfg")) else {
+        return true;
+    };
+    !text.lines().any(|l| {
+        l.split_once('=').is_some_and(|(k, v)| {
+            k.trim() == "use-system-read-write-data-directories" && v.trim() == "true"
+        })
+    })
+}
+
 /// The folder at the top of a game folder named `Data` or `Data Files` that holds an `.esm`
 /// master, as spelled on disk.
 fn bethesda_data_folder(root: &Path) -> Option<String> {
@@ -424,6 +460,8 @@ struct Origin {
     name: String,
     detect: Detect,
     relaunch: SteamRelaunch,
+    /// The game folder.
+    root: PathBuf,
 }
 
 /// A game whose plugins (or mods) must be listed to load, recognised by its own exe in the
@@ -489,7 +527,7 @@ const fn other(
     }
 }
 
-use PluginListFormat::{Asterisk, MorrowindIni, Plain, RimworldXml};
+use PluginListFormat::{Asterisk, FactorioJson, MorrowindIni, Plain, RimworldXml};
 
 /// RimWorld's list, in its folder under `AppData\LocalLow` (which has no variable of its own).
 const RIMWORLD_LIST: &str =
@@ -588,7 +626,8 @@ fn add_list_game(draft: &mut Draft, folder: &Path, found: &Inspection) {
             plugins.list
         ),
         MorrowindIni => "Morrowind: while mods are deployed, UMM enables their plugins in the [Game Files] section of Morrowind.ini. The game loads plugins in the order of their file dates.".into(),
-        RimworldXml => format!(
+        // Factorio is set up in `build`, not as a list game.
+        RimworldXml | FactorioJson => format!(
             "RimWorld: each mod goes in its own folder in Mods/, and while mods are deployed, UMM activates them in {}, in load order.",
             plugins.list
         ),
@@ -705,6 +744,7 @@ pub fn draft_from(
         // Started by Steam, as players expect: their Steam launch options, Steam Cloud and
         // DRM all apply. UMM finds the game by its process names.
         relaunch: SteamRelaunch::ViaSteam,
+        root: app.path.clone(),
     };
     let mut draft = build(origin, found, &found.exe, setup, community)?;
     add_list_game(&mut draft, &app.path, found);
@@ -742,6 +782,7 @@ pub fn draft_manual(
             ..Default::default()
         },
         relaunch: SteamRelaunch::None,
+        root: folder.to_path_buf(),
     };
     let mut draft = build(origin, found, exe, setup, community)?;
     add_list_game(&mut draft, folder, found);
@@ -836,16 +877,33 @@ fn build(
                 ));
             }
         }
+        Engine::Factorio => notes.push(Note::new(
+            "factorio",
+            "Factorio: each mod goes in its own folder in the game's mods folder, named after \
+             the name in its info.json, and is enabled in mod-list.json while mods are deployed \
+             (your own list comes back afterwards). Import mods as the .zip files from the mod \
+             portal.",
+        )),
         Engine::Unknown if setup == LoaderSetup::Generic => notes.push(Note::new(
             "unknown-engine",
             "Engine not recognised: mod files keep their paths relative to the game folder.",
         )),
         Engine::Unknown => {}
     }
-    match found.paradox {
+    // Factorio's mods folder: in its user folder, or its own when it keeps everything there.
+    let factorio =
+        (found.engine == Engine::Factorio).then(|| match factorio_portable(&origin.root) {
+            true => (None, "mods".to_string()),
+            false => (
+                Some(FACTORIO_USER.to_string()),
+                format!("@{PARADOX_FOLDER}/mods"),
+            ),
+        });
+    match (found.paradox, &factorio) {
         // Mods go in the user folder's `mod/`, not the game folder.
-        Some(_) => install.extend(crate::setup::paradox_rules(PARADOX_FOLDER)),
-        None => install.push(rule("**", "")),
+        (Some(_), _) => install.extend(crate::setup::paradox_rules(PARADOX_FOLDER)),
+        (None, Some((_, mods))) => install.extend(crate::setup::mod_folder_rules(mods)),
+        (None, None) => install.push(rule("**", "")),
     }
 
     match (setup, found.engine) {
@@ -957,7 +1015,15 @@ fn build(
         launch,
         loader: None,
         nexus: None,
-        plugins: None,
+        plugins: factorio.as_ref().map(|(user, mods)| Plugins {
+            list: match user {
+                Some(u) => format!("{u}/mods/mod-list.json"),
+                None => "mods/mod-list.json".into(),
+            },
+            format: PluginListFormat::FactorioJson,
+            folder: mods.clone(),
+            in_game_folder_when: None,
+        }),
         ini: Vec::new(),
         thunderstore: community.map(|c| Thunderstore {
             community: c.label.to_string(),
@@ -967,14 +1033,9 @@ fn build(
         writable: PathSet { paths: writable },
         folders: found
             .paradox
-            .map(|g| {
-                [(
-                    PARADOX_FOLDER.to_string(),
-                    format!("%DOCUMENTS%/Paradox Interactive/{}", g.user),
-                )]
-                .into_iter()
-                .collect()
-            })
+            .map(|g| format!("%DOCUMENTS%/Paradox Interactive/{}", g.user))
+            .or_else(|| factorio.and_then(|(user, _)| user))
+            .map(|user| [(PARADOX_FOLDER.to_string(), user)].into_iter().collect())
             .unwrap_or_default(),
         paradox: found.paradox.map(|g| crate::Paradox {
             folder: PARADOX_FOLDER.into(),
@@ -1134,6 +1195,91 @@ mod tests {
             .with_setup(LoaderSetup::Generic, None)
             .unwrap();
         assert_eq!(again.install[0].target, "@user/mod/{mod}/");
+    }
+
+    #[test]
+    fn factorio_mods_go_to_its_user_folder_unless_it_keeps_its_own() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        touch(&root.join("bin/x64/factorio.exe"), 100);
+        touch(&root.join("data/base/info.json"), 10);
+        fs::write(
+            root.join("config-path.cfg"),
+            "config-path=__PATH__system-write-data__/config
+             # A comment
+use-system-read-write-data-directories=true
+",
+        )
+        .unwrap();
+        let found = inspect_folder(root);
+        assert_eq!(
+            (found.engine, found.exe.as_str()),
+            (Engine::Factorio, FACTORIO_EXE)
+        );
+        let d = draft_manual(
+            root,
+            "Factorio",
+            &found.exe,
+            &found,
+            LoaderSetup::Generic,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            d.def.folders.get(PARADOX_FOLDER).map(String::as_str),
+            Some("%APPDATA%/Factorio")
+        );
+        let p = d.def.plugins.as_ref().unwrap();
+        assert_eq!(
+            (p.list.as_str(), p.format, p.folder.as_str()),
+            (
+                "%APPDATA%/Factorio/mods/mod-list.json",
+                PluginListFormat::FactorioJson,
+                "@user/mods"
+            )
+        );
+        assert!(d.notes.iter().any(|n| n.key == "factorio"));
+        let c = d.def.compile().unwrap();
+        let map = |p: &str| {
+            c.map_mod_file("k2", &crate::RelPath::parse(p).unwrap())
+                .unwrap()
+                .map(|t| t.to_string())
+        };
+        assert_eq!(map("info.json").as_deref(), Some("@user/mods/k2/info.json"));
+        let text = to_toml(&d);
+        let back = GameDef::parse_game(&text, Path::new("game.toml"), "factorio").unwrap();
+        assert_eq!(back.plugins, d.def.plugins);
+        // Back to generic from another setup: the same rules.
+        let again = back
+            .with_setup(LoaderSetup::Bepinex, None)
+            .unwrap()
+            .with_setup(LoaderSetup::Generic, None)
+            .unwrap();
+        assert_eq!(again.install[0].target, "@user/mods/{mod}/");
+
+        // A zip copy keeps its mods (and their list) in its own folder.
+        fs::write(
+            root.join("config-path.cfg"),
+            "use-system-read-write-data-directories=false
+",
+        )
+        .unwrap();
+        let d = draft_manual(
+            root,
+            "Factorio",
+            &found.exe,
+            &found,
+            LoaderSetup::Generic,
+            None,
+        )
+        .unwrap();
+        assert!(d.def.folders.is_empty());
+        let p = d.def.plugins.as_ref().unwrap();
+        assert_eq!(
+            (p.list.as_str(), p.folder.as_str()),
+            ("mods/mod-list.json", "mods")
+        );
+        assert_eq!(d.def.install[0].target, "mods/{mod}/");
     }
 
     #[test]

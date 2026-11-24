@@ -4,8 +4,8 @@
 //! `umm_deploy::Op::External`).
 //!
 //! The formats: Bethesda's `plugins.txt` (with or without `*`), Morrowind's `[Game Files]` in
-//! `Morrowind.ini`, and RimWorld's `ModsConfig.xml`. Only the list changes; the rest of the
-//! file is kept as it is.
+//! `Morrowind.ini`, RimWorld's `ModsConfig.xml` and Factorio's `mod-list.json`. Only the list
+//! changes; the rest of the file is kept as it is.
 
 use crate::{Result, Session};
 use std::collections::HashSet;
@@ -15,7 +15,7 @@ use umm_deploy::{Plan, PlannedExternal, PlannedFile, Skipped};
 use umm_gamedef::{CompiledDef, PluginListFormat, RelPath, PLUGIN_EXTENSIONS};
 use umm_store::fsutil::{hash_file, write_atomic, IoCtx};
 use umm_store::Profile;
-use PluginListFormat::{Asterisk, MorrowindIni, Plain, RimworldXml};
+use PluginListFormat::{Asterisk, FactorioJson, MorrowindIni, Plain, RimworldXml};
 
 /// The plugin list a deploy writes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,7 +28,7 @@ pub struct PluginList {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginEntry {
-    /// A plugin's file name, or a RimWorld mod's package id.
+    /// A plugin's file name, a RimWorld mod's package id, or a Factorio mod's name.
     pub name: String,
     pub enabled: bool,
     /// The mod providing it; `None` for the user's own entries.
@@ -135,6 +135,7 @@ fn read_list(text: &str, format: PluginListFormat) -> Vec<PluginEntry> {
         RimworldXml => active_mods(text)
             .map(|(_, _, ids)| ids.iter().map(|id| entry(id, true)).collect())
             .unwrap_or_default(),
+        FactorioJson => crate::factorio::read(text),
     }
 }
 
@@ -235,6 +236,7 @@ impl PluginList {
                     "<?xml version=\"1.0\" encoding=\"utf-8\"?>{nl}<ModsConfigData>{nl}  {block}{nl}</ModsConfigData>{nl}"
                 )
             }
+            FactorioJson => crate::factorio::render(original, &self.entries),
         }
     }
 }
@@ -358,6 +360,15 @@ impl Session {
                     .filter_map(|f| Some((f, package_id(&f.source)?)))
                     .collect()
             }
+            // Factorio mods: a folder each, named by its info.json.
+            FactorioJson => {
+                let prefix = format!("{}/", folder.as_str());
+                files
+                    .iter()
+                    .filter(|f| crate::factorio::info_folder(&f.target, &prefix).is_some())
+                    .filter_map(|f| Some((f, crate::factorio::mod_name(&f.source)?)))
+                    .collect()
+            }
         };
         if ours.is_empty() {
             return Ok(None);
@@ -457,7 +468,7 @@ impl Session {
                 t.dedup();
                 t
             }
-            MorrowindIni | RimworldXml => Vec::new(),
+            MorrowindIni | RimworldXml | FactorioJson => Vec::new(),
         };
         plan.external.push(PlannedExternal {
             hash: hash_file(&src).ctx(|| format!("hashing {}", src.display()))?,

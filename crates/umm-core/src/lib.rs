@@ -3,6 +3,7 @@
 mod config;
 mod doctor;
 mod downloads;
+mod factorio;
 mod fomod;
 mod godotml;
 mod icons;

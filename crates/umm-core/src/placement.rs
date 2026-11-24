@@ -236,16 +236,23 @@ pub fn suggest(files: &[&str], game: &GameIndex, def: &CompiledDef) -> Option<Pl
         .iter()
         .filter_map(|f| RelPath::parse(f).ok())
         .collect();
-    if def
-        .def
-        .plugins
-        .as_ref()
-        .is_some_and(|p| p.format == umm_gamedef::PluginListFormat::RimworldXml)
-    {
-        return rimworld_root(&rels);
-    }
-    if def.def.paradox.is_some() {
-        return paradox_root(&rels, def);
+    // Games whose mods each have their own folder: its root found by what marks it.
+    let format = def.def.plugins.as_ref().map(|p| p.format);
+    let own_folder = match format {
+        Some(umm_gamedef::PluginListFormat::RimworldXml) => Some(rimworld_root(&rels)),
+        Some(umm_gamedef::PluginListFormat::FactorioJson) => Some(factorio_root(&rels)),
+        _ if def.def.paradox.is_some() => Some(paradox_root(&rels, def)),
+        _ => None,
+    };
+    if let Some(p) = own_folder {
+        let mut p = p.unwrap_or_default();
+        p.skip = doc_skips(&rels, &p.root, &p.target, game);
+        if format == Some(umm_gamedef::PluginListFormat::FactorioJson) {
+            // Factorio shows a mod's changelog in its mod manager.
+            let keep = join(&p.root, "changelog.txt");
+            p.skip.retain(|s| !s.eq_ignore_ascii_case(&keep));
+        }
+        return (p != Placement::default()).then_some(p);
     }
     let mut roots: Vec<String> = vec![String::new()];
     let mut seen: HashSet<String> = HashSet::new();
@@ -322,18 +329,7 @@ pub fn suggest(files: &[&str], game: &GameIndex, def: &CompiledDef) -> Option<Pl
             (root, String::new(), !specific)
         }
     };
-    let skip: Vec<String> = rels
-        .iter()
-        .filter(|r| {
-            under(r, &root).is_some_and(|c| {
-                is_doc(&c)
-                    && !game
-                        .files
-                        .contains(&join(&target, c.as_str()).to_lowercase())
-            })
-        })
-        .map(|r| r.as_str().to_string())
-        .collect();
+    let skip = doc_skips(&rels, &root, &target, game);
     let p = Placement {
         root,
         target,
@@ -342,6 +338,22 @@ pub fn suggest(files: &[&str], game: &GameIndex, def: &CompiledDef) -> Option<Pl
         chosen: false,
     };
     (p != Placement::default()).then_some(p)
+}
+
+/// The mod's documents under `root` (readmes, checksums...) to leave out, unless the game
+/// already has a file where one would go.
+fn doc_skips(rels: &[RelPath], root: &str, target: &str, game: &GameIndex) -> Vec<String> {
+    rels.iter()
+        .filter(|r| {
+            under(r, root).is_some_and(|c| {
+                is_doc(&c)
+                    && !game
+                        .files
+                        .contains(&join(target, c.as_str()).to_lowercase())
+            })
+        })
+        .map(|r| r.as_str().to_string())
+        .collect()
 }
 
 /// A RimWorld mod's folder is the one holding `About/About.xml`: whatever wraps it is
@@ -361,6 +373,30 @@ fn rimworld_root(rels: &[RelPath]) -> Option<Placement> {
                 .parent()
                 .and_then(|p| p.parent())
                 .unwrap_or_else(RelPath::root);
+            (root.depth(), root.as_str().to_string())
+        })
+        .collect();
+    roots.sort();
+    let (depth, root) = roots.first()?.clone();
+    let guessed = roots.get(1).is_some_and(|(d, _)| *d == depth);
+    let p = Placement {
+        root,
+        guessed,
+        ..Default::default()
+    };
+    (p != Placement::default()).then_some(p)
+}
+
+/// A Factorio mod's folder is the one holding its `info.json` (the shallowest).
+fn factorio_root(rels: &[RelPath]) -> Option<Placement> {
+    let mut roots: Vec<(usize, String)> = rels
+        .iter()
+        .filter(|r| {
+            r.file_name()
+                .is_some_and(|n| n.eq_ignore_ascii_case(crate::factorio::INFO))
+        })
+        .map(|r| {
+            let root = r.parent().unwrap_or_else(RelPath::root);
             (root.depth(), root.as_str().to_string())
         })
         .collect();

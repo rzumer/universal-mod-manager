@@ -197,7 +197,8 @@ pub struct Nexus {
     pub domain: String,
 }
 
-/// A game that only loads the plugins or mods a list file names (Bethesda games, RimWorld).
+/// A game that only loads the plugins or mods a list file names (Bethesda games, RimWorld,
+/// Factorio).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Plugins {
@@ -208,7 +209,8 @@ pub struct Plugins {
     #[serde(default)]
     pub format: PluginListFormat,
     /// The folder holding plugins, relative to the game folder. For
-    /// [`PluginListFormat::RimworldXml`], the folder holding one folder per mod.
+    /// [`PluginListFormat::RimworldXml`] and [`PluginListFormat::FactorioJson`], the folder
+    /// holding one folder per mod (`@<folder>/…` for one of [`GameDef::folders`]).
     #[serde(default = "default_plugin_folder")]
     pub folder: String,
     /// When this setting of an ini file in the game folder holds, the list is in the game
@@ -249,6 +251,19 @@ pub enum PluginListFormat {
     /// RimWorld: active mods as `<li>` entries of `<activeMods>` in `ModsConfig.xml`, in load
     /// order, by the `packageId` in each mod's `About/About.xml`.
     RimworldXml,
+    /// Factorio: `{"name": …, "enabled": …}` objects in the `mods` array of `mod-list.json`,
+    /// by the `name` in each mod's `info.json`. Each mod's folder is named after it.
+    FactorioJson,
+}
+
+impl PluginListFormat {
+    /// The list names mods, each a folder in [`Plugins::folder`], rather than plugin files.
+    pub fn lists_mod_folders(self) -> bool {
+        matches!(
+            self,
+            PluginListFormat::RimworldXml | PluginListFormat::FactorioJson
+        )
+    }
 }
 
 /// The file extensions of plugins.
