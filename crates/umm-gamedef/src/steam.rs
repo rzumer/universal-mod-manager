@@ -8,8 +8,8 @@ use crate::detect::steam_libraries;
 use crate::vdf::{self, Value};
 use crate::{
     slug, Community, Detect, GameDef, GameDefError, GameIniCondition, IniSetting, InstallRule,
-    Launch, LoaderSetup, ParadoxList, PathSet, PluginListFormat, Plugins, SteamRelaunch,
-    Thunderstore, SCHEMA_VERSION, SHIMLOADER_KIND,
+    Launch, LoaderSetup, ParadoxList, PluginListFormat, Plugins, SteamRelaunch, Thunderstore,
+    SCHEMA_VERSION, SHIMLOADER_KIND,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -303,8 +303,9 @@ pub fn paradox_game(root: &Path) -> Option<&'static ParadoxGame> {
     })
 }
 
-/// The folder name UMM gives a Paradox game's user folder in its definition.
-pub const PARADOX_FOLDER: &str = "user";
+/// The name UMM gives a game's user folder outside the game folder in its definition
+/// (Paradox games, Factorio): `@user/…` in its install rules.
+pub const USER_FOLDER: &str = "user";
 
 fn by_size(mut exes: Vec<(String, u64)>) -> Vec<String> {
     exes.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
@@ -896,12 +897,12 @@ fn build(
             true => (None, "mods".to_string()),
             false => (
                 Some(FACTORIO_USER.to_string()),
-                format!("@{PARADOX_FOLDER}/mods"),
+                format!("@{USER_FOLDER}/mods"),
             ),
         });
     match (found.paradox, &factorio) {
         // Mods go in the user folder's `mod/`, not the game folder.
-        (Some(_), _) => install.extend(crate::setup::paradox_rules(PARADOX_FOLDER)),
+        (Some(_), _) => install.extend(crate::setup::paradox_rules(USER_FOLDER)),
         (None, Some((_, mods))) => install.extend(crate::setup::mod_folder_rules(mods)),
         (None, None) => install.push(rule("**", "")),
     }
@@ -1029,16 +1030,16 @@ fn build(
             community: c.label.to_string(),
         }),
         install,
-        protect: PathSet { paths: protect },
-        writable: PathSet { paths: writable },
+        protect,
+        writable,
         folders: found
             .paradox
             .map(|g| format!("%DOCUMENTS%/Paradox Interactive/{}", g.user))
             .or_else(|| factorio.and_then(|(user, _)| user))
-            .map(|user| [(PARADOX_FOLDER.to_string(), user)].into_iter().collect())
+            .map(|user| [(USER_FOLDER.to_string(), user)].into_iter().collect())
             .unwrap_or_default(),
         paradox: found.paradox.map(|g| crate::Paradox {
-            folder: PARADOX_FOLDER.into(),
+            folder: USER_FOLDER.into(),
             list: g.list,
         }),
     };
@@ -1178,10 +1179,10 @@ mod tests {
         );
         let d = draft_manual(root, "CK3", &found.exe, &found, LoaderSetup::Generic, None).unwrap();
         assert_eq!(
-            d.def.folders.get(PARADOX_FOLDER).map(String::as_str),
+            d.def.folders.get(USER_FOLDER).map(String::as_str),
             Some("%DOCUMENTS%/Paradox Interactive/Crusader Kings III")
         );
-        assert_eq!(d.def.paradox.as_ref().unwrap().folder, PARADOX_FOLDER);
+        assert_eq!(d.def.paradox.as_ref().unwrap().folder, USER_FOLDER);
         assert_eq!(d.def.install.len(), 1);
         assert_eq!(d.def.install[0].target, "@user/mod/{mod}/");
         assert!(d.notes.iter().any(|n| n.key == "paradox"));
@@ -1226,7 +1227,7 @@ use-system-read-write-data-directories=true
         )
         .unwrap();
         assert_eq!(
-            d.def.folders.get(PARADOX_FOLDER).map(String::as_str),
+            d.def.folders.get(USER_FOLDER).map(String::as_str),
             Some("%APPDATA%/Factorio")
         );
         let p = d.def.plugins.as_ref().unwrap();
@@ -1294,7 +1295,7 @@ use-system-read-write-data-directories=true
         );
         let d = draft_manual(root, "CK2", &found.exe, &found, LoaderSetup::Generic, None).unwrap();
         assert_eq!(
-            d.def.folders.get(PARADOX_FOLDER).map(String::as_str),
+            d.def.folders.get(USER_FOLDER).map(String::as_str),
             Some("%DOCUMENTS%/Paradox Interactive/Crusader Kings II")
         );
         assert_eq!(d.def.paradox.as_ref().unwrap().list, ParadoxList::Settings);

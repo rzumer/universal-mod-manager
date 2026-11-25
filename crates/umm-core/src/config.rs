@@ -69,7 +69,7 @@ pub struct ConfigChange {
 /// catch-all `**/*.cfg` kind, which would list packages' manifests).
 fn config_globs(def: &umm_gamedef::CompiledDef) -> Result<globset::GlobSet> {
     let mut b = GlobSetBuilder::new();
-    for p in &def.def.writable.paths {
+    for p in &def.def.writable {
         if p.starts_with("**") {
             continue;
         }

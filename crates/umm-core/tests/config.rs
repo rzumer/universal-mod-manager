@@ -20,8 +20,8 @@ fn a_profiles_configs_are_listed_and_edited() {
     let s = Session::open(Some(tmp.path().join("data"))).unwrap();
     write(
         &s.data().game("g").def_path(),
-        "schema = 1\nname = \"G\"\n[[install]]\nmatch = \"**\"\ntarget = \"\"\n\
-         [writable]\npaths = [\"BepInEx/config/**\", \"**/*.json\"]\n",
+        "schema = 1\nname = \"G\"\nwritable = [\"BepInEx/config/**\", \"**/*.json\"]\n\
+         [[install]]\nmatch = \"**\"\ntarget = \"\"\n",
     );
     // Before the game has run with the profile: nothing yet.
     assert!(s.config_files("g", DEFAULT_PROFILE).unwrap().is_empty());

@@ -68,7 +68,7 @@ pub fn set_nexus_domain(
 const SETUP_KEYS: &[&str] = &["loader", "thunderstore", "install", "writable"];
 
 /// Rewrites the sections a mod loader setup decides (`[loader]`, `[thunderstore]`,
-/// `[[install]]`, `[writable]`) to match `def`, leaving everything else as written.
+/// `[[install]]`, `writable`) to match `def`, leaving everything else as written.
 pub fn set_setup(text: &str, origin: &Path, def: &GameDef) -> Result<String, GameDefError> {
     let mut doc = parse(text, origin)?;
     let fresh = toml::to_string(def)

@@ -8,6 +8,10 @@
 # comments.
 schema = 1
 name = "Example Unity Game"
+# Never replaced, even if a mod ships them:
+protect = ["*.exe", "UnityPlayer.dll", "steam_api64.dll"]
+# Always copied, never hardlinked: the game writes to these:
+writable = ["BepInEx/config/**", "**/*.cfg", "**/*.ini"]
 
 [detect]                          # tried in order; the first hit wins
 # path = 'D:\Games\Example Game'  # set by UMM when you pick the folder; skips detection
@@ -57,9 +61,3 @@ target = "BepInEx/plugins/{mod}/"
 [[install]]
 match = "**"                      # anything else keeps its path relative to the game folder
 target = ""
-
-[protect]                         # never replaced, even if a mod ships them
-paths = ["*.exe", "UnityPlayer.dll", "steam_api64.dll"]
-
-[writable]                        # always copied, never hardlinked: the game writes to these
-paths = ["BepInEx/config/**", "**/*.cfg", "**/*.ini"]

@@ -54,9 +54,9 @@ fn a_profiles_weidu_mods_install_on_a_copy_in_order() {
     let s = Session::open(Some(tmp.path().join("data"))).unwrap();
     write(
         &s.data().game(GAME).def_path(),
-        b"schema = 1\nname = \"BG\"\n[detect]\nmarker = \"Baldur.exe\"\n\
+        b"schema = 1\nname = \"BG\"\nprotect = [\"*.exe\"]\n[detect]\nmarker = \"Baldur.exe\"\n\
           [launch]\nexe = \"Baldur.exe\"\n\
-          [[install]]\nmatch = \"**\"\ntarget = \"\"\n[protect]\npaths = [\"*.exe\"]\n",
+          [[install]]\nmatch = \"**\"\ntarget = \"\"\n",
     );
     s.set_install_path(GAME, &root).unwrap();
     weidu_mod(&s, tmp.path(), "alpha", "0 2");

@@ -314,7 +314,7 @@ impl Session {
         };
         let Some(mut path) = path else {
             return Err(crate::CoreError::Invalid(format!(
-                "cannot find {}: [plugins] list needs its environment variables set, or the game's folder",
+                "cannot find {}: [mod_list] list needs its environment variables set, or the game's folder",
                 cfg.list
             )));
         };

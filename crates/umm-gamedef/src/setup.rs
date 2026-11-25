@@ -313,9 +313,7 @@ impl GameDef {
             return Ok(self.clone());
         }
         let mut d = self.clone();
-        d.writable
-            .paths
-            .retain(|p| !LOADER_CONFIGS.contains(&p.as_str()));
+        d.writable.retain(|p| !LOADER_CONFIGS.contains(&p.as_str()));
         let (loader, rules, config) = match setup {
             LoaderSetup::Generic => (
                 None,
@@ -403,7 +401,7 @@ impl GameDef {
         d.loader = loader;
         d.install = rules;
         if let Some(c) = config {
-            d.writable.paths.push(c.into());
+            d.writable.push(c.into());
         }
         d.validate()?;
         Ok(d)
@@ -474,7 +472,7 @@ target = ""
         let back = own.with_setup(LoaderSetup::Generic, None).unwrap();
         assert!(back.loader.is_none());
         assert_eq!(back.install.len(), 1);
-        assert!(back.writable.paths.is_empty());
+        assert!(back.writable.is_empty());
     }
 
     #[test]
@@ -512,7 +510,7 @@ target = ""
         // The same community with BepInEx changes the loader and its config folder.
         let bep = ts.with_setup(LoaderSetup::Thunderstore, Some(BEP)).unwrap();
         assert_eq!(bep.ts_loader(), Some("bepinex"));
-        assert_eq!(bep.writable.paths, [BEPINEX_CONFIG]);
+        assert_eq!(bep.writable, [BEPINEX_CONFIG]);
 
         let other = Community {
             label: "trip",

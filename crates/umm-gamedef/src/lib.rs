@@ -48,9 +48,9 @@ pub struct GameDef {
     /// The game on Nexus Mods, when UMM installs its mods from there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nexus: Option<Nexus>,
-    /// The game's list of enabled plugins, which UMM writes while mods are deployed
-    /// (Bethesda games' `plugins.txt`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The game's list of enabled plugins or mods, which UMM writes while mods are deployed
+    /// (Bethesda games' `plugins.txt`, RimWorld's `ModsConfig.xml`): `[mod_list]` in the file.
+    #[serde(default, rename = "mod_list", skip_serializing_if = "Option::is_none")]
     pub plugins: Option<Plugins>,
     /// Settings in the game's ini files that UMM sets while mods are deployed, and puts back
     /// afterwards (Fallout 4's `bEnableFileSelection`).
@@ -60,11 +60,11 @@ pub struct GameDef {
     pub install: Vec<InstallRule>,
     /// Game paths that are never replaced, even if a mod ships them. A mod may still add a
     /// file matching them that the game does not have (a script extender's loader `.exe`).
-    #[serde(default)]
-    pub protect: PathSet,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub protect: Vec<String>,
     /// Game paths that are always copied rather than hardlinked, because the game writes to them.
-    #[serde(default)]
-    pub writable: PathSet,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub writable: Vec<String>,
     /// Folders outside the game folder that mods go to, by name: an absolute path with
     /// variables (see [`expand_path`]: `%DOCUMENTS%/Paradox Interactive/Crusader Kings III`).
     /// Install rules target one as `@<name>/…`; deploying there is journaled like the game
@@ -408,13 +408,6 @@ pub struct InstallRule {
     #[serde(rename = "match")]
     pub pattern: String,
     pub target: String,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PathSet {
-    #[serde(default)]
-    pub paths: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -946,14 +939,14 @@ impl GameDef {
         }
         if let Some(p) = &self.plugins {
             RelPath::parse(&p.folder)
-                .map_err(|e| GameDefError::Unsupported(format!("[plugins] folder: {e}")))?;
+                .map_err(|e| GameDefError::Unsupported(format!("[mod_list] folder: {e}")))?;
             if p.list.trim().is_empty() {
-                return Err(GameDefError::Unsupported("[plugins] list is empty".into()));
+                return Err(GameDefError::Unsupported("[mod_list] list is empty".into()));
             }
             let absolute = p.list.contains('%') || Path::new(&p.list).is_absolute();
             if !absolute && p.relative_list().is_none() {
                 return Err(GameDefError::Unsupported(format!(
-                    "[plugins] list `{}` must be an absolute path or a file in the game folder",
+                    "[mod_list] list `{}` must be an absolute path or a file in the game folder",
                     p.list
                 )));
             }
@@ -963,7 +956,7 @@ impl GameDef {
                     .filter(|r| !r.is_root())
                     .ok_or_else(|| {
                         GameDefError::Unsupported(format!(
-                            "[plugins.in_game_folder_when] ini `{}` must be a file in the game folder",
+                            "[mod_list.in_game_folder_when] ini `{}` must be a file in the game folder",
                             c.ini
                         ))
                     })?;
@@ -1068,8 +1061,8 @@ impl GameDef {
         Ok(CompiledDef {
             def: self.clone(),
             rules,
-            protect: globset(&self.protect.paths)?,
-            writable: globset(&self.writable.paths)?,
+            protect: globset(&self.protect)?,
+            writable: globset(&self.writable)?,
         })
     }
 }
@@ -1197,6 +1190,8 @@ mod tests {
     const DEF: &str = r#"
 schema = 1
 name = "Example"
+protect = ["*.exe"]
+writable = ["BepInEx/config/**"]
 
 [detect]
 marker = "Game.exe"
@@ -1217,12 +1212,6 @@ target = "BepInEx/plugins/{mod}/"
 [[install]]
 match = "**"
 target = ""
-
-[protect]
-paths = ["*.exe"]
-
-[writable]
-paths = ["BepInEx/config/**"]
 "#;
 
     fn compiled() -> CompiledDef {
@@ -1290,7 +1279,7 @@ paths = ["BepInEx/config/**"]
             GameDef::parse_game(DEF, p, "Bad Id"),
             Err(GameDefError::Id(_))
         ));
-        let typo = DEF.replace("[protect]", "[protekt]");
+        let typo = DEF.replace("protect =", "protekt =");
         assert!(matches!(
             GameDef::parse_game(&typo, p, "example"),
             Err(GameDefError::Parse { .. })

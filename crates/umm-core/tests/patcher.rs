@@ -22,10 +22,10 @@ fn a_patcher_runs_on_a_copy_and_its_result_is_swapped_in_while_deployed() {
     let s = Session::open(Some(tmp.path().join("data"))).unwrap();
     write(
         &s.data().game(GAME).def_path(),
-        b"schema = 1\nname = \"Fallout\"\n[detect]\nmarker = \"Game.exe\"\n\
+        b"schema = 1\nname = \"Fallout\"\nprotect = [\"*.exe\"]\n[detect]\nmarker = \"Game.exe\"\n\
           [launch]\nexe = \"Game.exe\"\n\
-          [plugins]\nlist = \"%LOCALAPPDATA%/Fallout3/plugins.txt\"\nfolder = \"Data\"\n\
-          [[install]]\nmatch = \"**\"\ntarget = \"\"\n[protect]\npaths = [\"*.exe\"]\n",
+          [mod_list]\nlist = \"%LOCALAPPDATA%/Fallout3/plugins.txt\"\nfolder = \"Data\"\n\
+          [[install]]\nmatch = \"**\"\ntarget = \"\"\n",
     );
     s.set_install_path(GAME, &root).unwrap();
     let src = tmp.path().join("patcher");

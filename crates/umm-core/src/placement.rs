@@ -913,7 +913,7 @@ mod tests {
     #[test]
     fn bethesda_mods_go_in_the_data_folder() {
         let fo3 =
-            def("[plugins]\nlist = \"%LOCALAPPDATA%/Fallout3/plugins.txt\"\nfolder = \"Data\"");
+            def("[mod_list]\nlist = \"%LOCALAPPDATA%/Fallout3/plugins.txt\"\nfolder = \"Data\"");
         // Plain Fallout 3: its plugins are .esm, its assets in archives.
         let game = GameIndex::of(&[
             "Fallout3.exe",

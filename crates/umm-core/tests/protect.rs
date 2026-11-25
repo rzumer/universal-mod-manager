@@ -18,8 +18,8 @@ fn a_new_exe_deploys_but_the_games_own_is_kept() {
     let s = Session::open(Some(tmp.path().join("data"))).unwrap();
     write(
         &s.data().game("fo3").def_path(),
-        b"schema = 1\nname = \"Fallout 3\"\n[detect]\nmarker = \"Fallout3.exe\"\n\
-          [[install]]\nmatch = \"**\"\ntarget = \"\"\n[protect]\npaths = [\"*.exe\"]\n",
+        b"schema = 1\nname = \"Fallout 3\"\nprotect = [\"*.exe\"]\n[detect]\nmarker = \"Fallout3.exe\"\n\
+          [[install]]\nmatch = \"**\"\ntarget = \"\"\n",
     );
     s.set_install_path("fo3", &root).unwrap();
     let src = tmp.path().join("fose");

@@ -18,6 +18,8 @@ const GAME: &str = "test-game";
 const DEF: &str = r#"
 schema = 1
 name = "Test Game"
+protect = ["*.exe"]
+writable = ["**/*.cfg"]
 
 [detect]
 marker = "Game.exe"
@@ -33,12 +35,6 @@ target = "Mods/{mod}/"
 [[install]]
 match = "**"
 target = ""
-
-[protect]
-paths = ["*.exe"]
-
-[writable]
-paths = ["**/*.cfg"]
 "#;
 
 struct Fixture {

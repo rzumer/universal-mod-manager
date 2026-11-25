@@ -37,7 +37,7 @@ fn factorio_mods_are_named_and_enabled_in_its_mod_list() {
              [launch]\nexe = \"bin/x64/factorio.exe\"\n\
              [[install]]\nmatch = \"**\"\ntarget = \"@user/mods/{{mod}}/\"\n\
              [folders]\nuser = \"{user_toml}\"\n\
-             [plugins]\nlist = \"{user_toml}/mods/mod-list.json\"\nformat = \"factorio_json\"\nfolder = \"@user/mods\"\n"
+             [mod_list]\nlist = \"{user_toml}/mods/mod-list.json\"\nformat = \"factorio_json\"\nfolder = \"@user/mods\"\n"
         )
         .as_bytes(),
     );

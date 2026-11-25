@@ -101,7 +101,7 @@ fn bethesda_installers_install_into_the_data_folder() {
     write(
         &s.data().game(GAME).def_path(),
         b"schema = 1\nname = \"Rocks\"\n[detect]\nmarker = \"Rocks.exe\"\n\
-          [plugins]\nlist = \"%LOCALAPPDATA%/Rocks/plugins.txt\"\nfolder = \"Data\"\n\
+          [mod_list]\nlist = \"%LOCALAPPDATA%/Rocks/plugins.txt\"\nfolder = \"Data\"\n\
           [[install]]\nmatch = \"**\"\ntarget = \"\"\n",
     );
     s.set_install_path(GAME, &root).unwrap();

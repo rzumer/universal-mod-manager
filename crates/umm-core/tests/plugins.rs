@@ -35,7 +35,7 @@ fn setup(original: Option<&str>) -> Fx {
         &s.data().game(GAME).def_path(),
         &format!(
             "schema = 1\nname = \"Skyrim\"\n[detect]\nmarker = \"SkyrimSE.exe\"\n\
-             [plugins]\nlist = '{}'\nformat = \"asterisk\"\n\
+             [mod_list]\nlist = '{}'\nformat = \"asterisk\"\n\
              [[install]]\nmatch = \"**\"\ntarget = \"\"\n",
             list.display()
         ),
@@ -121,8 +121,8 @@ fn oblivion_keeps_its_list_in_its_folder_when_told_to() {
         &s.data().game("oblivion").def_path(),
         &format!(
             "schema = 1\nname = \"Oblivion\"\n[detect]\nmarker = \"Oblivion.exe\"\n\
-             [plugins]\nlist = '{}'\nformat = \"plain\"\n\
-             [plugins.in_game_folder_when]\nini = \"Oblivion.ini\"\nsection = \"General\"\nkey = \"bUseMyGamesDirectory\"\nvalue = \"0\"\n\
+             [mod_list]\nlist = '{}'\nformat = \"plain\"\n\
+             [mod_list.in_game_folder_when]\nini = \"Oblivion.ini\"\nsection = \"General\"\nkey = \"bUseMyGamesDirectory\"\nvalue = \"0\"\n\
              [[install]]\nmatch = \"**\"\ntarget = \"\"\n",
             appdata.display()
         ),
@@ -254,7 +254,7 @@ fn game(id: &str, files: &[(&str, &[u8])], plugins: &str, install: &str) -> Game
     write(
         &s.data().game(id).def_path(),
         &format!(
-            "schema = 1\nname = \"G\"\n[detect]\nmarker = \"Game.exe\"\n[plugins]\n{plugins}\n\
+            "schema = 1\nname = \"G\"\n[detect]\nmarker = \"Game.exe\"\n[mod_list]\n{plugins}\n\
              [[install]]\nmatch = \"**\"\ntarget = \"{install}\"\n"
         ),
     );
