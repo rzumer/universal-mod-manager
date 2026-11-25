@@ -487,8 +487,9 @@ impl Session {
         Ok(p)
     }
 
-    /// Deletes a profile and its runtime folder (configs the game wrote for that profile).
-    /// Explicit user action only. The Default profile and mods in the store are kept.
+    /// Deletes a profile, its runtime folder (configs the game wrote for that profile) and its
+    /// WeiDU install. Explicit user action only. The Default profile and mods in the store
+    /// are kept.
     pub fn delete_profile(&self, id: &str, name: &str) -> Result<()> {
         if name == DEFAULT_PROFILE {
             return Err(CoreError::Invalid(
@@ -510,6 +511,7 @@ impl Session {
         if runtime.exists() {
             fs::remove_dir_all(&runtime).ctx(|| format!("removing {}", runtime.display()))?;
         }
+        weidu::forget_profile(&game, name).ctx(|| format!("removing {name}'s WeiDU install"))?;
         Ok(())
     }
 

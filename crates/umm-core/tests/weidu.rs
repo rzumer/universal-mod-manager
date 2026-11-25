@@ -235,3 +235,37 @@ fn a_profiles_weidu_mods_install_on_a_copy_in_order() {
     let st = s.weidu_status(GAME, DEFAULT_PROFILE).unwrap().unwrap();
     assert!(st.output.contains("ERROR: it failed"), "{}", st.output);
 }
+
+#[test]
+fn a_deleted_profiles_components_are_forgotten() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("game");
+    write(&root.join("Baldur.exe"), b"exe");
+    write(&root.join("chitin.key"), b"key");
+    let s = Session::open(Some(tmp.path().join("data"))).unwrap();
+    write(
+        &s.data().game(GAME).def_path(),
+        b"schema = 1\nname = \"BG\"\n[detect]\nmarker = \"Baldur.exe\"\n\
+          [launch]\nexe = \"Baldur.exe\"\n\
+          [[install]]\nmatch = \"**\"\ntarget = \"\"\n",
+    );
+    s.set_install_path(GAME, &root).unwrap();
+    weidu_mod(&s, tmp.path(), "alpha", "0");
+    s.create_profile(GAME, "Other", Some(DEFAULT_PROFILE))
+        .unwrap();
+    let st = s
+        .set_weidu_choice(GAME, "Other", "alpha", 0, vec![(0, "Zero".into())])
+        .unwrap();
+    assert_eq!(st.state, WeiduState::NotRun);
+
+    s.delete_profile(GAME, "Other").unwrap();
+    s.create_profile(GAME, "Other", Some(DEFAULT_PROFILE))
+        .unwrap();
+    let st = s.weidu_status(GAME, "Other").unwrap().unwrap();
+    assert_eq!(
+        st.state,
+        WeiduState::NeedsChoices,
+        "a new profile chooses anew"
+    );
+    assert!(st.mods.iter().all(|m| m.components.is_empty()));
+}

@@ -195,6 +195,16 @@ fn record_dir(game: &GameDir, profile: &str) -> PathBuf {
     game.generated_dir().join(WEIDU).join(profile)
 }
 
+/// Forgets a deleted profile's WeiDU install: its components and installed files, so a new
+/// profile of the same name starts without them.
+pub(crate) fn forget_profile(game: &GameDir, profile: &str) -> std::io::Result<()> {
+    let dir = record_dir(game, profile);
+    match fs::remove_dir_all(&dir) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
 /// Forgets a deleted mod in every profile's WeiDU install: its components, and the install
 /// itself, which held what it changed (installed again without it at the next launch; gone
 /// when it was the profile's only WeiDU mod).
