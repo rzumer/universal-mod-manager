@@ -1158,6 +1158,88 @@ impl Session {
         )
     }
 
+    /// The stated dependencies of the profile's enabled Thunderstore packages that it does not
+    /// meet, at the versions it uses. Only a warning: some packages state dependencies they
+    /// do not need. A dependency on a mod loader is met by any enabled loader pack (one pack
+    /// per game; mods often name another). Empty unless the game is set up with its loader
+    /// from Thunderstore.
+    pub fn ts_dependency_issues(&self, id: &str, profile: &str) -> Result<Vec<DepIssue>> {
+        let def = self.def(id)?.def;
+        if !def.loader.as_ref().is_some_and(|l| l.from_thunderstore()) {
+            return Ok(Vec::new());
+        }
+        let game = self.data.game(id);
+        let prof = umm_store::load_profile(&game, profile)?;
+        let stored = self.ts_stored(id)?;
+        let by_name: HashMap<String, &Stored> = stored
+            .iter()
+            .map(|s| (s.latest.full_name.to_lowercase(), s))
+            .collect();
+        let entry = |mod_id: &str| prof.mods.iter().find(|e| e.id == mod_id);
+        // The package version an entry uses: its pin, else the latest.
+        let used = |s: &Stored| -> ThunderstoreMeta {
+            match entry(&s.mod_id).and_then(|e| e.version.as_deref()) {
+                Some(v) if v != s.latest.version => s
+                    .others
+                    .iter()
+                    .find(|o| o.version == v)
+                    .cloned()
+                    .unwrap_or_else(|| s.latest.clone()),
+                _ => s.latest.clone(),
+            }
+        };
+        let eco = self.ecosystem(false).ok();
+        let is_loader = |name: &str| {
+            !umm_gamedef::is_companion_loader(name)
+                && (eco.as_ref().is_some_and(|e| e.modloader(name).is_some())
+                    || by_name
+                        .get(&name.to_lowercase())
+                        .is_some_and(|s| s.latest.loader))
+        };
+        let has_loader = stored.iter().any(|s| {
+            s.latest.loader
+                && !umm_gamedef::is_companion_loader(&s.latest.full_name)
+                && entry(&s.mod_id).is_some_and(|e| e.enabled)
+        });
+        let mut issues = Vec::new();
+        for e in prof.mods.iter().filter(|e| e.enabled) {
+            let Some(s) = stored.iter().find(|s| s.mod_id == e.id) else {
+                continue;
+            };
+            for d in used(s).dependencies {
+                let Some((name, needs)) = split_dependency(&d) else {
+                    continue;
+                };
+                if is_loader(name) && has_loader {
+                    continue;
+                }
+                let problem = match by_name.get(&name.to_lowercase()) {
+                    None => DepProblem::NotInstalled,
+                    Some(dep) => match entry(&dep.mod_id) {
+                        None => DepProblem::NotInProfile,
+                        Some(de) if !de.enabled => DepProblem::Disabled,
+                        Some(_) => {
+                            let have = used(dep).version;
+                            if compare_versions(&have, needs) != Ordering::Less {
+                                continue;
+                            }
+                            DepProblem::TooOld(have)
+                        }
+                    },
+                };
+                issues.push(DepIssue {
+                    mod_id: e.id.clone(),
+                    dependency: by_name
+                        .get(&name.to_lowercase())
+                        .map_or(name.to_string(), |s| s.latest.full_name.clone()),
+                    needs: needs.to_string(),
+                    problem,
+                });
+            }
+        }
+        Ok(issues)
+    }
+
     /// Names of installed packages that depend on the mod `mod_id`.
     pub fn ts_dependents(&self, id: &str, mod_id: &str) -> Result<Vec<String>> {
         let installed = self.ts_installed(id)?;
@@ -1301,6 +1383,29 @@ pub fn describe_conflicts(c: &[PinConflict]) -> String {
         })
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+/// A stated dependency a profile does not meet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DepIssue {
+    /// The package stating it, by mod id.
+    pub mod_id: String,
+    /// The dependency, `Owner-Name`, and the version it names.
+    pub dependency: String,
+    pub needs: String,
+    pub problem: DepProblem,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DepProblem {
+    /// No version of it is installed.
+    NotInstalled,
+    /// Installed, but not in the profile.
+    NotInProfile,
+    /// In the profile, turned off.
+    Disabled,
+    /// The version the profile uses (given) is older than named.
+    TooOld(String),
 }
 
 /// A package to install, and what it does to the profile's pin on it.

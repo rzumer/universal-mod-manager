@@ -678,6 +678,24 @@ const handlers = {
     }
     return { installed: [{ fullName: name, version, replaced: null }], missing: [], warnings: [], notes, conflicts: [] };
   },
+  // Stated dependencies (the sample packages' deps) the profile does not meet.
+  ts_dependency_issues: ({ game, profile }) => {
+    const p = profiles[game]?.[profile];
+    const list = mods[game] || [];
+    const issues = [];
+    for (const e of p?.mods || []) {
+      const m = list.find((x) => x.id === e.id);
+      if (!e.enabled || !m?.thunderstore) continue;
+      for (const dep of tsPackages.find((x) => x.fullName === m.thunderstore)?.deps || []) {
+        const needs = tsPackages.find((x) => x.fullName === dep)?.latest || "1.0.0";
+        const dm = list.find((x) => x.thunderstore === dep);
+        const de = dm && p.mods.find((x) => x.id === dm.id);
+        const problem = !dm ? "notInstalled" : !de ? "notInProfile" : !de.enabled ? "disabled" : null;
+        if (problem) issues.push({ modId: e.id, dependency: dep, needs, problem, have: null });
+      }
+    }
+    return issues;
+  },
   ts_follow_latest: async ({ game, name, profile }) => {
     await sleep(300);
     tsSetPin(game, profile, name, null);

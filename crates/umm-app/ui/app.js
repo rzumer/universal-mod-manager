@@ -224,6 +224,7 @@ async function loadGame() {
   S.details = d;
   if (!d.profiles.includes(S.profileName)) S.profileName = "Default";
   S.profile = await attempt(() => api.getProfile(S.gameId, S.profileName));
+  await loadDepIssues();
   S.plan = null;
   S.health = null;
   if (S.loader && S.loader.game !== S.gameId) S.loader = null;
@@ -269,8 +270,49 @@ async function refreshAll() {
   await loadGame();
 }
 
+/// The stated dependencies the profile's enabled Thunderstore packages do not meet, for the
+/// Mods tab's warnings. Quietly none when they cannot be worked out.
+async function loadDepIssues() {
+  S.depIssues = [];
+  if (!S.details?.game.thunderstore || !S.profile) return;
+  try {
+    S.depIssues = await api.tsDependencyIssues(S.gameId, S.profileName);
+  } catch {
+    S.depIssues = [];
+  }
+}
+
+const DEP_PROBLEM = {
+  notInstalled: () => "not installed",
+  notInProfile: () => "not in this profile",
+  disabled: () => "disabled",
+  tooOld: (i) => `${i.have} in this profile`,
+};
+
+const depLine = (i) => `${i.dependency.split("-").slice(1).join("-").replaceAll("_", " ")} ${i.needs} or later: ${DEP_PROBLEM[i.problem](i)}`;
+
+/// A package's unmet dependencies, and installing or enabling them.
+async function depIssuesDialog(m, issues) {
+  const v = await modal({
+    title: `${m.name} is missing ${issues.length === 1 ? "a dependency" : "dependencies"}`,
+    body: [
+      h("p", { class: "muted" }, "Its Thunderstore package says it needs:"),
+      h("ul", {}, issues.map((i) => h("li", {}, depLine(i)))),
+      h("p", { class: "muted" }, "Some packages state dependencies they do not really need, so it can stay as it is. Otherwise, install and enable them in this profile."),
+    ],
+    actions: [
+      { label: "Leave it", value: null, class: "ghost" },
+      { label: issues.length === 1 ? "Install and enable it" : "Install and enable them", value: "go", class: "primary" },
+    ],
+  });
+  if (v !== "go") return;
+  await tsInstall([...new Set(issues.map((i) => i.dependency))]);
+}
+
 async function saveProfile() {
   await attempt(() => api.saveProfile(S.gameId, S.profile));
+  await loadDepIssues();
+  renderMain();
   S.plan = null;
   if (S.tab === "files") loadPlan();
 }
@@ -662,6 +704,15 @@ function modsTab(d) {
             ? h("button", { class: "chip warn chip-button", title: "Nothing of this mod is installed until its installer's options are chosen", onclick: () => fomodDialog(m) }, "Choose its install options")
             : m?.placement?.guessed &&
                 h("button", { class: "chip warn chip-button", title: "UMM could not tell where this mod's files go", onclick: () => placementDialog(m) }, "Check deployment"),
+          (() => {
+            const issues = on && m ? (S.depIssues || []).filter((i) => i.modId === e.id) : [];
+            if (!issues.length) return null;
+            return h(
+              "button",
+              { class: "chip warn chip-button", disabled: playing, title: `Its stated dependencies:\n${issues.map(depLine).join("\n")}`, onclick: () => depIssuesDialog(m, issues) },
+              issues.length === 1 ? "Missing a dependency" : `Missing ${issues.length} dependencies`,
+            );
+          })(),
         ),
       ),
       h(

@@ -7,7 +7,7 @@ use flate2::write::GzEncoder;
 use std::fs;
 use std::io::{Cursor, Write};
 use std::sync::Arc;
-use umm_core::{CoreError, LoaderSetup, PinConflictChoice, Session, DEFAULT_PROFILE};
+use umm_core::{CoreError, DepProblem, LoaderSetup, PinConflictChoice, Session, DEFAULT_PROFILE};
 use umm_store::versions::other_versions;
 use umm_thunderstore::ecosystem::ECOSYSTEM_URL;
 use umm_thunderstore::http::FakeHttp;
@@ -330,4 +330,85 @@ fn a_profile_pinned_to_a_version_keeps_it_while_the_others_follow_the_latest() {
     assert!(s
         .ts_install_version(GAME, "Lib-Core", "9.9.9", "Other", ask, &mut |_| {})
         .is_err());
+}
+
+#[test]
+fn unmet_dependencies_are_reported_but_allowed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let s = session(tmp.path());
+    let ask = PinConflictChoice::Ask;
+    s.ts_install(
+        GAME,
+        &[("Me-Mine".into(), None)],
+        DEFAULT_PROFILE,
+        ask,
+        &mut |_| {},
+    )
+    .unwrap();
+    let issues = || {
+        s.ts_dependency_issues(GAME, DEFAULT_PROFILE)
+            .unwrap()
+            .into_iter()
+            .map(|i| (i.mod_id, i.dependency, i.needs, i.problem))
+            .collect::<Vec<_>>()
+    };
+    let core = |p: DepProblem| {
+        vec![(
+            "me-mine".to_string(),
+            "Lib-Core".to_string(),
+            "1.5.0".to_string(),
+            p,
+        )]
+    };
+    assert!(issues().is_empty());
+
+    // Turned off, then left out of the profile: still deployable, with a warning.
+    let mut p = s.profile(GAME, DEFAULT_PROFILE).unwrap();
+    p.mods
+        .iter_mut()
+        .find(|e| e.id == "lib-core")
+        .unwrap()
+        .enabled = false;
+    s.save_profile(GAME, &p).unwrap();
+    assert_eq!(issues(), core(DepProblem::Disabled));
+    s.plan(GAME, DEFAULT_PROFILE).unwrap();
+    // The fix the interface offers: installing it enables it again.
+    s.ts_install(
+        GAME,
+        &[("Lib-Core".into(), None)],
+        DEFAULT_PROFILE,
+        ask,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert!(issues().is_empty());
+    let mut p = s.profile(GAME, DEFAULT_PROFILE).unwrap();
+    p.mods.retain(|e| e.id != "lib-core");
+    s.save_profile(GAME, &p).unwrap();
+    assert_eq!(issues(), core(DepProblem::NotInProfile));
+
+    // Pinned older than named.
+    s.create_profile(GAME, "Old", None).unwrap();
+    s.ts_install_version(GAME, "Lib-Core", "1.0.0", "Old", ask, &mut |_| {})
+        .unwrap();
+    let mut p = s.profile(GAME, DEFAULT_PROFILE).unwrap();
+    p.mods.push(umm_core::ProfileEntry {
+        version: Some("1.0.0".into()),
+        ..umm_core::ProfileEntry::new("lib-core", true)
+    });
+    s.save_profile(GAME, &p).unwrap();
+    assert_eq!(issues(), core(DepProblem::TooOld("1.0.0".into())));
+
+    // Not installed at all.
+    s.remove_mod(GAME, "lib-core").unwrap();
+    assert_eq!(issues(), core(DepProblem::NotInstalled));
+    // A disabled dependent warns about nothing.
+    let mut p = s.profile(GAME, DEFAULT_PROFILE).unwrap();
+    p.mods
+        .iter_mut()
+        .find(|e| e.id == "me-mine")
+        .unwrap()
+        .enabled = false;
+    s.save_profile(GAME, &p).unwrap();
+    assert!(issues().is_empty());
 }

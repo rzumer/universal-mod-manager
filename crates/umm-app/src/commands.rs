@@ -712,6 +712,22 @@ pub async fn ts_install_version<R: Runtime>(
     .await
 }
 
+/// The stated dependencies the profile's enabled packages do not meet, to warn about.
+#[tauri::command]
+pub async fn ts_dependency_issues(
+    state: State<'_, AppState>,
+    game: String,
+    profile: String,
+) -> Res<Vec<DepIssueDto>> {
+    blocking(&state, move |s| {
+        Ok(s.ts_dependency_issues(&game, &profile)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    })
+    .await
+}
+
 /// Installed packages that depend on the mod, to warn before removing it.
 #[tauri::command]
 pub async fn ts_dependents(

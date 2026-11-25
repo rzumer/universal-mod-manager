@@ -1095,6 +1095,18 @@ fn profile_cmd(s: &Session, cmd: ProfileCmd) -> Result<()> {
                         .unwrap_or_default()
                 );
             }
+            for i in s.ts_dependency_issues(&game, &profile)? {
+                let why = match &i.problem {
+                    umm_core::DepProblem::NotInstalled => "is not installed".to_string(),
+                    umm_core::DepProblem::NotInProfile => "is not in the profile".to_string(),
+                    umm_core::DepProblem::Disabled => "is disabled".to_string(),
+                    umm_core::DepProblem::TooOld(v) => format!("is at {v} here"),
+                };
+                println!(
+                    "warning: `{}` needs {} {} or later, which {why}",
+                    i.mod_id, i.dependency, i.needs
+                );
+            }
         }
         ProfileCmd::Enable { game, id, profile } => set_enabled(s, &game, &id, &profile, true)?,
         ProfileCmd::Disable { game, id, profile } => set_enabled(s, &game, &id, &profile, false)?,

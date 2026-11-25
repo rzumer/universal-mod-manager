@@ -764,6 +764,37 @@ pub struct TsReportDto {
     pub conflicts: Vec<PinConflictDto>,
 }
 
+/// A stated dependency the profile does not meet.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DepIssueDto {
+    pub mod_id: String,
+    pub dependency: String,
+    pub needs: String,
+    /// `notInstalled`, `notInProfile`, `disabled` or `tooOld`.
+    pub problem: &'static str,
+    /// For `tooOld`: the version the profile uses.
+    pub have: Option<String>,
+}
+
+impl From<umm_core::DepIssue> for DepIssueDto {
+    fn from(i: umm_core::DepIssue) -> Self {
+        let (problem, have) = match i.problem {
+            umm_core::DepProblem::NotInstalled => ("notInstalled", None),
+            umm_core::DepProblem::NotInProfile => ("notInProfile", None),
+            umm_core::DepProblem::Disabled => ("disabled", None),
+            umm_core::DepProblem::TooOld(v) => ("tooOld", Some(v)),
+        };
+        DepIssueDto {
+            mod_id: i.mod_id,
+            dependency: i.dependency,
+            needs: i.needs,
+            problem,
+            have,
+        }
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PinConflictDto {

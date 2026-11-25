@@ -49,8 +49,8 @@ pub use setup::LoaderChoice;
 pub use share::{ProfileExport, ProfileImport};
 pub use steam::{Draft, Engine, Note, SteamApp, SteamCandidate, SteamList};
 pub use ts::{
-    package_mod_id, InstalledPackage, PinConflict, PinConflictChoice, TsInstallReport, TsItem,
-    TsLookup, TsPage, TsQuery, TsSort, TsVersionChoice,
+    package_mod_id, DepIssue, DepProblem, InstalledPackage, PinConflict, PinConflictChoice,
+    TsInstallReport, TsItem, TsLookup, TsPage, TsQuery, TsSort, TsVersionChoice,
 };
 pub use umm_deploy::{
     Conflict, DeployError, Faults, Journal, Method as DeployMethod, Op as DeployOp, Plan,
