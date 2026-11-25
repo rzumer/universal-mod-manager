@@ -12,6 +12,7 @@ mod launch;
 mod link;
 mod manual;
 mod nexus;
+mod oni;
 mod pak;
 mod paradox;
 mod patcher;

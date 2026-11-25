@@ -222,9 +222,9 @@ pub struct Plugins {
     pub list: String,
     #[serde(default)]
     pub format: PluginListFormat,
-    /// The folder holding plugins, relative to the game folder. For
-    /// [`PluginListFormat::RimworldXml`] and [`PluginListFormat::FactorioJson`], the folder
-    /// holding one folder per mod (`@<folder>/…` for one of [`GameDef::folders`]).
+    /// The folder holding plugins, relative to the game folder. For the formats listing mod
+    /// folders ([`PluginListFormat::lists_mod_folders`]), the folder holding one folder per
+    /// mod (`@<folder>/…` for one of [`GameDef::folders`]).
     #[serde(default = "default_plugin_folder")]
     pub folder: String,
     /// When this setting of an ini file in the game folder holds, the list is in the game
@@ -268,6 +268,9 @@ pub enum PluginListFormat {
     /// Factorio: `{"name": …, "enabled": …}` objects in the `mods` array of `mod-list.json`,
     /// by the `name` in each mod's `info.json`. Each mod's folder is named after it.
     FactorioJson,
+    /// Oxygen Not Included: the `mods` array of `mods.json`, each mod by its folder in
+    /// `mods/Local`, enabled for each game version (`enabledForDlc`).
+    OniJson,
 }
 
 impl PluginListFormat {
@@ -275,7 +278,9 @@ impl PluginListFormat {
     pub fn lists_mod_folders(self) -> bool {
         matches!(
             self,
-            PluginListFormat::RimworldXml | PluginListFormat::FactorioJson
+            PluginListFormat::RimworldXml
+                | PluginListFormat::FactorioJson
+                | PluginListFormat::OniJson
         )
     }
 }

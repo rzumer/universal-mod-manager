@@ -109,6 +109,9 @@ pub enum Engine {
     /// Larian's Divinity Engine: `.pak` mods in the game's user folder, enabled in
     /// `modsettings.lsx`.
     Divinity,
+    /// Oxygen Not Included: a Unity game with Klei's own mod loader, a folder per mod in
+    /// Documents, enabled in `mods.json`.
+    OxygenNotIncluded,
     Unknown,
 }
 
@@ -122,6 +125,7 @@ impl Engine {
             Engine::Clausewitz => "Clausewitz / Jomini (Paradox)",
             Engine::Factorio => "Factorio (Wube)",
             Engine::Divinity => "Divinity Engine (Larian)",
+            Engine::OxygenNotIncluded => "Unity (Mono), Klei's mod loader",
             Engine::Unknown => "Unknown engine",
         }
     }
@@ -357,7 +361,9 @@ pub fn inspect_folder(root: &Path) -> Inspection {
         .filter(|_| exists_ci(root, "UnityPlayer.dll"))
         .cloned()
     {
-        let engine = if exists_ci(root, "GameAssembly.dll") {
+        let engine = if exe.eq_ignore_ascii_case(ONI_EXE) {
+            Engine::OxygenNotIncluded
+        } else if exists_ci(root, "GameAssembly.dll") {
             Engine::UnityIl2cpp
         } else {
             Engine::UnityMono
@@ -485,6 +491,12 @@ fn factorio_portable(root: &Path) -> bool {
     })
 }
 
+/// Oxygen Not Included's exe, at the top of its folder.
+pub const ONI_EXE: &str = "OxygenNotIncluded.exe";
+
+/// Oxygen Not Included's user folder (its mods in `mods/Local`, their list in `mods/mods.json`).
+const ONI_USER: &str = "%DOCUMENTS%/Klei/OxygenNotIncluded";
+
 /// The folder at the top of a game folder named `Data` or `Data Files` that holds an `.esm`
 /// master, as spelled on disk.
 fn bethesda_data_folder(root: &Path) -> Option<String> {
@@ -576,7 +588,7 @@ const fn other(
     }
 }
 
-use PluginListFormat::{Asterisk, FactorioJson, MorrowindIni, Plain, RimworldXml};
+use PluginListFormat::{Asterisk, FactorioJson, MorrowindIni, OniJson, Plain, RimworldXml};
 
 /// RimWorld's list, in its folder under `AppData\LocalLow` (which has no variable of its own).
 const RIMWORLD_LIST: &str =
@@ -675,8 +687,8 @@ fn add_list_game(draft: &mut Draft, folder: &Path, found: &Inspection) {
             plugins.list
         ),
         MorrowindIni => "Morrowind: while mods are deployed, UMM enables their plugins in the [Game Files] section of Morrowind.ini. The game loads plugins in the order of their file dates.".into(),
-        // Factorio is set up in `build`, not as a list game.
-        RimworldXml | FactorioJson => format!(
+        // Factorio and Oxygen Not Included are set up in `build`, not as list games.
+        RimworldXml | FactorioJson | OniJson => format!(
             "RimWorld: each mod goes in its own folder in Mods/, and while mods are deployed, UMM activates them in {}, in load order.",
             plugins.list
         ),
@@ -860,6 +872,16 @@ fn build(
 
     match found.engine {
         Engine::UnityMono | Engine::UnityIl2cpp => protect.push("UnityPlayer.dll".into()),
+        Engine::OxygenNotIncluded => {
+            protect.push("UnityPlayer.dll".into());
+            notes.push(Note::new(
+                "oni",
+                "Oxygen Not Included: each mod goes in its own folder in \
+                 Documents\\Klei\\OxygenNotIncluded\\mods\\Local, and is enabled in mods.json \
+                 there while mods are deployed (your own list comes back afterwards). The game \
+                 loads mods with its own loader; no BepInEx is needed.",
+            ));
+        }
         Engine::Unreal => {
             // Under a mod loader its own rules apply instead.
             if let Some(p) = found
@@ -951,21 +973,33 @@ fn build(
         )),
         Engine::Unknown => {}
     }
-    // Factorio's mods folder: in its user folder, or its own when it keeps everything there.
-    let factorio =
-        (found.engine == Engine::Factorio).then(|| match factorio_portable(&origin.root) {
-            true => (None, "mods".to_string()),
+    // Games listing a folder per mod: their user folder (if not the game's), its mods folder
+    // and their list. Factorio's is in its user folder, or its own when it keeps everything
+    // there.
+    let mod_list = match found.engine {
+        Engine::Factorio => Some(match factorio_portable(&origin.root) {
+            true => (None, "mods".to_string(), "mods/mod-list.json".to_string()),
             false => (
                 Some(FACTORIO_USER.to_string()),
                 format!("@{USER_FOLDER}/mods"),
+                format!("{FACTORIO_USER}/mods/mod-list.json"),
             ),
-        });
-    match (found.paradox, found.larian, &factorio) {
+        })
+        .map(|(u, m, l)| (u, m, l, FactorioJson)),
+        Engine::OxygenNotIncluded => Some((
+            Some(ONI_USER.to_string()),
+            format!("@{USER_FOLDER}/mods/Local"),
+            format!("{ONI_USER}/mods/mods.json"),
+            OniJson,
+        )),
+        _ => None,
+    };
+    match (found.paradox, found.larian, &mod_list) {
         // Mods go in the user folder's `mod/`, not the game folder.
         (Some(_), _, _) => install.extend(crate::setup::paradox_rules(USER_FOLDER)),
         // Paks in the user folder's `Mods/`.
         (None, Some(_), _) => install.extend(crate::setup::larian_rules(USER_FOLDER)),
-        (None, None, Some((_, mods))) => install.extend(crate::setup::mod_folder_rules(mods)),
+        (None, None, Some((_, mods, _, _))) => install.extend(crate::setup::mod_folder_rules(mods)),
         (None, None, None) => install.push(rule("**", "")),
     }
 
@@ -1080,12 +1114,9 @@ fn build(
         launch,
         loader: None,
         nexus: None,
-        plugins: factorio.as_ref().map(|(user, mods)| Plugins {
-            list: match user {
-                Some(u) => format!("{u}/mods/mod-list.json"),
-                None => "mods/mod-list.json".into(),
-            },
-            format: PluginListFormat::FactorioJson,
+        plugins: mod_list.as_ref().map(|(_, mods, list, format)| Plugins {
+            list: list.clone(),
+            format: *format,
             folder: mods.clone(),
             in_game_folder_when: None,
         }),
@@ -1100,7 +1131,7 @@ fn build(
             .paradox
             .map(|g| format!("%DOCUMENTS%/Paradox Interactive/{}", g.user))
             .or_else(|| found.larian.map(|g| g.user.to_string()))
-            .or_else(|| factorio.and_then(|(user, _)| user))
+            .or_else(|| mod_list.and_then(|(user, ..)| user))
             .map(|user| [(USER_FOLDER.to_string(), user)].into_iter().collect())
             .unwrap_or_default(),
         paradox: found.paradox.map(|g| crate::Paradox {
@@ -1274,10 +1305,8 @@ mod tests {
         touch(&root.join("data/base/info.json"), 10);
         fs::write(
             root.join("config-path.cfg"),
-            "config-path=__PATH__system-write-data__/config
-             # A comment
-use-system-read-write-data-directories=true
-",
+            "config-path=__PATH__system-write-data__/config\n\
+             # A comment\nuse-system-read-write-data-directories=true\n",
         )
         .unwrap();
         let found = inspect_folder(root);
@@ -1329,8 +1358,7 @@ use-system-read-write-data-directories=true
         // A zip copy keeps its mods (and their list) in its own folder.
         fs::write(
             root.join("config-path.cfg"),
-            "use-system-read-write-data-directories=false
-",
+            "use-system-read-write-data-directories=false\n",
         )
         .unwrap();
         let d = draft_manual(
@@ -1393,6 +1421,56 @@ use-system-read-write-data-directories=true
             .with_setup(LoaderSetup::Generic, None)
             .unwrap();
         assert_eq!(again.install[0].target, "@user/Mods/");
+    }
+
+    #[test]
+    fn oxygen_not_included_mods_go_to_its_local_mods_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        touch(&root.join(ONI_EXE), 100);
+        touch(&root.join("UnityPlayer.dll"), 10);
+        touch(&root.join("OxygenNotIncluded_Data/globalgamemanagers"), 10);
+        let found = inspect_folder(root);
+        assert_eq!(
+            (found.engine, found.exe.as_str()),
+            (Engine::OxygenNotIncluded, ONI_EXE)
+        );
+        let d = draft_manual(
+            root,
+            "Oxygen Not Included",
+            &found.exe,
+            &found,
+            LoaderSetup::Generic,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            d.def.folders.get(USER_FOLDER).map(String::as_str),
+            Some("%DOCUMENTS%/Klei/OxygenNotIncluded")
+        );
+        let p = d.def.plugins.as_ref().unwrap();
+        assert_eq!(
+            (p.list.as_str(), p.format, p.folder.as_str()),
+            (
+                "%DOCUMENTS%/Klei/OxygenNotIncluded/mods/mods.json",
+                PluginListFormat::OniJson,
+                "@user/mods/Local"
+            )
+        );
+        assert!(d.notes.iter().any(|n| n.key == "oni"));
+        assert!(!d.notes.iter().any(|n| n.key == "generic-unity"));
+        assert!(d.def.protect.contains(&"UnityPlayer.dll".to_string()));
+        let c = d.def.compile().unwrap();
+        let mapped = c
+            .map_mod_file("tweaks", &crate::RelPath::parse("Tweaks.dll").unwrap())
+            .unwrap()
+            .map(|t| t.to_string());
+        assert_eq!(
+            mapped.as_deref(),
+            Some("@user/mods/Local/tweaks/Tweaks.dll")
+        );
+        let back = GameDef::parse_game(&to_toml(&d), Path::new("game.toml"), "oni").unwrap();
+        assert_eq!(back.plugins, d.def.plugins);
     }
 
     #[test]

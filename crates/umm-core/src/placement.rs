@@ -241,6 +241,7 @@ pub fn suggest(files: &[&str], game: &GameIndex, def: &CompiledDef) -> Option<Pl
     let own_folder = match format {
         Some(umm_gamedef::PluginListFormat::RimworldXml) => Some(rimworld_root(&rels)),
         Some(umm_gamedef::PluginListFormat::FactorioJson) => Some(factorio_root(&rels)),
+        Some(umm_gamedef::PluginListFormat::OniJson) => Some(oni_root(&rels)),
         _ if def.def.paradox.is_some() => Some(paradox_root(&rels, def)),
         _ => None,
     };
@@ -389,18 +390,31 @@ fn rimworld_root(rels: &[RelPath]) -> Option<Placement> {
 
 /// A Factorio mod's folder is the one holding its `info.json` (the shallowest).
 fn factorio_root(rels: &[RelPath]) -> Option<Placement> {
+    marked_root(rels, |n| n.eq_ignore_ascii_case(crate::factorio::INFO))
+}
+
+/// An Oxygen Not Included mod's folder is the one holding its `mod_info.yaml` or `mod.yaml`
+/// (the shallowest: older versions are kept in `archived_versions/`), or else its code.
+fn oni_root(rels: &[RelPath]) -> Option<Placement> {
+    marked_root(rels, |n| {
+        n.eq_ignore_ascii_case("mod_info.yaml") || n.eq_ignore_ascii_case("mod.yaml")
+    })
+    .or_else(|| marked_root(rels, |n| n.to_ascii_lowercase().ends_with(".dll")))
+}
+
+/// The shallowest folder holding a file whose name `marks` it; a guess when another as
+/// shallow does too.
+fn marked_root(rels: &[RelPath], marks: impl Fn(&str) -> bool) -> Option<Placement> {
     let mut roots: Vec<(usize, String)> = rels
         .iter()
-        .filter(|r| {
-            r.file_name()
-                .is_some_and(|n| n.eq_ignore_ascii_case(crate::factorio::INFO))
-        })
+        .filter(|r| r.file_name().is_some_and(&marks))
         .map(|r| {
             let root = r.parent().unwrap_or_else(RelPath::root);
             (root.depth(), root.as_str().to_string())
         })
         .collect();
     roots.sort();
+    roots.dedup_by(|a, b| a.1.eq_ignore_ascii_case(&b.1));
     let (depth, root) = roots.first()?.clone();
     let guessed = roots.get(1).is_some_and(|(d, _)| *d == depth);
     let p = Placement {

@@ -4,8 +4,8 @@
 //! `umm_deploy::Op::External`).
 //!
 //! The formats: Bethesda's `plugins.txt` (with or without `*`), Morrowind's `[Game Files]` in
-//! `Morrowind.ini`, RimWorld's `ModsConfig.xml` and Factorio's `mod-list.json`. Only the list
-//! changes; the rest of the file is kept as it is.
+//! `Morrowind.ini`, RimWorld's `ModsConfig.xml`, Factorio's `mod-list.json` and Oxygen Not
+//! Included's `mods.json`. Only the list changes; the rest of the file is kept as it is.
 
 use crate::{Result, Session};
 use std::collections::HashSet;
@@ -15,7 +15,7 @@ use umm_deploy::{Plan, PlannedExternal, PlannedFile, Skipped};
 use umm_gamedef::{CompiledDef, PluginListFormat, RelPath, PLUGIN_EXTENSIONS};
 use umm_store::fsutil::{hash_file, write_atomic, IoCtx};
 use umm_store::Profile;
-use PluginListFormat::{Asterisk, FactorioJson, MorrowindIni, Plain, RimworldXml};
+use PluginListFormat::{Asterisk, FactorioJson, MorrowindIni, OniJson, Plain, RimworldXml};
 
 /// The plugin list a deploy writes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,7 +28,8 @@ pub struct PluginList {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginEntry {
-    /// A plugin's file name, a RimWorld mod's package id, or a Factorio mod's name.
+    /// A plugin's file name, a RimWorld mod's package id, a Factorio mod's name, or an Oxygen
+    /// Not Included mod's folder (`<id>.<platform>` for one not installed locally).
     pub name: String,
     pub enabled: bool,
     /// The mod providing it; `None` for the user's own entries.
@@ -136,6 +137,7 @@ fn read_list(text: &str, format: PluginListFormat) -> Vec<PluginEntry> {
             .map(|(_, _, ids)| ids.iter().map(|id| entry(id, true)).collect())
             .unwrap_or_default(),
         FactorioJson => crate::factorio::read(text),
+        OniJson => crate::oni::read(text),
     }
 }
 
@@ -237,6 +239,7 @@ impl PluginList {
                 )
             }
             FactorioJson => crate::factorio::render(original, &self.entries),
+            OniJson => crate::oni::render(original, &self.entries),
         }
     }
 }
@@ -369,6 +372,17 @@ impl Session {
                     .filter_map(|f| Some((f.owner.as_str(), crate::factorio::mod_name(&f.source)?)))
                     .collect()
             }
+            // Oxygen Not Included mods: a folder each, known by its name.
+            OniJson => {
+                let prefix = format!("{}/", folder.as_str());
+                files
+                    .iter()
+                    .filter_map(|f| {
+                        let dir = crate::oni::mod_folder(f.target.as_str(), &prefix)?;
+                        Some((f.owner.as_str(), dir.to_string()))
+                    })
+                    .collect()
+            }
         };
         // RimWorld's Workshop items the profile has: on as it says, by their package ids;
         // the others are left as the user's list has them.
@@ -394,7 +408,16 @@ impl Session {
                 }
             }
         }
-        if ours.is_empty() && off.is_empty() {
+        // Oxygen Not Included's Workshop items the profile has: their entries (`<id>.Steam`,
+        // once the game has listed them) on or off as it says; the others are left as they are.
+        let toggled: std::collections::HashMap<String, bool> = match cfg.format {
+            OniJson => profile
+                .workshop()
+                .map(|(i, on)| (format!("{i}.Steam").to_lowercase(), on))
+                .collect(),
+            _ => Default::default(),
+        };
+        if ours.is_empty() && off.is_empty() && toggled.is_empty() {
             return Ok(None);
         }
         ours.sort_by(|(a, an), (b, bn)| {
@@ -415,6 +438,11 @@ impl Session {
             let n = e.name.to_lowercase();
             !names.contains(&n) && !off.contains(&n)
         });
+        for e in &mut entries {
+            if let Some(on) = toggled.get(&e.name.to_lowercase()) {
+                e.enabled = *on;
+            }
+        }
         let mut seen = HashSet::new();
         entries.extend(
             ours.into_iter()
@@ -491,7 +519,7 @@ impl Session {
                 t.dedup();
                 t
             }
-            MorrowindIni | RimworldXml | FactorioJson => Vec::new(),
+            MorrowindIni | RimworldXml | FactorioJson | OniJson => Vec::new(),
         };
         plan.external.push(PlannedExternal {
             hash: hash_file(&src).ctx(|| format!("hashing {}", src.display()))?,

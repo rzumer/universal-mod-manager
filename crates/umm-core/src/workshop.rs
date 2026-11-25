@@ -636,7 +636,9 @@ pub enum WorkshopControl {
 pub fn workshop_control(def: &GameDef) -> WorkshopControl {
     match (&def.paradox, def.plugins.as_ref().map(|p| p.format)) {
         (Some(_), _) => WorkshopControl::Profile,
-        (None, Some(PluginListFormat::RimworldXml)) => WorkshopControl::Profile,
+        (None, Some(PluginListFormat::RimworldXml | PluginListFormat::OniJson)) => {
+            WorkshopControl::Profile
+        }
         _ => WorkshopControl::Steam,
     }
 }

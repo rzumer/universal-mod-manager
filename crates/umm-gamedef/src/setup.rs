@@ -100,16 +100,15 @@ pub fn larian_rules(folder: &str) -> Vec<InstallRule> {
     ]
 }
 
-/// The data folder of a definition's Bethesda plugin list (not RimWorld's or Factorio's mod
-/// list).
+/// The data folder of a definition's Bethesda plugin list (not a list of mod folders).
 pub fn bethesda_data_folder(def: &GameDef) -> Option<&str> {
     let p = def.plugins.as_ref()?;
     let folder = p.folder.trim_matches('/');
     (!p.format.lists_mod_folders() && !folder.is_empty()).then_some(folder)
 }
 
-/// Install rules for a game listing mod folders (RimWorld, Factorio): each mod in its own
-/// folder in `folder`.
+/// Install rules for a game listing mod folders (RimWorld, Factorio, Oxygen Not Included):
+/// each mod in its own folder in `folder`.
 pub fn mod_folder_rules(folder: &str) -> Vec<InstallRule> {
     vec![rule(
         "**",
