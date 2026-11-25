@@ -7,6 +7,7 @@ pub mod fsutil;
 mod mods;
 mod placement;
 mod profile;
+pub mod versions;
 
 pub use fsutil::{IoCtx, IoError};
 pub use mods::{

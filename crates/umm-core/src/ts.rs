@@ -4,7 +4,7 @@
 
 use crate::{CoreError, Result, Session};
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use umm_deploy::GameLock;
 use umm_gamedef::GameDef;
@@ -91,10 +91,15 @@ pub struct TsLookup {
 pub struct TsVersionChoice {
     pub version: String,
     pub size: u64,
-    /// The version installed now.
+    /// The version the profile uses now.
     pub installed: bool,
-    /// Installed packages that need a newer version than this one: `(Owner-Name, the
-    /// version they name)`. A version some package needs a newer one than cannot be chosen.
+    /// The version the profile is pinned to.
+    pub pinned: bool,
+    /// Stored already: choosing it needs no download.
+    pub stored: bool,
+    /// Packages of the profile that need a newer version than this one: `(Owner-Name, the
+    /// version they name)`. Choosing it means downgrading them too (see
+    /// [`PinConflictChoice::Downgrade`]).
     pub needed_by: Vec<(String, String)>,
 }
 
@@ -203,14 +208,6 @@ impl Session {
                 m.thunderstore
                     .map(|meta| InstalledPackage { mod_id: m.id, meta })
             })
-            .collect())
-    }
-
-    pub(crate) fn installed_versions(&self, id: &str) -> Result<HashMap<String, String>> {
-        Ok(self
-            .ts_installed(id)?
-            .into_iter()
-            .map(|p| (p.meta.full_name, p.meta.version))
             .collect())
     }
 
@@ -342,22 +339,47 @@ impl Session {
         })
     }
 
-    /// Installed packages with a newer version: `(Owner-Name, installed, latest)`.
+    /// Installed packages with a newer version: `(Owner-Name, installed, latest)`. Packages
+    /// every profile having them is pinned in are left out: nothing would use the update.
     pub fn ts_updates(&self, id: &str) -> Result<Vec<(String, String, String)>> {
         let (packages, _) = self.ts_packages(id, false)?;
-        Ok(resolve::updates(&packages, &self.installed_versions(id)?))
+        let game = self.data.game(id);
+        let mut pinned: HashSet<String> = HashSet::new();
+        let mut follow: HashSet<String> = HashSet::new();
+        for name in umm_store::list_profiles(&game) {
+            for e in umm_store::load_profile(&game, &name)?.mods {
+                match e.version {
+                    Some(_) => pinned.insert(e.id),
+                    None => follow.insert(e.id),
+                };
+            }
+        }
+        let installed: HashMap<String, String> = self
+            .ts_installed(id)?
+            .into_iter()
+            .filter(|p| follow.contains(&p.mod_id) || !pinned.contains(&p.mod_id))
+            .map(|p| (p.meta.full_name, p.meta.version))
+            .collect();
+        Ok(resolve::updates(&packages, &installed))
     }
 
     /// Installs packages (version `None` = latest) with their dependencies, and makes sure all
-    /// of them are enabled in `profile`. Refused while mods are deployed.
+    /// of them are enabled in `profile`. Pins stay as they are. Refused while mods are
+    /// deployed, and (with [`PinConflictChoice::Ask`]) when a pinned package is older than a
+    /// package in the profile needs.
     pub fn ts_install(
         &self,
         id: &str,
         wanted: &[(String, Option<String>)],
         profile: &str,
+        choice: PinConflictChoice,
         progress: &mut dyn FnMut(&str),
     ) -> Result<TsInstallReport> {
-        self.install_with(id, wanted, profile, progress, None)
+        let wants = wanted
+            .iter()
+            .map(|(n, v)| Want::new(n, v.clone(), PinIntent::Keep))
+            .collect::<Vec<_>>();
+        self.install_with(id, &wants, profile, choice, progress, None)
     }
 
     /// Looks up a package by `Owner-Name`, including one the game's community does not list
@@ -397,11 +419,18 @@ impl Session {
         full_name: &str,
         version: Option<String>,
         profile: &str,
+        choice: PinConflictChoice,
         progress: &mut dyn FnMut(&str),
     ) -> Result<TsInstallReport> {
         let mut found = self.ts_lookup(id, full_name)?;
         if found.listed {
-            return self.ts_install(id, &[(found.package.full_name, version)], profile, progress);
+            return self.ts_install(
+                id,
+                &[(found.package.full_name, version)],
+                profile,
+                choice,
+                progress,
+            );
         }
         if let Some(v) = &version {
             if found.package.version(v).is_none() {
@@ -415,15 +444,100 @@ impl Session {
                     });
             }
         }
-        let wanted = [(found.package.full_name.clone(), version)];
-        self.install_with(id, &wanted, profile, progress, Some(found.package))
+        let wants = [Want::new(
+            &found.package.full_name,
+            version,
+            PinIntent::Keep,
+        )];
+        self.install_with(id, &wants, profile, choice, progress, Some(found.package))
+    }
+
+    /// Every stored version of each installed package.
+    fn ts_stored(&self, id: &str) -> Result<Vec<Stored>> {
+        let game = self.data.game(id);
+        Ok(self
+            .ts_installed(id)?
+            .into_iter()
+            .map(|p| {
+                let others = umm_store::versions::other_versions(&game, &p.mod_id)
+                    .into_iter()
+                    .filter_map(|v| {
+                        umm_store::versions::load_mod_version(&game, &p.mod_id, Some(&v))
+                            .ok()?
+                            .0
+                            .thunderstore
+                    })
+                    .collect();
+                Stored {
+                    mod_id: p.mod_id,
+                    latest: p.meta,
+                    others,
+                }
+            })
+            .collect())
+    }
+
+    /// Removes the stored package versions no profile uses: other versions no profile is
+    /// pinned to, and the latest when every profile with the package is pinned to another
+    /// (the newest pinned version becomes the latest). A package in no profile keeps its
+    /// latest. Left for later while mods are deployed, or while another operation holds the
+    /// game.
+    pub(crate) fn prune_versions(&self, id: &str) -> Result<()> {
+        let game = self.data.game(id);
+        let Ok(_lock) = GameLock::acquire(&game) else {
+            return Ok(());
+        };
+        if game.journal_path().exists() {
+            return Ok(());
+        }
+        let mut pins: HashMap<String, HashSet<String>> = HashMap::new();
+        // Packages some profile follows the latest version of.
+        let mut follow: HashSet<String> = HashSet::new();
+        for name in umm_store::list_profiles(&game) {
+            let Ok(p) = umm_store::load_profile(&game, &name) else {
+                // An unreadable profile may use anything.
+                return Ok(());
+            };
+            for e in p.mods {
+                match e.version {
+                    Some(v) => {
+                        pins.entry(e.id).or_default().insert(v);
+                    }
+                    None => {
+                        follow.insert(e.id);
+                    }
+                }
+            }
+        }
+        for m in umm_store::list_mods(&game)? {
+            let keep = pins.remove(&m.id).unwrap_or_default();
+            let others = umm_store::versions::other_versions(&game, &m.id);
+            // The latest, used by no profile: the newest pinned version takes its place.
+            let unused_latest = !follow.contains(&m.id)
+                && !keep.is_empty()
+                && m.version.as_ref().is_none_or(|v| !keep.contains(v));
+            if unused_latest {
+                if let Some(top) = others
+                    .iter()
+                    .filter(|v| keep.contains(*v))
+                    .max_by(|a, b| compare_versions(a, b))
+                {
+                    umm_store::versions::promote_version(&game, &m.id, top)?;
+                }
+            }
+            if !others.is_empty() {
+                umm_store::versions::prune_versions(&game, &m.id, &keep)?;
+            }
+        }
+        Ok(())
     }
 
     fn install_with(
         &self,
         id: &str,
-        wanted: &[(String, Option<String>)],
+        wants: &[Want],
         profile: &str,
+        choice: PinConflictChoice,
         progress: &mut dyn FnMut(&str),
         extra: Option<Package>,
     ) -> Result<TsInstallReport> {
@@ -439,24 +553,67 @@ impl Session {
             }
             None => &listed,
         };
+        let find = |name: &str| {
+            packages
+                .iter()
+                .find(|p| p.full_name.eq_ignore_ascii_case(name))
+        };
         let game = self.data.game(id);
         game.ensure()?;
         let _lock = GameLock::acquire(&game)?;
         if game.journal_path().exists() {
             return Err(CoreError::Deployed(id.into()));
         }
-        let installed = self.installed_versions(id)?;
-        let installed_pkgs = self.ts_installed(id)?;
-        let recorded: HashMap<String, (String, Vec<String>)> = installed_pkgs
+        let stored = self.ts_stored(id)?;
+        let stored_by_name: HashMap<String, &Stored> = stored
             .iter()
-            .map(|p| {
-                let m = &p.meta;
+            .map(|s| (s.latest.full_name.to_lowercase(), s))
+            .collect();
+        // Every stored version's dependencies, by lower-case `Owner-Name` and version.
+        let recorded: HashMap<(String, String), Vec<String>> = stored
+            .iter()
+            .flat_map(|s| std::iter::once(&s.latest).chain(&s.others))
+            .map(|t| {
                 (
-                    m.full_name.to_lowercase(),
-                    (m.version.clone(), m.dependencies.clone()),
+                    (t.full_name.to_lowercase(), t.version.clone()),
+                    t.dependencies.clone(),
                 )
             })
             .collect();
+        let before = umm_store::load_profile(&game, profile)?;
+        // The version of each installed package this profile uses, and its pins.
+        let mut uses: HashMap<String, String> = HashMap::new();
+        let mut pins: HashMap<String, String> = HashMap::new();
+        for s in &stored {
+            let name = s.latest.full_name.to_lowercase();
+            match before.pin(&s.mod_id) {
+                Some(v) => {
+                    pins.insert(name.clone(), v.to_string());
+                    uses.insert(name, v.to_string());
+                }
+                None => {
+                    uses.insert(name, s.latest.version.clone());
+                }
+            }
+        }
+        // The pins this install sets or removes.
+        let mut asked: HashSet<String> = HashSet::new();
+        for w in wants {
+            let name = w.name.to_lowercase();
+            match (w.pin, &w.version) {
+                (PinIntent::Follow, _) => {
+                    pins.remove(&name);
+                    if let Some(s) = stored_by_name.get(&name) {
+                        uses.insert(name, s.latest.version.clone());
+                    }
+                }
+                (PinIntent::Pin, Some(v)) => {
+                    pins.insert(name.clone(), v.clone());
+                    asked.insert(name);
+                }
+                _ => {}
+            }
+        }
 
         // One BepInEx pack per game. A pack asked for by name, else one already installed, is
         // the game's pack; a dependency on any other pack counts as met by it (mods often name
@@ -465,27 +622,27 @@ impl Session {
         // replacing it.
         let is_loader =
             |name: &str| eco.modloader(name).is_some() && !umm_gamedef::is_companion_loader(name);
-        let in_profile: Vec<String> = umm_store::load_profile(&game, profile)?
+        let in_profile: Vec<String> = before
             .mods
-            .into_iter()
-            .filter(|e| e.enabled)
-            .map(|e| e.id)
-            .collect();
-        let chosen_loader: Option<String> = wanted
             .iter()
-            .map(|(n, _)| n.clone())
+            .filter(|e| e.enabled)
+            .map(|e| e.id.clone())
+            .collect();
+        let loaders = || {
+            stored.iter().filter(|s| {
+                s.latest.loader && !umm_gamedef::is_companion_loader(&s.latest.full_name)
+            })
+        };
+        let chosen_loader: Option<String> = wants
+            .iter()
+            .map(|w| w.name.clone())
             .find(|n| is_loader(n))
             .or_else(|| {
                 // The pack this profile uses, else any installed one.
-                let loaders = || {
-                    installed_pkgs.iter().filter(|p| {
-                        p.meta.loader && !umm_gamedef::is_companion_loader(&p.meta.full_name)
-                    })
-                };
                 loaders()
-                    .find(|p| in_profile.contains(&p.mod_id))
+                    .find(|s| in_profile.contains(&s.mod_id))
                     .or_else(|| loaders().next())
-                    .map(|p| p.meta.full_name.clone())
+                    .map(|s| s.latest.full_name.clone())
             });
         // No loader yet, and none of the mods names one (some do not, though they need it):
         // it comes with this install anyway, as the Thunderstore tab says.
@@ -493,7 +650,6 @@ impl Session {
             (None, Some(_)) => self.loader_package(&def, &eco, packages)?,
             _ => None,
         };
-        let mut added_loader = None;
         let other_loader = |dep: &str| {
             split_dependency(dep).is_some_and(|(n, _)| {
                 is_loader(n)
@@ -502,25 +658,34 @@ impl Session {
                         .is_some_and(|c| !c.eq_ignore_ascii_case(n))
             })
         };
+        // The enabled Thunderstore packages of the profile, by lower-case `Owner-Name`.
+        let profile_packages: Vec<String> = stored
+            .iter()
+            .filter(|s| in_profile.contains(&s.mod_id))
+            .map(|s| s.latest.full_name.to_lowercase())
+            .collect();
 
-        // Dependencies come from each package's manifest: an installed package's record, or
-        // the zip, downloaded once and kept for the install below.
+        // Dependencies come from each package version's manifest: a stored version's record,
+        // or the zip, downloaded once and kept for the install below.
         let mut zips: HashMap<(String, String), Vec<u8>> = HashMap::new();
-        let mut net_error: Option<CoreError> = None;
-        let plan = {
+        let net_error: std::cell::RefCell<Option<CoreError>> = Default::default();
+        let mut added_loader = None;
+        // Packages moved to an older version to suit a pin, and pins removed.
+        let mut lowered: HashMap<String, String> = HashMap::new();
+        let mut unpinned: HashSet<String> = HashSet::new();
+        let settled = {
             let mut deps_of =
                 |pkg: &Package, version: &str| -> std::result::Result<Vec<String>, String> {
-                    if let Some((have, deps)) = recorded.get(&pkg.full_name.to_lowercase()) {
-                        if compare_versions(have, version) != Ordering::Less {
-                            return Ok(deps.iter().filter(|d| !other_loader(d)).cloned().collect());
-                        }
+                    let key = (pkg.full_name.to_lowercase(), version.to_string());
+                    if let Some(deps) = recorded.get(&key) {
+                        return Ok(deps.iter().filter(|d| !other_loader(d)).cloned().collect());
                     }
                     let key = (pkg.full_name.clone(), version.to_string());
                     if !zips.contains_key(&key) {
                         progress(&format!("Downloading {} {}", pkg.name, version));
                         let bytes = self.http().get(&pkg.download_url(version)).map_err(|e| {
                             let msg = e.to_string();
-                            net_error = Some(TsError::from(e).into());
+                            *net_error.borrow_mut() = Some(TsError::from(e).into());
                             msg
                         })?;
                         zips.insert(key.clone(), bytes);
@@ -529,22 +694,182 @@ impl Session {
                     let deps = manifest.map(|m| m.dependencies).unwrap_or_default();
                     Ok(deps.into_iter().filter(|d| !other_loader(d)).collect())
                 };
-            match resolve::resolve(packages, &installed, wanted, &mut deps_of) {
-                Ok(p) if !p.all.iter().any(|n| is_loader(n)) && loader_to_add.is_some() => {
-                    let pkg = loader_to_add.clone().expect("checked");
-                    let mut with_loader = vec![(pkg.clone(), None)];
-                    with_loader.extend(wanted.iter().cloned());
-                    added_loader = Some(pkg);
-                    resolve::resolve(packages, &installed, &with_loader, &mut deps_of)
+            let mut round = 0;
+            loop {
+                round += 1;
+                if round > 10 {
+                    break Err(CoreError::Invalid(
+                        "could not find versions that suit every pin in this profile".into(),
+                    ));
                 }
-                r => r,
+                // The pins this round: the profile's, as changed so far.
+                let mut fixed: HashMap<String, String> = pins
+                    .iter()
+                    .filter(|(n, _)| !unpinned.contains(*n))
+                    .map(|(n, v)| (n.clone(), v.clone()))
+                    .collect();
+                fixed.extend(lowered.iter().map(|(n, v)| (n.clone(), v.clone())));
+                let mut have = uses.clone();
+                for n in &unpinned {
+                    if let Some(s) = stored_by_name.get(n) {
+                        have.insert(n.clone(), s.latest.version.clone());
+                    }
+                }
+                let mut request: Vec<(String, Option<String>)> = wants
+                    .iter()
+                    .map(|w| (w.name.clone(), w.version.clone()))
+                    .collect();
+                for (n, v) in &lowered {
+                    if let Some(p) = find(n) {
+                        request.push((p.full_name.clone(), Some(v.clone())));
+                    }
+                }
+                let plan =
+                    match resolve::resolve_fixed(packages, &have, &fixed, &request, &mut deps_of) {
+                        Ok(p) if !p.all.iter().any(|n| is_loader(n)) && loader_to_add.is_some() => {
+                            let pkg = loader_to_add.clone().expect("checked");
+                            let mut with_loader = vec![(pkg.clone(), None)];
+                            with_loader.extend(request.iter().cloned());
+                            added_loader = Some(pkg);
+                            resolve::resolve_fixed(
+                                packages,
+                                &have,
+                                &fixed,
+                                &with_loader,
+                                &mut deps_of,
+                            )
+                        }
+                        r => r,
+                    };
+                let plan = match plan {
+                    Ok(p) => p,
+                    Err(msg) => {
+                        break Err(net_error
+                            .borrow_mut()
+                            .take()
+                            .unwrap_or(CoreError::Invalid(msg)))
+                    }
+                };
+                // The versions the profile would use.
+                let mut used = have.clone();
+                for s in &plan.steps {
+                    used.insert(s.full_name.to_lowercase(), s.version.clone());
+                }
+                for (n, v) in &fixed {
+                    used.insert(n.clone(), v.clone());
+                }
+                // Pinned packages older than a package of the profile needs.
+                let mut conflicts = Vec::new();
+                let mut check: Vec<String> = plan.all.iter().map(|n| n.to_lowercase()).collect();
+                check.extend(profile_packages.iter().cloned());
+                check.sort();
+                check.dedup();
+                let mut failed = None;
+                for x in &check {
+                    let (Some(pkg), Some(xv)) = (find(x), used.get(x)) else {
+                        continue;
+                    };
+                    let deps = match deps_of(pkg, xv) {
+                        Ok(d) => d,
+                        Err(msg) => {
+                            failed = Some(
+                                net_error
+                                    .borrow_mut()
+                                    .take()
+                                    .unwrap_or(CoreError::Invalid(msg)),
+                            );
+                            break;
+                        }
+                    };
+                    for d in deps {
+                        let Some((p, needs)) = split_dependency(&d) else {
+                            continue;
+                        };
+                        let p_key = p.to_lowercase();
+                        let Some(pin) = fixed.get(&p_key) else {
+                            continue;
+                        };
+                        if compare_versions(pin, needs) == Ordering::Less {
+                            conflicts.push(PinConflict {
+                                dependent: pkg.full_name.clone(),
+                                dependent_version: xv.clone(),
+                                pinned: find(p).map_or(p.to_string(), |q| q.full_name.clone()),
+                                pin: pin.clone(),
+                                needs: needs.to_string(),
+                                can_unpin: !asked.contains(&p_key) && !lowered.contains_key(&p_key),
+                            });
+                        }
+                    }
+                }
+                if let Some(e) = failed {
+                    break Err(e);
+                }
+                if conflicts.is_empty() || choice == PinConflictChoice::Ignore {
+                    break Ok((plan, used, fixed));
+                }
+                match choice {
+                    PinConflictChoice::Ask | PinConflictChoice::Ignore => {
+                        break Err(CoreError::PinConflicts(conflicts))
+                    }
+                    PinConflictChoice::Unpin => {
+                        let stuck: Vec<PinConflict> =
+                            conflicts.iter().filter(|c| !c.can_unpin).cloned().collect();
+                        if !stuck.is_empty() {
+                            break Err(CoreError::PinConflicts(stuck));
+                        }
+                        unpinned.extend(conflicts.iter().map(|c| c.pinned.to_lowercase()));
+                    }
+                    PinConflictChoice::Downgrade => {
+                        let mut stuck = None;
+                        for c in &conflicts {
+                            let x = c.dependent.to_lowercase();
+                            let pin = &c.pin;
+                            let pinned = c.pinned.to_lowercase();
+                            let pkg = find(&x).expect("checked above");
+                            let mut found = None;
+                            if !asked.contains(&x) {
+                                for v in pkg.versions.iter().map(|v| v.version.clone()) {
+                                    if compare_versions(&v, &c.dependent_version) != Ordering::Less
+                                    {
+                                        continue;
+                                    }
+                                    let deps = match deps_of(pkg, &v) {
+                                        Ok(d) => d,
+                                        Err(_) => continue,
+                                    };
+                                    let fits = deps.iter().all(|d| {
+                                        split_dependency(d).is_none_or(|(n, needs)| {
+                                            !n.eq_ignore_ascii_case(&pinned)
+                                                || compare_versions(needs, pin) != Ordering::Greater
+                                        })
+                                    });
+                                    if fits {
+                                        found = Some(v);
+                                        break;
+                                    }
+                                }
+                            }
+                            match found {
+                                Some(v) => {
+                                    lowered.insert(x, v);
+                                }
+                                None => {
+                                    stuck = Some(CoreError::Invalid(format!(
+                                        "no version of {} works with {} {}",
+                                        c.dependent, c.pinned, c.pin
+                                    )));
+                                    break;
+                                }
+                            }
+                        }
+                        if let Some(e) = stuck {
+                            break Err(e);
+                        }
+                    }
+                }
             }
         };
-        let plan = match (plan, net_error) {
-            (Ok(p), _) => p,
-            (Err(_), Some(e)) => return Err(e),
-            (Err(msg), None) => return Err(CoreError::Invalid(msg)),
-        };
+        let (plan, used, fixed) = settled?;
         let mut report = TsInstallReport {
             missing: plan.missing.clone(),
             ..Default::default()
@@ -554,13 +879,36 @@ impl Session {
                 "Installed {pkg} too: it is the game's mod loader, which every mod needs"
             ));
         }
+        for (n, v) in &lowered {
+            let name = find(n).map_or(n.clone(), |p| p.full_name.clone());
+            report.notes.push(format!(
+                "Pinned {name} at {v}, which works with this profile's pins"
+            ));
+        }
+        for n in &unpinned {
+            let name = find(n).map_or(n.clone(), |p| p.full_name.clone());
+            report.notes.push(format!(
+                "Removed this profile's pin on {name}; it follows the latest version"
+            ));
+        }
+        // Packages stored as an older version than the latest: the profile is pinned to them.
+        let mut older: HashSet<String> = HashSet::new();
         for step in &plan.steps {
-            let pkg = packages
-                .iter()
-                .find(|p| p.full_name == step.full_name)
-                .expect("resolved from this list");
-            let key = (step.full_name.clone(), step.version.clone());
-            let zip = match zips.remove(&key) {
+            let pkg = find(&step.full_name).expect("resolved from this list");
+            let key = step.full_name.to_lowercase();
+            let latest = stored_by_name.get(&key).map(|s| s.latest.version.clone());
+            let as_latest = latest
+                .as_ref()
+                .is_none_or(|l| compare_versions(&step.version, l) == Ordering::Greater);
+            if !as_latest {
+                older.insert(key.clone());
+                let mod_id = package_mod_id(&pkg.full_name);
+                if umm_store::versions::has_version(&game, &mod_id, &step.version) {
+                    continue;
+                }
+            }
+            let zip_key = (step.full_name.clone(), step.version.clone());
+            let zip = match zips.remove(&zip_key) {
                 Some(z) => z,
                 None => {
                     progress(&format!("Downloading {} {}", pkg.name, step.version));
@@ -570,7 +918,7 @@ impl Session {
                 }
             };
             progress(&format!("Installing {} {}", pkg.name, step.version));
-            self.store_package(id, &community, m, &eco, pkg, &step.version, &zip)?;
+            self.store_package(id, &community, m, &eco, pkg, &step.version, &zip, as_latest)?;
             report.installed.push((
                 step.full_name.clone(),
                 step.version.clone(),
@@ -579,13 +927,12 @@ impl Session {
         }
 
         let mut p = umm_store::load_profile(&game, profile)?;
-        let mut changed = false;
         // A pack installed by name replaces any other pack in this profile: turned off, kept.
-        if let Some(chosen) = wanted.iter().map(|(n, _)| n).find(|n| is_loader(n)) {
-            for other in installed_pkgs.iter().filter(|o| {
-                o.meta.loader
-                    && !umm_gamedef::is_companion_loader(&o.meta.full_name)
-                    && !o.meta.full_name.eq_ignore_ascii_case(chosen)
+        if let Some(chosen) = wants.iter().map(|w| &w.name).find(|n| is_loader(n)) {
+            for other in stored.iter().filter(|o| {
+                o.latest.loader
+                    && !umm_gamedef::is_companion_loader(&o.latest.full_name)
+                    && !o.latest.full_name.eq_ignore_ascii_case(chosen)
             }) {
                 if let Some(e) = p
                     .mods
@@ -593,10 +940,9 @@ impl Session {
                     .find(|e| e.id == other.mod_id && e.enabled)
                 {
                     e.enabled = false;
-                    changed = true;
                     report.notes.push(format!(
                         "Turned off {} in this profile; {} replaces it",
-                        other.meta.full_name, chosen
+                        other.latest.full_name, chosen
                     ));
                 }
             }
@@ -604,52 +950,100 @@ impl Session {
         for name in &plan.all {
             let mod_id = package_mod_id(name);
             match p.mods.iter_mut().find(|e| e.id == mod_id) {
-                Some(e) if !e.enabled => {
-                    e.enabled = true;
-                    changed = true;
-                }
-                Some(_) => {}
-                None => {
-                    p.mods.push(ProfileEntry {
-                        id: mod_id,
-                        enabled: true,
-                    });
-                    changed = true;
-                }
+                Some(e) => e.enabled = true,
+                None => p.mods.push(ProfileEntry::new(mod_id, true)),
             }
         }
-        if changed {
-            umm_store::save_profile(&game, &p)?;
+        // Each package's pin, as this install leaves it.
+        let mut names: HashMap<String, String> = stored
+            .iter()
+            .map(|s| (s.mod_id.clone(), s.latest.full_name.to_lowercase()))
+            .collect();
+        names.extend(
+            plan.all
+                .iter()
+                .map(|n| (package_mod_id(n), n.to_lowercase())),
+        );
+        for e in &mut p.mods {
+            let Some(name) = names.get(&e.id) else {
+                continue;
+            };
+            let follows = wants
+                .iter()
+                .any(|w| w.pin == PinIntent::Follow && w.name.eq_ignore_ascii_case(name));
+            e.version = if unpinned.contains(name) || follows {
+                None
+            } else if let Some(v) = fixed.get(name) {
+                Some(v.clone())
+            } else if older.contains(name) {
+                used.get(name).cloned()
+            } else {
+                e.version.take()
+            };
         }
+        umm_store::save_profile(&game, &p)?;
+        drop(_lock);
+        self.prune_versions(id)?;
         report.warnings.extend(self.loader_architecture_warning(id));
         Ok(report)
     }
 
     /// Updates installed packages (all of them when `only` is empty) to their latest versions,
-    /// with any new dependencies. Profiles keep their order.
+    /// with any new dependencies. Packages named in `only` follow their latest version in
+    /// `profile` from then on; updating all of them leaves the profile's pins as they are.
     pub fn ts_update(
         &self,
         id: &str,
         only: &[String],
         profile: &str,
+        choice: PinConflictChoice,
         progress: &mut dyn FnMut(&str),
     ) -> Result<TsInstallReport> {
-        let wanted: Vec<(String, Option<String>)> = self
+        let intent = if only.is_empty() {
+            PinIntent::Keep
+        } else {
+            PinIntent::Follow
+        };
+        let mut wants: Vec<Want> = self
             .ts_updates(id)?
             .into_iter()
             .filter(|(n, _, _)| only.is_empty() || only.iter().any(|o| o.eq_ignore_ascii_case(n)))
-            .map(|(n, _, latest)| (n, Some(latest)))
+            .map(|(n, _, latest)| Want::new(&n, Some(latest), intent))
             .collect();
-        if wanted.is_empty() {
+        // A package already at its latest version, pinned in this profile, follows it.
+        for o in only {
+            if !wants.iter().any(|w| w.name.eq_ignore_ascii_case(o)) {
+                wants.push(Want::new(o, None, PinIntent::Follow));
+            }
+        }
+        if wants.is_empty() {
             return Ok(TsInstallReport::default());
         }
-        self.ts_install(id, &wanted, profile, progress)
+        self.install_with(id, &wants, profile, choice, progress, None)
     }
 
-    /// The versions of a package the game's list has, newest first, each with the installed
-    /// packages that need a newer one: the lowest version that may be installed is the
-    /// highest any of them names.
-    pub fn ts_versions(&self, id: &str, full_name: &str) -> Result<Vec<TsVersionChoice>> {
+    /// Makes `profile` follow a package's latest installed version again (installing a
+    /// newer one if Thunderstore has it), removing its pin.
+    pub fn ts_follow_latest(
+        &self,
+        id: &str,
+        full_name: &str,
+        profile: &str,
+        choice: PinConflictChoice,
+        progress: &mut dyn FnMut(&str),
+    ) -> Result<TsInstallReport> {
+        self.ts_update(id, &[full_name.to_string()], profile, choice, progress)
+    }
+
+    /// The versions of a package the game's list has, newest first, as `profile` sees them:
+    /// the one it uses, and the packages of the profile that need a newer one (the lowest
+    /// version that suits them all is the highest any of them names).
+    pub fn ts_versions(
+        &self,
+        id: &str,
+        full_name: &str,
+        profile: &str,
+    ) -> Result<Vec<TsVersionChoice>> {
         let (packages, _) = self.ts_packages(id, false)?;
         let pkg = packages
             .iter()
@@ -657,23 +1051,40 @@ impl Session {
             .ok_or_else(|| {
                 CoreError::Invalid(format!("{full_name} is not on Thunderstore for this game"))
             })?;
-        let installed = self.ts_installed(id)?;
-        let current = installed
+        let game = self.data.game(id);
+        let prof = umm_store::load_profile(&game, profile)?;
+        let stored = self.ts_stored(id)?;
+        let this = stored
             .iter()
-            .find(|p| p.meta.full_name.eq_ignore_ascii_case(full_name))
-            .map(|p| p.meta.version.clone());
-        // What the other installed packages name for it.
-        let wanted: Vec<(String, String)> = installed
+            .find(|s| s.latest.full_name.eq_ignore_ascii_case(full_name));
+        let pin = this.and_then(|s| prof.pin(&s.mod_id)).map(str::to_string);
+        let current = pin
+            .clone()
+            .or_else(|| this.map(|s| s.latest.version.clone()));
+        // What the profile's other packages, at the versions it uses, name for it.
+        let wanted: Vec<(String, String)> = stored
             .iter()
-            .filter(|p| !p.meta.full_name.eq_ignore_ascii_case(full_name))
-            .filter_map(|p| {
-                p.meta.dependencies.iter().find_map(|d| {
+            .filter(|s| !s.latest.full_name.eq_ignore_ascii_case(full_name))
+            .filter(|s| prof.enabled().any(|e| e.id == s.mod_id))
+            .filter_map(|s| {
+                let meta = match prof.pin(&s.mod_id) {
+                    Some(v) => s
+                        .others
+                        .iter()
+                        .find(|o| o.version == v)
+                        .unwrap_or(&s.latest),
+                    None => &s.latest,
+                };
+                meta.dependencies.iter().find_map(|d| {
                     let (name, version) = split_dependency(d)?;
                     name.eq_ignore_ascii_case(full_name)
-                        .then(|| (p.meta.full_name.clone(), version.to_string()))
+                        .then(|| (s.latest.full_name.clone(), version.to_string()))
                 })
             })
             .collect();
+        let has = |v: &str| {
+            this.is_some_and(|s| s.latest.version == v || s.others.iter().any(|o| o.version == v))
+        };
         Ok(pkg
             .versions
             .iter()
@@ -681,6 +1092,8 @@ impl Session {
                 version: v.version.clone(),
                 size: v.size,
                 installed: current.as_deref() == Some(v.version.as_str()),
+                pinned: pin.as_deref() == Some(v.version.as_str()),
+                stored: has(&v.version),
                 needed_by: wanted
                     .iter()
                     .filter(|(_, needs)| compare_versions(&v.version, needs) == Ordering::Less)
@@ -690,37 +1103,58 @@ impl Session {
             .collect())
     }
 
-    /// Installs a package at the version given, older or newer than the installed one, with
-    /// its dependencies. Refused for a version older than another installed package needs.
+    /// Pins `profile` to a version of a package, older or newer than the one it uses,
+    /// installing it with its dependencies. Other profiles keep theirs. A version older than
+    /// another package of the profile needs is refused unless `choice` says what to do.
     pub fn ts_install_version(
         &self,
         id: &str,
         full_name: &str,
         version: &str,
         profile: &str,
+        choice: PinConflictChoice,
         progress: &mut dyn FnMut(&str),
     ) -> Result<TsInstallReport> {
-        let choice = self
-            .ts_versions(id, full_name)?
-            .into_iter()
-            .find(|c| c.version == version)
-            .ok_or_else(|| CoreError::Invalid(format!("{full_name} has no version {version}")))?;
-        if !choice.needed_by.is_empty() {
-            let who = choice
-                .needed_by
-                .iter()
-                .map(|(n, v)| format!("{n} needs {v} or later"))
-                .collect::<Vec<_>>()
-                .join(", ");
+        let (packages, _) = self.ts_packages(id, false)?;
+        let pkg = packages
+            .iter()
+            .find(|p| p.full_name.eq_ignore_ascii_case(full_name))
+            .ok_or_else(|| {
+                CoreError::Invalid(format!("{full_name} is not on Thunderstore for this game"))
+            })?;
+        if pkg.version(version).is_none() {
             return Err(CoreError::Invalid(format!(
-                "{full_name} {version} is too old: {who}"
+                "{full_name} has no version {version}"
             )));
         }
-        self.ts_install(
+        let wants = [Want::new(
+            &pkg.full_name,
+            Some(version.to_string()),
+            PinIntent::Pin,
+        )];
+        self.install_with(id, &wants, profile, choice, progress, None)
+    }
+
+    /// Installs packages each pinned in `profile` at the version given (an imported
+    /// profile's), as they are, without checking them against each other.
+    pub(crate) fn ts_install_pinned(
+        &self,
+        id: &str,
+        wanted: &[(String, String)],
+        profile: &str,
+        progress: &mut dyn FnMut(&str),
+    ) -> Result<TsInstallReport> {
+        let wants: Vec<Want> = wanted
+            .iter()
+            .map(|(n, v)| Want::new(n, Some(v.clone()), PinIntent::Pin))
+            .collect();
+        self.install_with(
             id,
-            &[(full_name.to_string(), Some(version.to_string()))],
+            &wants,
             profile,
+            PinConflictChoice::Ignore,
             progress,
+            None,
         )
     }
 
@@ -744,6 +1178,8 @@ impl Session {
             .collect())
     }
 
+    /// Stores a downloaded package version: as the package's latest (`as_latest`; the
+    /// version it replaces is kept for profiles pinned to it), or beside it.
     #[allow(clippy::too_many_arguments)]
     fn store_package(
         &self,
@@ -754,6 +1190,7 @@ impl Session {
         pkg: &Package,
         version: &str,
         zip: &[u8],
+        as_latest: bool,
     ) -> Result<()> {
         let game = self.data.game(id);
         let mod_id = package_mod_id(&pkg.full_name);
@@ -775,37 +1212,118 @@ impl Session {
         let staging = game.staging_dir().join(fsutil::unique_suffix());
         let result = (|| -> Result<()> {
             layout::write(&files, &staging)?;
-            umm_store::import_mod(
-                &game,
-                &staging,
-                &ImportOptions {
-                    id: Some(mod_id.clone()),
-                    name: Some(pkg.name.replace('_', " ")),
-                    version: Some(version.to_string()),
-                    source: Some(format!(
-                        "https://thunderstore.io/c/{community}/p/{}/{}/",
-                        pkg.owner, pkg.name
-                    )),
-                    unwrap: false,
-                    keep_top_dirs: Vec::new(),
-                    layout: Layout::Game,
-                    thunderstore: Some(ThunderstoreMeta {
-                        community: community.to_string(),
-                        full_name: pkg.full_name.clone(),
-                        version: version.to_string(),
-                        dependencies: manifest.dependencies.clone(),
-                        description: Some(pkg.description.clone()).filter(|d| !d.is_empty()),
-                        website: Some(pkg.website.clone()).filter(|w| !w.is_empty()),
-                        loader: loader.is_some(),
-                    }),
-                    nexus: None,
-                    replace: true,
-                    package_files: layout::package_files(zip)?,
-                },
-            )?;
+            let opts = ImportOptions {
+                id: Some(mod_id.clone()),
+                name: Some(pkg.name.replace('_', " ")),
+                version: Some(version.to_string()),
+                source: Some(format!(
+                    "https://thunderstore.io/c/{community}/p/{}/{}/",
+                    pkg.owner, pkg.name
+                )),
+                unwrap: false,
+                keep_top_dirs: Vec::new(),
+                layout: Layout::Game,
+                thunderstore: Some(ThunderstoreMeta {
+                    community: community.to_string(),
+                    full_name: pkg.full_name.clone(),
+                    version: version.to_string(),
+                    dependencies: manifest.dependencies.clone(),
+                    description: Some(pkg.description.clone()).filter(|d| !d.is_empty()),
+                    website: Some(pkg.website.clone()).filter(|w| !w.is_empty()),
+                    loader: loader.is_some(),
+                }),
+                nexus: None,
+                replace: true,
+                keep_replaced: true,
+                package_files: layout::package_files(zip)?,
+            };
+            if as_latest {
+                umm_store::import_mod(&game, &staging, &opts)?;
+            } else {
+                umm_store::versions::store_version(&game, &staging, &opts)?;
+            }
             Ok(())
         })();
         let _ = std::fs::remove_dir_all(&staging);
         result
     }
+}
+
+/// What installing a package does to a profile's pin on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PinIntent {
+    /// Leaves it as it is: a pinned package stays at its version.
+    Keep,
+    /// Follows the latest installed version (an update in this profile).
+    Follow,
+    /// Pins it to the version installed (one picked from its versions, or an imported
+    /// profile's).
+    Pin,
+}
+
+/// What to do when a pinned package is older than another package of the profile needs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PinConflictChoice {
+    /// Refuse, naming the conflicts ([`CoreError::PinConflicts`]), for the user to choose.
+    #[default]
+    Ask,
+    /// Move each package that needs a newer version to its newest version that works with
+    /// the pin, pinned there.
+    Downgrade,
+    /// Remove the pins in the way, so those packages follow their latest version.
+    Unpin,
+    /// Install as asked, conflicts and all (an imported profile, as r2modman had it).
+    Ignore,
+}
+
+/// A pinned package older than another package of the profile needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PinConflict {
+    /// The package needing a newer version (`Owner-Name`), at the version the profile uses.
+    pub dependent: String,
+    pub dependent_version: String,
+    /// The pinned package, its pin, and the version the dependent names.
+    pub pinned: String,
+    pub pin: String,
+    pub needs: String,
+    /// The pin is one the profile had, not one being set now, so removing it is a way out.
+    pub can_unpin: bool,
+}
+
+/// The conflicts, for a message.
+pub fn describe_conflicts(c: &[PinConflict]) -> String {
+    c.iter()
+        .map(|c| {
+            format!(
+                "{} {} needs {} {} or later, but this profile is pinned to {}",
+                c.dependent, c.dependent_version, c.pinned, c.needs, c.pin
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// A package to install, and what it does to the profile's pin on it.
+#[derive(Debug, Clone)]
+pub(crate) struct Want {
+    name: String,
+    version: Option<String>,
+    pin: PinIntent,
+}
+
+impl Want {
+    fn new(name: &str, version: Option<String>, pin: PinIntent) -> Self {
+        Want {
+            name: name.to_string(),
+            version,
+            pin,
+        }
+    }
+}
+
+/// An installed package: its latest stored version, and the others kept for pinned profiles.
+struct Stored {
+    mod_id: String,
+    latest: ThunderstoreMeta,
+    others: Vec<ThunderstoreMeta>,
 }

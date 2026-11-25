@@ -123,6 +123,7 @@ fn godotml_games_load_mod_zips_from_the_runtime_folder() {
         "potato",
         &[("Me-Mine".into(), None)],
         DEFAULT_PROFILE,
+        umm_core::PinConflictChoice::Ask,
         &mut |_| {},
     )
     .unwrap();
@@ -264,6 +265,7 @@ fn the_hook_pack_stays_with_the_profile() {
         "potato",
         &[("Me-Mine".into(), None)],
         DEFAULT_PROFILE,
+        umm_core::PinConflictChoice::Ask,
         &mut |_| {},
     )
     .unwrap();

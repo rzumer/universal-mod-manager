@@ -133,6 +133,7 @@ fn unity_mod_manager_runs_from_the_runtime_folder() {
         "rhythm",
         &[("Me-Mine".into(), None)],
         DEFAULT_PROFILE,
+        umm_core::PinConflictChoice::Ask,
         &mut |_| {},
     )
     .unwrap();
@@ -190,6 +191,7 @@ target = \"\"
             "rhythm",
             &[("Me-Bare".into(), None)],
             DEFAULT_PROFILE,
+            umm_core::PinConflictChoice::Ask,
             &mut |_| {},
         )
         .unwrap();
@@ -213,6 +215,7 @@ target = \"\"
             "rhythm",
             &[("Me-Mine".into(), None)],
             DEFAULT_PROFILE,
+            umm_core::PinConflictChoice::Ask,
             &mut |_| {},
         )
         .unwrap();

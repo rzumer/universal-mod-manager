@@ -85,7 +85,9 @@ fn ts(s: &Session, cmd: TsCmd) -> Result<()> {
             packages,
             profile,
             unlisted,
+            pins,
         } => {
+            let choice = pins.choice();
             let wanted: Vec<(String, Option<String>)> = packages
                 .iter()
                 .map(|p| match p.split_once('@') {
@@ -112,18 +114,55 @@ fn ts(s: &Session, cmd: TsCmd) -> Result<()> {
                 outside.push((found.package.full_name, version));
             }
             if !listed.is_empty() {
-                print_install(&s.ts_install(&game, &listed, &profile, progress)?);
+                print_install(&s.ts_install(&game, &listed, &profile, choice, progress)?);
             }
             for (name, version) in outside {
-                print_install(&s.ts_install_unlisted(&game, &name, version, &profile, progress)?);
+                print_install(
+                    &s.ts_install_unlisted(&game, &name, version, &profile, choice, progress)?,
+                );
             }
+        }
+        TsCmd::Pin {
+            game,
+            package,
+            profile,
+            pins,
+        } => {
+            let Some((name, version)) = package.split_once('@') else {
+                bail!("name the version to pin: Owner-Name@1.2.3");
+            };
+            print_install(&s.ts_install_version(
+                &game,
+                name,
+                version,
+                &profile,
+                pins.choice(),
+                progress,
+            )?);
+            println!("`{profile}` is pinned to {name} {version}");
+        }
+        TsCmd::Unpin {
+            game,
+            package,
+            profile,
+            pins,
+        } => {
+            print_install(&s.ts_follow_latest(
+                &game,
+                &package,
+                &profile,
+                pins.choice(),
+                progress,
+            )?);
+            println!("`{profile}` follows the latest version of {package}");
         }
         TsCmd::Update {
             game,
             packages,
             profile,
+            pins,
         } => {
-            let r = s.ts_update(&game, &packages, &profile, progress)?;
+            let r = s.ts_update(&game, &packages, &profile, pins.choice(), progress)?;
             if r.installed.is_empty() {
                 println!("everything is up to date");
             } else {
@@ -376,16 +415,65 @@ enum TsCmd {
         /// submitted there, unreviewed, or rejected by its moderators)
         #[arg(long)]
         unlisted: bool,
+        #[command(flatten)]
+        pins: PinArgs,
     },
-    /// Update installed packages (all of them if none are named)
+    /// Update installed packages (all of them if none are named). Packages named follow
+    /// their latest version in the profile from then on; updating all keeps its pins.
     Update {
         game: String,
         packages: Vec<String>,
         #[arg(short, long, default_value = DEFAULT_PROFILE)]
         profile: String,
+        #[command(flatten)]
+        pins: PinArgs,
+    },
+    /// Pin the profile to a version of a package (`Owner-Name@1.2.3`), older or newer; other
+    /// profiles keep theirs
+    Pin {
+        game: String,
+        package: String,
+        #[arg(short, long, default_value = DEFAULT_PROFILE)]
+        profile: String,
+        #[command(flatten)]
+        pins: PinArgs,
+    },
+    /// Remove the profile's pin on a package (`Owner-Name`): it follows the latest version
+    Unpin {
+        game: String,
+        package: String,
+        #[arg(short, long, default_value = DEFAULT_PROFILE)]
+        profile: String,
+        #[command(flatten)]
+        pins: PinArgs,
     },
     /// Download the game's package list again
     Refresh { game: String },
+}
+
+/// What to do when a pinned package is older than another package of the profile needs;
+/// without either, the command stops and says which.
+#[derive(clap::Args)]
+struct PinArgs {
+    /// Move the packages needing a newer version to their newest version that works with
+    /// the pin, pinned there
+    #[arg(long, conflicts_with = "unpin")]
+    downgrade: bool,
+    /// Remove the pins in the way, so those packages follow their latest version
+    #[arg(long)]
+    unpin: bool,
+}
+
+impl PinArgs {
+    fn choice(&self) -> umm_core::PinConflictChoice {
+        if self.downgrade {
+            umm_core::PinConflictChoice::Downgrade
+        } else if self.unpin {
+            umm_core::PinConflictChoice::Unpin
+        } else {
+            umm_core::PinConflictChoice::Ask
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -997,10 +1085,14 @@ fn profile_cmd(s: &Session, cmd: ProfileCmd) -> Result<()> {
             println!("profile `{}` (later entries win conflicts)", p.name);
             for (i, m) in p.mods.iter().enumerate() {
                 println!(
-                    "  {:>3}. [{}] {}",
+                    "  {:>3}. [{}] {}{}",
                     i + 1,
                     if m.enabled { "x" } else { " " },
-                    m.id
+                    m.id,
+                    m.version
+                        .as_ref()
+                        .map(|v| format!("  (pinned {v})"))
+                        .unwrap_or_default()
                 );
             }
         }
@@ -1075,10 +1167,7 @@ fn set_enabled(s: &Session, game: &str, id: &str, profile: &str, on: bool) -> Re
         let mut p = s.profile(game, profile)?;
         match p.position(id) {
             Some(i) => p.mods[i].enabled = on,
-            None => p.mods.push(umm_core::ProfileEntry {
-                id: id.to_string(),
-                enabled: on,
-            }),
+            None => p.mods.push(umm_core::ProfileEntry::new(id, on)),
         }
         s.save_profile(game, &p)?;
         println!(

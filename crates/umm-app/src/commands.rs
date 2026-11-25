@@ -565,6 +565,27 @@ fn progress_to<R: Runtime>(app: AppHandle<R>, game: String) -> impl FnMut(&str) 
     store_progress(app, "ts-progress", game)
 }
 
+/// What to do about pins in the way, as the interface names it: `downgrade` or `unpin`;
+/// anything else asks.
+fn pin_choice(choice: Option<&str>) -> umm_core::PinConflictChoice {
+    match choice {
+        Some("downgrade") => umm_core::PinConflictChoice::Downgrade,
+        Some("unpin") => umm_core::PinConflictChoice::Unpin,
+        _ => umm_core::PinConflictChoice::Ask,
+    }
+}
+
+/// An install's report; pins in the way come back as its conflicts, for the interface to
+/// ask what to do, with nothing installed.
+fn ts_report(
+    r: Result<umm_core::TsInstallReport, umm_core::CoreError>,
+) -> Result<TsReportDto, umm_core::CoreError> {
+    match r {
+        Err(umm_core::CoreError::PinConflicts(c)) => Ok(TsReportDto::conflicts(c)),
+        r => r.map(Into::into),
+    }
+}
+
 /// Installs packages (`Owner-Name`, or `Owner-Name@1.2.3`) with their dependencies into the
 /// profile. Progress arrives as `ts-progress` events.
 #[tauri::command]
@@ -574,6 +595,7 @@ pub async fn ts_install<R: Runtime>(
     game: String,
     packages: Vec<String>,
     profile: String,
+    choice: Option<String>,
 ) -> Res<TsReportDto> {
     blocking(&state, move |s| {
         let wanted: Vec<(String, Option<String>)> = packages
@@ -584,8 +606,8 @@ pub async fn ts_install<R: Runtime>(
             })
             .collect();
         let mut progress = progress_to(app, game.clone());
-        Ok(s.ts_install(&game, &wanted, &profile, &mut progress)?
-            .into())
+        let choice = pin_choice(choice.as_deref());
+        ts_report(s.ts_install(&game, &wanted, &profile, choice, &mut progress))
     })
     .await
 }
@@ -605,18 +627,18 @@ pub async fn ts_install_unlisted<R: Runtime>(
     name: String,
     version: Option<String>,
     profile: String,
+    choice: Option<String>,
 ) -> Res<TsReportDto> {
     blocking(&state, move |s| {
         let mut progress = progress_to(app, game.clone());
-        Ok(
-            s.ts_install_unlisted(&game, &name, version, &profile, &mut progress)?
-                .into(),
-        )
+        let choice = pin_choice(choice.as_deref());
+        ts_report(s.ts_install_unlisted(&game, &name, version, &profile, choice, &mut progress))
     })
     .await
 }
 
-/// Updates the named packages, or all of them when none are named.
+/// Updates the named packages, which then follow their latest version in the profile, or all
+/// of them when none are named (the profile's pins stay).
 #[tauri::command]
 pub async fn ts_update<R: Runtime>(
     app: AppHandle<R>,
@@ -624,24 +646,45 @@ pub async fn ts_update<R: Runtime>(
     game: String,
     packages: Vec<String>,
     profile: String,
+    choice: Option<String>,
 ) -> Res<TsReportDto> {
     blocking(&state, move |s| {
         let mut progress = progress_to(app, game.clone());
-        Ok(s.ts_update(&game, &packages, &profile, &mut progress)?
-            .into())
+        let choice = pin_choice(choice.as_deref());
+        ts_report(s.ts_update(&game, &packages, &profile, choice, &mut progress))
     })
     .await
 }
 
-/// A package's versions, newest first, each with the installed packages needing a newer one.
+/// Removes the profile's pin on a package: it follows the latest version again.
+#[tauri::command]
+pub async fn ts_follow_latest<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+    game: String,
+    name: String,
+    profile: String,
+    choice: Option<String>,
+) -> Res<TsReportDto> {
+    blocking(&state, move |s| {
+        let mut progress = progress_to(app, game.clone());
+        let choice = pin_choice(choice.as_deref());
+        ts_report(s.ts_follow_latest(&game, &name, &profile, choice, &mut progress))
+    })
+    .await
+}
+
+/// A package's versions, newest first, as the profile sees them: the one it uses, its pin,
+/// and the packages of the profile needing a newer one.
 #[tauri::command]
 pub async fn ts_versions(
     state: State<'_, AppState>,
     game: String,
     name: String,
+    profile: String,
 ) -> Res<Vec<TsVersionDto>> {
     blocking(&state, move |s| {
-        Ok(s.ts_versions(&game, &name)?
+        Ok(s.ts_versions(&game, &name, &profile)?
             .into_iter()
             .map(Into::into)
             .collect())
@@ -649,8 +692,8 @@ pub async fn ts_versions(
     .await
 }
 
-/// Installs a package at the version given (older or newer), with its dependencies. Progress
-/// arrives as `ts-progress` events.
+/// Pins the profile to a version of a package (older or newer), installing it with its
+/// dependencies. Progress arrives as `ts-progress` events.
 #[tauri::command]
 pub async fn ts_install_version<R: Runtime>(
     app: AppHandle<R>,
@@ -659,13 +702,12 @@ pub async fn ts_install_version<R: Runtime>(
     name: String,
     version: String,
     profile: String,
+    choice: Option<String>,
 ) -> Res<TsReportDto> {
     blocking(&state, move |s| {
         let mut progress = progress_to(app, game.clone());
-        Ok(
-            s.ts_install_version(&game, &name, &version, &profile, &mut progress)?
-                .into(),
-        )
+        let choice = pin_choice(choice.as_deref());
+        ts_report(s.ts_install_version(&game, &name, &version, &profile, choice, &mut progress))
     })
     .await
 }

@@ -150,6 +150,9 @@ pub struct ImportOptions {
     /// Replace an existing mod with the same id (an update). The old one is removed only once
     /// the new one is fully stored.
     pub replace: bool,
+    /// On a replace, keep the replaced version in the mod's `versions/` folder, for profiles
+    /// pinned to it (see [`crate::versions`]). Versions no profile pins are pruned later.
+    pub keep_replaced: bool,
     /// Files kept beside the mod in `package/`, by plain file name (a Thunderstore package's
     /// manifest, icon and readme). Never deployed; names with a path in them are ignored.
     pub package_files: std::collections::BTreeMap<String, Vec<u8>>,
@@ -197,8 +200,8 @@ pub fn slugify(s: &str) -> String {
     umm_gamedef::slug(s).unwrap_or_else(|| "mod".into())
 }
 
-pub fn import_mod(game: &GameDir, src: &Path, opts: &ImportOptions) -> Result<ModMeta> {
-    game.ensure()?;
+/// The id and name a mod imported from `src` gets.
+fn id_and_name(src: &Path, opts: &ImportOptions) -> Result<(String, String)> {
     // A folder's whole name ("Cool Mod 1.0"); an archive's name without its extension.
     let base = if src.is_dir() {
         src.file_name()
@@ -213,6 +216,26 @@ pub fn import_mod(game: &GameDir, src: &Path, opts: &ImportOptions) -> Result<Mo
     if !is_valid_id(&id) {
         return Err(StoreError::InvalidId(id));
     }
+    Ok((id, name))
+}
+
+/// Builds a complete mod folder for `src` at `out` (its files, `mod.toml` and package files),
+/// using `staging` for scratch.
+pub(crate) fn stage_into(
+    src: &Path,
+    staging: &Path,
+    out: &Path,
+    opts: &ImportOptions,
+) -> Result<ModMeta> {
+    let (id, name) = id_and_name(src, opts)?;
+    let meta = stage_mod(src, staging, out, &id, name, opts)?;
+    stage_package_files(out, opts)?;
+    Ok(meta)
+}
+
+pub fn import_mod(game: &GameDir, src: &Path, opts: &ImportOptions) -> Result<ModMeta> {
+    game.ensure()?;
+    let (id, name) = id_and_name(src, opts)?;
     let dest = game.mod_dir(&id);
     if dest.exists() && !opts.replace {
         return Err(StoreError::ModExists(id));
@@ -226,12 +249,21 @@ pub fn import_mod(game: &GameDir, src: &Path, opts: &ImportOptions) -> Result<Mo
             let new_dir = staging.join("new");
             let meta = stage_mod(src, &staging, &new_dir, &id, name, opts)?;
             stage_package_files(&new_dir, opts)?;
+            // The other stored versions stay with the mod, and the replaced one joins them
+            // when asked to.
+            let kept = crate::versions::carry_versions(&dest, &new_dir, opts.keep_replaced)?;
             let old = staging.join("old");
-            fs::rename(&dest, &old).ctx(|| format!("moving {} aside", dest.display()))?;
-            if let Err(e) = fs::rename(&new_dir, &dest) {
-                let _ = fs::rename(&old, &dest);
-                let failed: io::Result<()> = Err(e);
-                failed.ctx(|| format!("moving the update into {}", dest.display()))?;
+            let swapped = fs::rename(&dest, &old)
+                .ctx(|| format!("moving {} aside", dest.display()))
+                .and_then(|()| {
+                    fs::rename(&new_dir, &dest).or_else(|e| {
+                        let _ = fs::rename(&old, &dest);
+                        Err(e).ctx(|| format!("moving the update into {}", dest.display()))
+                    })
+                });
+            if let Err(e) = swapped {
+                crate::versions::uncarry_versions(&dest, &new_dir, &kept);
+                return Err(e.into());
             }
             Ok(meta)
         })();

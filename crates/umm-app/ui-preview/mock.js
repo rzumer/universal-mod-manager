@@ -142,6 +142,20 @@ const tsInstalledVersion = (game, full) => {
   return m ? m.version : null;
 };
 const tsNewer = (a, b) => a.localeCompare(b, undefined, { numeric: true }) > 0;
+/// The version a profile is pinned to for a package, if any.
+function tsPin(game, profile, full) {
+  const m = (mods[game] || []).find((x) => x.thunderstore === full);
+  return (m && profiles[game][profile]?.mods.find((e) => e.id === m.id)?.version) || null;
+}
+
+function tsSetPin(game, profile, full, version) {
+  const m = (mods[game] || []).find((x) => x.thunderstore === full);
+  const e = m && profiles[game][profile]?.mods.find((x) => x.id === m.id);
+  if (!e) return;
+  if (version) e.version = version;
+  else delete e.version;
+}
+
 function tsInstallOne(game, full) {
   const p = tsPackages.find((x) => x.fullName === full);
   const list = mods[game];
@@ -627,26 +641,47 @@ const handlers = {
     await sleep(600);
     return { installed: [{ fullName: name, version: "6.0.788", replaced: null }], missing: [], warnings: [], notes: ["Turned off BepInEx-BepInExPack in this profile; BepInEx-BepInExPack_IL2CPP replaces it"] };
   },
-  // Versions: the latest and a few before it; for BepInEx, the oldest is too old for a mod.
-  ts_versions: ({ game, name }) => {
+  // Versions, as the profile sees them: the latest and a few before it; for BepInEx, the
+  // oldest is too old for a mod.
+  ts_versions: ({ game, name, profile }) => {
     const p = tsPackages.find((x) => x.fullName === name);
-    const installed = tsInstalledVersion(game, name);
+    const latest = tsInstalledVersion(game, name);
+    const pin = tsPin(game, profile, name);
     const list =
       name === "BepInEx-BepInExPack" ? ["5.4.2305", "5.4.2100", "5.4.2000", "5.4.1900"] : [p.latest, "1.1.0", "1.0.0"].filter((v, i, a) => a.indexOf(v) === i);
     return list.map((version) => ({
       version,
       size: p.size,
-      installed: version === installed,
+      installed: version === (pin || latest),
+      pinned: version === pin,
+      stored: version === latest || version === pin,
       neededBy: name === "BepInEx-BepInExPack" && version === "5.4.1900" ? [{ name: "Ann-Lantern_Tweaks", version: "5.4.2000" }] : [],
     }));
   },
-  ts_install_version: async ({ game, name, version }) => {
+  // Pins the profile; the version BepInEx is too old for asks first, then downgrades the mod.
+  ts_install_version: async ({ game, name, version, profile, choice }) => {
+    if (name === "BepInEx-BepInExPack" && version === "5.4.1900" && !choice)
+      return {
+        installed: [],
+        missing: [],
+        warnings: [],
+        notes: [],
+        conflicts: [{ dependent: "Ann-Lantern_Tweaks", dependentVersion: "1.2.0", pinned: name, pin: version, needs: "5.4.2000", canUnpin: false }],
+      };
     emit("ts-progress", { game, message: `Downloading ${name.split("-").slice(1).join("-")} ${version}` });
     await sleep(600);
-    const m = (mods[game] || []).find((x) => x.thunderstore === name);
-    const replaced = m?.version || null;
-    if (m) m.version = version;
-    return { installed: [{ fullName: name, version, replaced }], missing: [] };
+    const notes = [];
+    tsSetPin(game, profile, name, version);
+    if (choice === "downgrade") {
+      tsSetPin(game, profile, "Ann-Lantern_Tweaks", "1.0.0");
+      notes.push("Pinned Ann-Lantern_Tweaks at 1.0.0, which works with this profile's pins");
+    }
+    return { installed: [{ fullName: name, version, replaced: null }], missing: [], warnings: [], notes, conflicts: [] };
+  },
+  ts_follow_latest: async ({ game, name, profile }) => {
+    await sleep(300);
+    tsSetPin(game, profile, name, null);
+    return { installed: [], missing: [], warnings: [], notes: [], conflicts: [] };
   },
   ts_install: async ({ game, packages }) => {
     const order = [];

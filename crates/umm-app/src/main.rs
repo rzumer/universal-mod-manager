@@ -49,6 +49,7 @@ macro_rules! umm_handlers {
             commands::game_icon,
             commands::ts_versions,
             commands::ts_install_version,
+            commands::ts_follow_latest,
             commands::mod_icon,
             commands::ts_refresh,
             commands::ts_install,

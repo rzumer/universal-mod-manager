@@ -159,6 +159,7 @@ fn an_older_thunderstore_install_gets_its_listed_icon() {
         "jokers",
         &[("Me-Mine".into(), None)],
         DEFAULT_PROFILE,
+        umm_core::PinConflictChoice::Ask,
         &mut |_| {},
     )
     .unwrap();

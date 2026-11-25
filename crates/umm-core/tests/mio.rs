@@ -118,6 +118,7 @@ fn mio_runs_mods_from_the_runtime_folder() {
         "orbit",
         &[("Me-Mine".into(), None)],
         DEFAULT_PROFILE,
+        umm_core::PinConflictChoice::Ask,
         &mut |_| {},
     )
     .unwrap();

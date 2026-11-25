@@ -640,12 +640,23 @@ function modsTab(d) {
       h(
         "div",
         { class: "mod-main" },
-        h("div", { class: "mod-name" }, m ? m.name : e.id, m?.version && h("span", { class: "version" }, m.version)),
+        h("div", { class: "mod-name" }, m ? m.name : e.id, (e.version || m?.version) && h("span", { class: "version" }, e.version || m.version)),
         h(
           "div",
           { class: "mod-meta" },
           m ? `${m.thunderstore ? "Thunderstore · " : m.nexusUrl ? "Nexus Mods · " : ""}${e.id} · ${m.files} file${m.files === 1 ? "" : "s"} · ${fmtBytes(m.size)}` : "No longer installed — remove it from the profile or import it again",
-          m?.patcher
+          m?.thunderstore && e.version
+            ? h(
+                "button",
+                {
+                  class: "chip chip-button",
+                  disabled: playing,
+                  title: `Pinned to ${e.version} in this profile${m.version !== e.version ? ` (latest installed: ${m.version})` : ""}. Click to follow the latest version instead.`,
+                  onclick: () => tsFollowLatest(m.thunderstore),
+                },
+                "Pinned",
+              )
+            : m?.patcher
             ? patcherChip(m)
             : m?.installer === "waiting"
             ? h("button", { class: "chip warn chip-button", title: "Nothing of this mod is installed until its installer's options are chosen", onclick: () => fomodDialog(m) }, "Choose its install options")
@@ -1581,8 +1592,19 @@ function fmtCount(n) {
   return String(n);
 }
 
+/// Runs a Thunderstore install. `call(choice)` installs; when pinned packages are in the way
+/// (older than another package of the profile needs), nothing is installed and the user
+/// chooses to downgrade those packages or remove the pins, and it runs again.
 async function tsRun(title, call) {
-  const r = await storeRun(S.ts, title, call);
+  let r = await storeRun(S.ts, title, () => call(null));
+  while (r?.conflicts?.length) {
+    const choice = await pinConflictDialog(r.conflicts);
+    if (!choice) {
+      r = null;
+      break;
+    }
+    r = await storeRun(S.ts, title, () => call(choice));
+  }
   if (r) {
     const names = r.installed.map((i) => (i.replaced ? `${i.fullName} ${i.replaced} → ${i.version}` : `${i.fullName} ${i.version}`));
     toast(names.length ? `Installed ${names.join(", ")}` : "Everything needed was already installed", "ok");
@@ -1592,6 +1614,49 @@ async function tsRun(title, call) {
   }
   await refreshAll();
   await loadTs(false);
+}
+
+/// Asks what to do about pinned packages older than other packages of the profile need:
+/// "downgrade" those packages, "unpin" (when every pin in the way can go), or null.
+async function pinConflictDialog(conflicts) {
+  const short = (n) => n.split("-").slice(1).join("-").replaceAll("_", " ");
+  const dependents = [...new Set(conflicts.map((c) => short(c.dependent)))];
+  const canUnpin = conflicts.every((c) => c.canUnpin);
+  return modal({
+    title: "Pinned versions are in the way",
+    body: [
+      h("p", { class: "muted" }, `In “${S.profileName}”:`),
+      h(
+        "ul",
+        {},
+        conflicts.map((c) =>
+          h("li", {}, `${short(c.dependent)} ${c.dependentVersion} needs ${short(c.pinned)} ${c.needs} or later, but ${c.canUnpin ? "this profile is pinned to" : "you are pinning it to"} ${c.pin}.`),
+        ),
+      ),
+      h(
+        "p",
+        { class: "muted" },
+        canUnpin
+          ? `Downgrade ${dependents.join(", ")} to versions that work with the pins (pinned there), or remove the pins so those packages follow their latest version.`
+          : `Downgrade ${dependents.join(", ")} to versions that work with the pins; they are pinned there. Other profiles keep theirs.`,
+      ),
+    ],
+    actions: [
+      { label: "Cancel", value: null, class: "ghost" },
+      ...(canUnpin ? [{ label: "Remove the pins", value: "unpin" }] : []),
+      { label: `Downgrade ${dependents.length === 1 ? dependents[0] : "them"}`, value: "downgrade", class: "primary" },
+    ],
+  });
+}
+
+/// Makes the profile follow a package's latest version again, removing its pin.
+const tsFollowLatest = (fullName) =>
+  tsRun("Following the latest version…", (c) => api.tsFollowLatest(S.gameId, fullName, S.profileName, c));
+
+/// The version the current profile is pinned to for a package, if any.
+function pinnedVersion(fullName) {
+  const m = (S.details?.mods || []).find((x) => x.thunderstore === fullName);
+  return m ? S.profile?.mods.find((e) => e.id === m.id)?.version || null : null;
 }
 
 const REVIEW_TEXT = {
@@ -1635,7 +1700,7 @@ async function installByName(prefill) {
     ],
   });
   if (ok !== "go") return;
-  await tsRun("Installing…", () => api.tsInstallUnlisted(game, p.fullName, version, S.profileName));
+  await tsRun("Installing…", (c) => api.tsInstallUnlisted(game, p.fullName, version, S.profileName, c));
 }
 
 /// Compares two version numbers part by part ("1.10.0" comes after "1.9.2").
@@ -1650,34 +1715,35 @@ function compareVersions(a, b) {
   return 0;
 }
 
-/// Picks another version of an installed package, older or newer. Versions older than
-/// another installed package needs are shown, but cannot be picked.
+/// Pins the current profile to another version of an installed package, older or newer;
+/// other profiles keep theirs. A version older than another package of the profile needs
+/// can be picked too: those packages are then downgraded, after asking.
 async function tsVersionsDialog(it) {
   const game = S.gameId;
-  const versions = await attempt(() => api.tsVersions(game, it.fullName));
+  const versions = await attempt(() => api.tsVersions(game, it.fullName, S.profileName));
   if (!versions?.length) return;
   const current = versions.find((v) => v.installed)?.version || it.installed;
-  let chosen = current;
-  const label = () =>
-    chosen === current ? "Installed" : compareVersions(chosen, current) < 0 ? `Downgrade to ${chosen}` : `Update to ${chosen}`;
+  const pinned = versions.find((v) => v.pinned)?.version || null;
+  // Picking the version already pinned changes nothing; picking the one in use pins it.
+  let chosen = pinned || current;
+  const label = () => (chosen === pinned ? "Pinned" : `Pin to ${chosen}`);
   const refresh = () => {
     const go = $("#modal-root .modal-actions button.primary");
     if (go) {
       go.textContent = label();
-      go.disabled = chosen === current;
+      go.disabled = chosen === pinned;
     }
   };
   const rows = versions.map((v, i) => {
-    const blocked = v.neededBy.length > 0;
+    const older = v.neededBy.length > 0;
     return h(
       "label",
-      { class: `version-row ${blocked ? "blocked" : ""}` },
+      { class: `version-row ${older ? "blocked" : ""}` },
       h("input", {
         type: "radio",
         name: "ts-version",
         value: v.version,
-        checked: v.version === current,
-        disabled: blocked,
+        checked: v.version === chosen,
         onchange: () => {
           chosen = v.version;
           refresh();
@@ -1685,36 +1751,38 @@ async function tsVersionsDialog(it) {
       }),
       h("span", { class: "version-num" }, v.version),
       i === 0 && h("span", { class: "chip" }, "Latest"),
-      v.installed && h("span", { class: "chip ok" }, "Installed"),
-      v.size ? h("span", { class: "muted small version-size" }, fmtBytes(v.size)) : null,
-      blocked && h("span", { class: "muted small version-why" }, `Too old for ${v.neededBy.map((n) => `${n.name} (needs ${n.version})`).join(", ")}`),
+      v.pinned ? h("span", { class: "chip ok" }, "Pinned") : v.installed && h("span", { class: "chip ok" }, "In use"),
+      v.size && !v.stored ? h("span", { class: "muted small version-size" }, fmtBytes(v.size)) : null,
+      older && h("span", { class: "muted small version-why" }, `${v.neededBy.map((n) => `${n.name} needs ${n.version} or later`).join(", ")}: picking this downgrades ${v.neededBy.length === 1 ? "it" : "them"}`),
     );
   });
-  const lowest = versions.filter((v) => !v.neededBy.length).at(-1);
   const pending = modal({
     title: `${it.name.replaceAll("_", " ")} versions`,
     body: [
       h(
         "p",
         { class: "muted" },
-        `Install another version into every profile. ${lowest && lowest !== versions.at(-1) ? `Other installed packages need ${lowest.version} or later. ` : ""}Its dependencies are installed too, if it needs newer ones.`,
+        `Pin “${S.profileName}” to a version. Other profiles keep theirs, and a pinned version is not updated with the others. ${pinned ? `This profile is pinned to ${pinned}.` : "This profile follows the latest installed version."}`,
       ),
       h("div", { class: "version-list", role: "radiogroup", "aria-label": "Versions" }, rows),
     ],
     actions: [
       { label: "Cancel", value: null, class: "ghost" },
+      ...(pinned ? [{ label: "Follow latest", value: "follow" }] : []),
       { label: label(), value: "go", class: "primary" },
     ],
   });
   refresh();
-  if ((await pending) !== "go" || chosen === current) return;
-  await tsRun(compareVersions(chosen, current) < 0 ? "Downgrading…" : "Updating…", () =>
-    api.tsInstallVersion(game, it.fullName, chosen, S.profileName),
+  const v = await pending;
+  if (v === "follow") return tsFollowLatest(it.fullName);
+  if (v !== "go" || chosen === pinned) return;
+  await tsRun(compareVersions(chosen, current) < 0 ? "Downgrading…" : "Pinning…", (c) =>
+    api.tsInstallVersion(game, it.fullName, chosen, S.profileName, c),
   );
 }
 
-const tsInstall = (pkgs) => tsRun("Installing…", () => api.tsInstall(S.gameId, pkgs, S.profileName));
-const tsUpdate = (names) => tsRun("Updating…", () => api.tsUpdate(S.gameId, names, S.profileName));
+const tsInstall = (pkgs) => tsRun("Installing…", (c) => api.tsInstall(S.gameId, pkgs, S.profileName, c));
+const tsUpdate = (names) => tsRun("Updating…", (c) => api.tsUpdate(S.gameId, names, S.profileName, c));
 
 function tsTab(d) {
   const g = d.game;
@@ -1774,7 +1842,18 @@ function tsTab(d) {
         ? h(
             "div",
             { class: "row" },
-            it.update
+            pinnedVersion(it.fullName)
+              ? h(
+                  "button",
+                  {
+                    class: "chip chip-button",
+                    disabled: locked,
+                    title: `Pinned to ${pinnedVersion(it.fullName)} in this profile. Click to follow the latest version instead.`,
+                    onclick: () => tsFollowLatest(it.fullName),
+                  },
+                  `Pinned ${pinnedVersion(it.fullName)}`,
+                )
+              : it.update
               ? h("button", { class: "small", disabled: locked, onclick: () => tsUpdate([it.fullName]) }, `Update to ${it.latest}`)
               : h("span", { class: "chip ok" }, `Installed ${it.installed}`),
             h("button", { class: "ghost small", disabled: locked, title: "Install another version, older or newer", onclick: () => tsVersionsDialog(it) }, "Versions…"),

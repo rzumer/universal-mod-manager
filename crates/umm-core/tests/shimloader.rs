@@ -156,6 +156,7 @@ fn shimloader_games_run_mods_from_the_runtime_folder() {
         "trip",
         &[("Ann-Glow".into(), None)],
         DEFAULT_PROFILE,
+        umm_core::PinConflictChoice::Ask,
         &mut |_| {},
     )
     .unwrap();

@@ -2,7 +2,8 @@ use crate::DeployError;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use umm_gamedef::{CompiledDef, RelPath, IN_GAME_BACKUP_DIR};
-use umm_store::{load_mod, GameDir, Layout, Profile, StoreError};
+use umm_store::versions::load_mod_version;
+use umm_store::{GameDir, Layout, Profile, StoreError};
 
 /// Which stored file goes to which game path. Pure: reads the store, never the game folder.
 #[derive(Debug, Clone)]
@@ -110,26 +111,28 @@ pub fn build_plan(
         .as_ref()
         .and_then(|l| l.source_mod())
         .map(str::to_string);
-    let mut sources: Vec<(String, bool)> = Vec::new();
+    // Each mod, the version the profile is pinned to (`None`: its latest), and whether it is
+    // laid out like the game folder.
+    let mut sources: Vec<(String, Option<String>, bool)> = Vec::new();
     if let Some(l) = &loader {
         // The loader pack is laid out like the game folder, so it skips the install rules.
-        sources.push((l.clone(), true));
+        sources.push((l.clone(), profile.pin(l).map(str::to_string), true));
     }
-    for id in profile.enabled_ids() {
-        if Some(id) != loader.as_deref() {
-            sources.push((id.to_string(), false));
+    for e in profile.enabled() {
+        if Some(e.id.as_str()) != loader.as_deref() {
+            sources.push((e.id.clone(), e.version.clone(), false));
         }
     }
 
     let mut entries: BTreeMap<String, Entry> = BTreeMap::new();
     let mut skipped = Vec::new();
-    for (id, identity) in &sources {
-        let meta = match load_mod(game, id) {
+    for (id, version, identity) in &sources {
+        let (meta, dir) = match load_mod_version(game, id, version.as_deref()) {
             Ok(m) => m,
-            Err(StoreError::ModNotFound(_)) => return Err(DeployError::MissingMod(id.clone())),
+            Err(StoreError::ModNotFound(m)) => return Err(DeployError::MissingMod(m)),
             Err(e) => return Err(e.into()),
         };
-        let files_root = game.mod_files_dir(id);
+        let files_root = dir.join("files");
         if meta.thunderstore.is_some()
             && !def
                 .def

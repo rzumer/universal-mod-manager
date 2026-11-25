@@ -1,13 +1,18 @@
-//! Installing another version of a Thunderstore package, older or newer, no older than the
-//! other installed packages need.
+//! Versions of a Thunderstore package per profile: a profile pinned to a version keeps it
+//! while the others follow the latest, one stored copy per version; a pin older than another
+//! package of the profile needs is refused until that package is downgraded or the pin
+//! removed; versions no profile is pinned to are removed.
 
 use flate2::write::GzEncoder;
 use std::fs;
 use std::io::{Cursor, Write};
 use std::sync::Arc;
-use umm_core::{LoaderSetup, Session, DEFAULT_PROFILE};
+use umm_core::{CoreError, LoaderSetup, PinConflictChoice, Session, DEFAULT_PROFILE};
+use umm_store::versions::other_versions;
 use umm_thunderstore::ecosystem::ECOSYSTEM_URL;
 use umm_thunderstore::http::FakeHttp;
+
+const GAME: &str = "jokers";
 
 const ECOSYSTEM: &str = r#"{
   "games": {
@@ -28,7 +33,8 @@ const LISTING: &str = r#"[
                 {"version_number": "1.5.0", "dependencies": [], "file_size": 150},
                 {"version_number": "1.0.0", "dependencies": [], "file_size": 100}]},
   {"name": "Mine", "full_name": "Me-Mine", "owner": "Me", "categories": [],
-   "versions": [{"version_number": "1.0.0", "dependencies": ["Lib-Core-1.5.0"]}]}
+   "versions": [{"version_number": "1.0.0", "dependencies": ["Lib-Core-1.5.0"]},
+                {"version_number": "0.9.0", "dependencies": ["Lib-Core-1.0.0"]}]}
 ]"#;
 
 fn gz(s: &str) -> Vec<u8> {
@@ -47,18 +53,22 @@ fn zip_of(files: &[(&str, &str)]) -> Vec<u8> {
     w.finish().unwrap().into_inner()
 }
 
-fn core(version: &str) -> Vec<u8> {
+fn package(name: &str, version: &str, deps: &[&str], file: &str) -> Vec<u8> {
+    let deps = deps
+        .iter()
+        .map(|d| format!("\"{d}\""))
+        .collect::<Vec<_>>()
+        .join(",");
     zip_of(&[
         (
             "manifest.json",
-            &format!(r#"{{"name":"Core","version_number":"{version}","dependencies":[]}}"#),
+            &format!(r#"{{"name":"{name}","version_number":"{version}","dependencies":[{deps}]}}"#),
         ),
-        ("core.lua", &format!("-- core {version}")),
+        (file, &format!("-- {name} {version}")),
     ])
 }
 
-#[test]
-fn a_package_goes_back_no_further_than_its_dependents_need() {
+fn session(tmp: &std::path::Path) -> Session {
     let mut http = FakeHttp::default()
         .with(ECOSYSTEM_URL, ECOSYSTEM)
         .with(
@@ -72,26 +82,23 @@ fn a_package_goes_back_no_further_than_its_dependents_need() {
         )
         .with(
             "https://thunderstore.io/package/download/Me/Mine/1.0.0/",
-            zip_of(&[
-                (
-                    "manifest.json",
-                    r#"{"name":"Mine","version_number":"1.0.0","dependencies":["Lib-Core-1.5.0"]}"#,
-                ),
-                ("mine.lua", "-- mine"),
-            ]),
+            package("Mine", "1.0.0", &["Lib-Core-1.5.0"], "mine.lua"),
+        )
+        .with(
+            "https://thunderstore.io/package/download/Me/Mine/0.9.0/",
+            package("Mine", "0.9.0", &["Lib-Core-1.0.0"], "mine.lua"),
         );
     for v in ["2.0.0", "1.5.0", "1.0.0"] {
         http = http.with(
             &format!("https://thunderstore.io/package/download/Lib/Core/{v}/"),
-            core(v),
+            package("Core", v, &[], "core.lua"),
         );
     }
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().join("game");
+    let root = tmp.join("game");
     fs::create_dir_all(&root).unwrap();
     fs::write(root.join("Jokers.exe"), "game").unwrap();
-    let s = Session::open_with(Some(tmp.path().join("data")), Arc::new(http)).unwrap();
-    let p = s.data().game("jokers").def_path();
+    let s = Session::open_with(Some(tmp.join("data")), Arc::new(http)).unwrap();
+    let p = s.data().game(GAME).def_path();
     fs::create_dir_all(p.parent().unwrap()).unwrap();
     fs::write(
         p,
@@ -99,75 +106,228 @@ fn a_package_goes_back_no_further_than_its_dependents_need() {
          [launch]\nexe = \"Jokers.exe\"\n[[install]]\nmatch = \"**\"\ntarget = \"\"\n",
     )
     .unwrap();
-    s.set_install_path("jokers", &root).unwrap();
-    s.set_loader("jokers", LoaderSetup::Thunderstore).unwrap();
+    s.set_install_path(GAME, &root).unwrap();
+    s.set_loader(GAME, LoaderSetup::Thunderstore).unwrap();
+    s
+}
+
+/// The version of a package a profile deploys, from its stored file.
+fn deployed(s: &Session, profile: &str, file: &str) -> String {
+    let plan = s.plan(GAME, profile).unwrap();
+    let f = plan
+        .files
+        .iter()
+        .find(|f| f.target.as_str().ends_with(file))
+        .unwrap_or_else(|| panic!("{file} is not deployed for {profile}"));
+    fs::read_to_string(&f.source).unwrap()
+}
+
+fn pin(s: &Session, profile: &str, id: &str) -> Option<String> {
+    s.profile(GAME, profile)
+        .unwrap()
+        .pin(id)
+        .map(str::to_string)
+}
+
+#[test]
+fn a_profile_pinned_to_a_version_keeps_it_while_the_others_follow_the_latest() {
+    let tmp = tempfile::tempdir().unwrap();
+    let s = session(tmp.path());
+    let ask = PinConflictChoice::Ask;
 
     // Mine names Core 1.5.0; Core comes at its newest.
     s.ts_install(
-        "jokers",
+        GAME,
         &[("Me-Mine".into(), None)],
         DEFAULT_PROFILE,
+        ask,
         &mut |_| {},
     )
     .unwrap();
-    let versions = s.ts_versions("jokers", "Lib-Core").unwrap();
-    let summary: Vec<(&str, bool, usize)> = versions
+    s.create_profile(GAME, "Other", Some(DEFAULT_PROFILE))
+        .unwrap();
+    let versions = s.ts_versions(GAME, "Lib-Core", DEFAULT_PROFILE).unwrap();
+    let summary: Vec<(&str, bool, bool, usize)> = versions
         .iter()
-        .map(|v| (v.version.as_str(), v.installed, v.needed_by.len()))
+        .map(|v| (v.version.as_str(), v.installed, v.pinned, v.needed_by.len()))
         .collect();
     assert_eq!(
         summary,
-        [("2.0.0", true, 0), ("1.5.0", false, 0), ("1.0.0", false, 1)]
+        [
+            ("2.0.0", true, false, 0),
+            ("1.5.0", false, false, 0),
+            ("1.0.0", false, false, 1)
+        ]
     );
     assert_eq!(
         versions[2].needed_by,
         [("Me-Mine".to_string(), "1.5.0".to_string())]
     );
 
-    // Back to 1.5.0: installed in its place, and the update is offered again.
+    // Back to 1.5.0 in Default: pinned there and stored beside 2.0.0, which Other keeps.
     let r = s
-        .ts_install_version("jokers", "Lib-Core", "1.5.0", DEFAULT_PROFILE, &mut |_| {})
+        .ts_install_version(GAME, "Lib-Core", "1.5.0", DEFAULT_PROFILE, ask, &mut |_| {})
         .unwrap();
+    assert_eq!(r.installed.len(), 1);
     assert_eq!(
-        r.installed,
-        [(
-            "Lib-Core".to_string(),
-            "1.5.0".to_string(),
-            Some("2.0.0".to_string())
-        )]
+        pin(&s, DEFAULT_PROFILE, "lib-core").as_deref(),
+        Some("1.5.0")
     );
-    assert!(s
-        .ts_updates("jokers")
+    assert_eq!(pin(&s, "Other", "lib-core"), None);
+    let game = s.game_dir(GAME);
+    assert_eq!(other_versions(&game, "lib-core"), ["1.5.0"]);
+    assert_eq!(deployed(&s, DEFAULT_PROFILE, "core.lua"), "-- Core 1.5.0");
+    assert_eq!(deployed(&s, "Other", "core.lua"), "-- Core 2.0.0");
+    let v = s.ts_versions(GAME, "Lib-Core", DEFAULT_PROFILE).unwrap();
+    assert!(v[1].installed && v[1].pinned && v[1].stored);
+    assert!(
+        s.ts_updates(GAME).unwrap().is_empty(),
+        "the latest is stored"
+    );
+
+    // Older than Mine needs: refused, naming the conflict...
+    let err = s
+        .ts_install_version(GAME, "Lib-Core", "1.0.0", DEFAULT_PROFILE, ask, &mut |_| {})
+        .unwrap_err();
+    let CoreError::PinConflicts(c) = &err else {
+        panic!("{err}")
+    };
+    assert_eq!(
+        (c[0].dependent.as_str(), c[0].needs.as_str(), c[0].can_unpin),
+        ("Me-Mine", "1.5.0", false)
+    );
+    assert!(err
+        .to_string()
+        .contains("Me-Mine 1.0.0 needs Lib-Core 1.5.0 or later"));
+    assert_eq!(
+        pin(&s, DEFAULT_PROFILE, "lib-core").as_deref(),
+        Some("1.5.0")
+    );
+    // ...or done, with Mine moved back to the version that works with it.
+    let r = s
+        .ts_install_version(
+            GAME,
+            "Lib-Core",
+            "1.0.0",
+            DEFAULT_PROFILE,
+            PinConflictChoice::Downgrade,
+            &mut |_| {},
+        )
+        .unwrap();
+    assert!(
+        r.notes
+            .iter()
+            .any(|n| n.contains("Pinned Me-Mine at 0.9.0")),
+        "{:?}",
+        r.notes
+    );
+    assert_eq!(
+        pin(&s, DEFAULT_PROFILE, "lib-core").as_deref(),
+        Some("1.0.0")
+    );
+    assert_eq!(
+        pin(&s, DEFAULT_PROFILE, "me-mine").as_deref(),
+        Some("0.9.0")
+    );
+    assert_eq!(deployed(&s, DEFAULT_PROFILE, "mine.lua"), "-- Mine 0.9.0");
+    assert_eq!(deployed(&s, "Other", "mine.lua"), "-- Mine 1.0.0");
+    // 1.5.0 is pinned nowhere now.
+    assert_eq!(other_versions(&game, "lib-core"), ["1.0.0"]);
+    assert_eq!(other_versions(&game, "me-mine"), ["0.9.0"]);
+
+    // A pin the profile had is in the way of a new install: removed when asked to.
+    s.create_profile(GAME, "Third", None).unwrap();
+    s.ts_install_version(GAME, "Lib-Core", "1.0.0", "Third", ask, &mut |_| {})
+        .unwrap();
+    let err = s
+        .ts_install(GAME, &[("Me-Mine".into(), None)], "Third", ask, &mut |_| {})
+        .unwrap_err();
+    let CoreError::PinConflicts(c) = &err else {
+        panic!("{err}")
+    };
+    assert!(c[0].can_unpin);
+    s.ts_install(
+        GAME,
+        &[("Me-Mine".into(), None)],
+        "Third",
+        PinConflictChoice::Unpin,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(pin(&s, "Third", "lib-core"), None);
+    assert_eq!(deployed(&s, "Third", "core.lua"), "-- Core 2.0.0");
+
+    // Following the latest again: Default's pins go when the packages are updated in it.
+    s.ts_follow_latest(GAME, "Me-Mine", DEFAULT_PROFILE, ask, &mut |_| {})
+        .unwrap_err();
+    s.ts_follow_latest(
+        GAME,
+        "Me-Mine",
+        DEFAULT_PROFILE,
+        PinConflictChoice::Unpin,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(pin(&s, DEFAULT_PROFILE, "me-mine"), None);
+    assert_eq!(pin(&s, DEFAULT_PROFILE, "lib-core"), None);
+    assert_eq!(deployed(&s, DEFAULT_PROFILE, "mine.lua"), "-- Mine 1.0.0");
+    assert!(other_versions(&game, "me-mine").is_empty());
+    assert!(other_versions(&game, "lib-core").is_empty());
+
+    // Picking the latest from the list pins it too; a deleted profile's versions go.
+    s.ts_install_version(GAME, "Lib-Core", "2.0.0", "Other", ask, &mut |_| {})
+        .unwrap();
+    assert_eq!(pin(&s, "Other", "lib-core").as_deref(), Some("2.0.0"));
+    s.ts_install_version(GAME, "Lib-Core", "1.5.0", "Third", ask, &mut |_| {})
+        .unwrap();
+    assert_eq!(other_versions(&game, "lib-core"), ["1.5.0"]);
+    s.delete_profile(GAME, "Third").unwrap();
+    assert!(other_versions(&game, "lib-core").is_empty());
+
+    // Every profile pinned to older versions: the latest goes, the newest pinned version
+    // takes its place, and no update is offered for it.
+    s.ts_install_version(GAME, "Lib-Core", "1.5.0", "Other", ask, &mut |_| {})
+        .unwrap();
+    s.ts_install_version(
+        GAME,
+        "Lib-Core",
+        "1.0.0",
+        DEFAULT_PROFILE,
+        PinConflictChoice::Downgrade,
+        &mut |_| {},
+    )
+    .unwrap();
+    let latest = |s: &Session| {
+        s.mods(GAME)
+            .unwrap()
+            .into_iter()
+            .find(|m| m.id == "lib-core")
+            .unwrap()
+            .version
+    };
+    assert_eq!(latest(&s).as_deref(), Some("1.5.0"));
+    assert_eq!(other_versions(&game, "lib-core"), ["1.0.0"]);
+    assert_eq!(deployed(&s, "Other", "core.lua"), "-- Core 1.5.0");
+    assert_eq!(deployed(&s, DEFAULT_PROFILE, "core.lua"), "-- Core 1.0.0");
+    assert!(!s
+        .ts_updates(GAME)
         .unwrap()
         .iter()
-        .any(|(n, have, latest)| n == "Lib-Core" && have == "1.5.0" && latest == "2.0.0"));
-    let files = s.game_dir("jokers").mod_dir("lib-core").join("files");
-    let lua = walk(&files)
-        .into_iter()
-        .find(|p| p.ends_with("core.lua"))
+        .any(|u| u.0 == "Lib-Core"));
+    // Following the latest again downloads it.
+    let r = s
+        .ts_follow_latest(GAME, "Lib-Core", "Other", ask, &mut |_| {})
         .unwrap();
-    assert_eq!(fs::read_to_string(lua).unwrap(), "-- core 1.5.0");
+    assert_eq!(r.installed[0].1, "2.0.0");
+    assert_eq!(latest(&s).as_deref(), Some("2.0.0"));
+    assert_eq!(
+        other_versions(&game, "lib-core"),
+        ["1.0.0"],
+        "1.5.0 is unused"
+    );
+    assert_eq!(deployed(&s, "Other", "core.lua"), "-- Core 2.0.0");
 
-    // Older than Mine needs: refused, saying why.
-    let err = s
-        .ts_install_version("jokers", "Lib-Core", "1.0.0", DEFAULT_PROFILE, &mut |_| {})
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("Me-Mine needs 1.5.0 or later"), "{err}");
     assert!(s
-        .ts_install_version("jokers", "Lib-Core", "9.9.9", DEFAULT_PROFILE, &mut |_| {})
+        .ts_install_version(GAME, "Lib-Core", "9.9.9", "Other", ask, &mut |_| {})
         .is_err());
-}
-
-fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let mut out = Vec::new();
-    for e in fs::read_dir(dir).unwrap() {
-        let p = e.unwrap().path();
-        if p.is_dir() {
-            out.extend(walk(&p));
-        } else {
-            out.push(p);
-        }
-    }
-    out
 }

@@ -149,6 +149,7 @@ fn melonloader_games_run_mods_from_the_runtime_folder() {
         "melon-quest",
         &[("Ann-Seeds".into(), None)],
         DEFAULT_PROFILE,
+        umm_core::PinConflictChoice::Ask,
         &mut |_| {},
     )
     .unwrap();
@@ -202,6 +203,7 @@ fn a_mod_naming_an_old_melonloader_gets_a_newer_one() {
             "melon-quest",
             &[("Bob-Sled".into(), None)],
             DEFAULT_PROFILE,
+            umm_core::PinConflictChoice::Ask,
             &mut |_| {},
         )
         .unwrap();

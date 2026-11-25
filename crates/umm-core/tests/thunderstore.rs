@@ -180,6 +180,7 @@ fn search_install_update_and_deploy() {
             "test-quest",
             &[("Ann-Lantern_Tweaks".into(), Some("1.1.0".into()))],
             DEFAULT_PROFILE,
+            umm_core::PinConflictChoice::Ask,
             &mut |m| steps.push(m.to_string()),
         )
         .unwrap();
@@ -251,7 +252,13 @@ fn search_install_update_and_deploy() {
         )]
     );
     let r = s
-        .ts_update("test-quest", &[], DEFAULT_PROFILE, &mut |_| {})
+        .ts_update(
+            "test-quest",
+            &[],
+            DEFAULT_PROFILE,
+            umm_core::PinConflictChoice::Ask,
+            &mut |_| {},
+        )
         .unwrap();
     assert_eq!(
         r.installed,
@@ -392,6 +399,7 @@ fn bepinex_6_il2cpp_packs_run_from_the_runtime_folder() {
         "test-quest",
         &[("BepInEx-BepInExPack_IL2CPP".into(), None)],
         DEFAULT_PROFILE,
+        umm_core::PinConflictChoice::Ask,
         &mut |_| {},
     )
     .unwrap();
@@ -435,6 +443,7 @@ fn profiles_export_and_import_like_r2modman() {
         "test-quest",
         &[("Ann-Lantern_Tweaks".into(), Some("1.1.0".into()))],
         DEFAULT_PROFILE,
+        umm_core::PinConflictChoice::Ask,
         &mut |_| {},
     )
     .unwrap();
@@ -466,6 +475,11 @@ fn profiles_export_and_import_like_r2modman() {
         state,
         [("bepinex-bepinexpack", true), ("ann-lantern-tweaks", false)]
     );
+    assert_eq!(
+        p2.pin("ann-lantern-tweaks"),
+        Some("1.1.0"),
+        "imports are pinned"
+    );
     let rt2 = s.game_dir("test-quest").runtime_dir("Default (2)");
     assert_eq!(
         fs::read_to_string(rt2.join("BepInEx/config/lanterns.cfg")).unwrap(),
@@ -487,20 +501,34 @@ fn profiles_export_and_import_like_r2modman() {
         .unwrap();
     assert_eq!(via_code.profile, "Default (3)");
 
-    // The game moves on to 1.2.0; importing the old export keeps it rather than downgrading
-    // the copy every profile shares, and says so.
+    // The game moves on to 1.2.0, and 1.1.0 is gone from Thunderstore. Updating keeps 1.1.0
+    // for the imported profiles pinned to it; importing the old export again pins the next
+    // newer version instead, and says so.
     http.responses
         .lock()
         .unwrap()
         .insert("https://cdn/chunk1".into(), gz(&listing("1.2.0")));
     s.ts_packages("test-quest", true).unwrap();
-    s.ts_update("test-quest", &[], DEFAULT_PROFILE, &mut |_| {})
-        .unwrap();
+    s.ts_update(
+        "test-quest",
+        &[],
+        DEFAULT_PROFILE,
+        umm_core::PinConflictChoice::Ask,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(
+        umm_store::versions::other_versions(&s.game_dir("test-quest"), "ann-lantern-tweaks"),
+        ["1.1.0"]
+    );
     let again = s.profile_import("test-quest", &e.r2z, &mut |_| {}).unwrap();
-    assert!(again.installed.installed.is_empty(), "nothing downgraded");
+    assert!(
+        again.installed.installed.is_empty(),
+        "1.2.0 is stored already"
+    );
     assert_eq!(
         again.notes,
-        ["Kept Lantern Tweaks 1.2.0 (the profile had 1.1.0)"]
+        ["Ann-Lantern_Tweaks 1.1.0 is no longer on Thunderstore; pinned the next newer version, 1.2.0, instead"]
     );
     let v = s
         .ts_installed("test-quest")
@@ -512,7 +540,7 @@ fn profiles_export_and_import_like_r2modman() {
         .version;
     assert_eq!(v, "1.2.0");
     let p4 = s.profile("test-quest", &again.profile).unwrap();
-    assert!(p4.mods.iter().any(|m| m.id == "ann-lantern-tweaks"));
+    assert_eq!(p4.pin("ann-lantern-tweaks"), Some("1.2.0"));
 }
 
 #[test]
@@ -523,6 +551,7 @@ fn deleting_a_plugin_removes_its_folder_from_the_runtime_folder() {
         "test-quest",
         &[("Ann-Lantern_Tweaks".into(), Some("1.1.0".into()))],
         DEFAULT_PROFILE,
+        umm_core::PinConflictChoice::Ask,
         &mut |_| {},
     )
     .unwrap();
@@ -585,6 +614,7 @@ fn a_32_bit_pack_is_flagged_and_an_unlisted_64_bit_one_replaces_it() {
             "test-quest",
             &[("Ann-Lantern_Tweaks".into(), Some("1.1.0".into()))],
             DEFAULT_PROFILE,
+            umm_core::PinConflictChoice::Ask,
             &mut |_| {},
         )
         .unwrap();
@@ -658,6 +688,7 @@ fn a_32_bit_pack_is_flagged_and_an_unlisted_64_bit_one_replaces_it() {
             "BepInEx-BepInExPack_Wide",
             None,
             DEFAULT_PROFILE,
+            umm_core::PinConflictChoice::Ask,
             &mut |_| {},
         )
         .unwrap();
@@ -686,6 +717,7 @@ fn a_32_bit_pack_is_flagged_and_an_unlisted_64_bit_one_replaces_it() {
         "test-quest",
         &[("Ann-Lantern_Tweaks".into(), None)],
         DEFAULT_PROFILE,
+        umm_core::PinConflictChoice::Ask,
         &mut |_| {},
     )
     .unwrap();

@@ -145,6 +145,7 @@ fn bepisloader_mods_both_processes_from_the_runtime_folder() {
         "reso",
         &[("Me-Mine".into(), None)],
         DEFAULT_PROFILE,
+        umm_core::PinConflictChoice::Ask,
         &mut |_| {},
     )
     .unwrap();

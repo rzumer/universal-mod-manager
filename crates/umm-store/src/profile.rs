@@ -23,6 +23,21 @@ pub struct ProfileEntry {
     pub id: String,
     #[serde(default = "yes")]
     pub enabled: bool,
+    /// The version this profile is pinned to (Thunderstore packages); `None` follows the
+    /// latest installed version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+impl ProfileEntry {
+    /// An entry following the latest installed version.
+    pub fn new(id: impl Into<String>, enabled: bool) -> Self {
+        Self {
+            id: id.into(),
+            enabled,
+            version: None,
+        }
+    }
 }
 
 fn yes() -> bool {
@@ -43,6 +58,19 @@ impl Profile {
             .iter()
             .filter(|m| m.enabled)
             .map(|m| m.id.as_str())
+    }
+
+    /// The enabled entries, in order.
+    pub fn enabled(&self) -> impl Iterator<Item = &ProfileEntry> {
+        self.mods.iter().filter(|m| m.enabled)
+    }
+
+    /// The version the profile is pinned to for this mod, if any.
+    pub fn pin(&self, id: &str) -> Option<&str> {
+        self.mods
+            .iter()
+            .find(|m| m.id == id)
+            .and_then(|m| m.version.as_deref())
     }
 
     pub fn position(&self, id: &str) -> Option<usize> {

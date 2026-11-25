@@ -5,7 +5,8 @@
 //! at least as new as the named one is kept (installing a mod does not update the others).
 //! A modpack's dependencies, and theirs, get exactly the versions named, so everyone who
 //! installs it gets the same set. When several packages need the same one, the highest
-//! version wins.
+//! version wins, except for a package whose version is fixed (a profile pinned to it, or a
+//! version asked for by name): it keeps that version, whatever the others name.
 
 use crate::index::{compare_versions, split_dependency, Package};
 use std::cmp::Ordering;
@@ -37,6 +38,8 @@ struct Walk<'a, 'd> {
     find: &'a dyn Fn(&str) -> Option<&'a Package>,
     /// Installed versions, by lower-case `Owner-Name`.
     installed: HashMap<String, String>,
+    /// Versions that never change, by lower-case `Owner-Name`.
+    fixed: HashMap<String, String>,
     deps_of: &'a mut DepsOf<'d>,
     need: BTreeMap<String, String>,
     order: Vec<String>,
@@ -49,6 +52,11 @@ impl<'a> Walk<'a, '_> {
     /// modpack, dependencies get the versions named.
     fn visit(&mut self, pkg: &'a Package, version: String, exact: bool) -> Result<(), String> {
         let key = pkg.full_name.clone();
+        let version = self
+            .fixed
+            .get(&key.to_lowercase())
+            .cloned()
+            .unwrap_or(version);
         let raised = match self.need.get(&key) {
             Some(v) if compare_versions(&version, v) != Ordering::Greater => false,
             _ => {
@@ -105,17 +113,40 @@ pub fn resolve(
     wanted: &[(String, Option<String>)],
     deps_of: &mut DepsOf<'_>,
 ) -> Result<Resolution, String> {
+    resolve_fixed(packages, installed, &HashMap::new(), wanted, deps_of)
+}
+
+/// [`resolve`], with versions that never change: `fixed` maps `Owner-Name` to the version a
+/// package keeps (one a profile is pinned to). A dependency naming a newer one does not raise
+/// it; the caller checks for that afterwards. A version asked for in `wanted` is fixed too.
+pub fn resolve_fixed(
+    packages: &[Package],
+    installed: &HashMap<String, String>,
+    fixed: &HashMap<String, String>,
+    wanted: &[(String, Option<String>)],
+    deps_of: &mut DepsOf<'_>,
+) -> Result<Resolution, String> {
     let by_name: HashMap<String, &Package> = packages
         .iter()
         .map(|p| (p.full_name.to_lowercase(), p))
         .collect();
     let find = |name: &str| by_name.get(&name.to_lowercase()).copied();
+    let mut fixed: HashMap<String, String> = fixed
+        .iter()
+        .map(|(k, v)| (k.to_lowercase(), v.clone()))
+        .collect();
+    for (name, version) in wanted {
+        if let Some(v) = version {
+            fixed.insert(name.to_lowercase(), v.clone());
+        }
+    }
     let mut walk = Walk {
         find: &find,
         installed: installed
             .iter()
             .map(|(k, v)| (k.to_lowercase(), v.clone()))
             .collect(),
+        fixed,
         deps_of,
         need: BTreeMap::new(),
         order: Vec::new(),
@@ -278,6 +309,38 @@ mod tests {
             .iter()
             .map(|s| format!("{}@{}", s.full_name, s.version))
             .collect()
+    }
+
+    #[test]
+    fn a_fixed_version_is_not_raised_by_its_dependents() {
+        // Lib-Core is pinned at 1.0.0: Ann-Mod naming 2.0.0 does not raise it.
+        let installed: HashMap<String, String> = [("Lib-Core".to_string(), "1.0.0".to_string())]
+            .into_iter()
+            .collect();
+        let r = resolve_fixed(
+            &index(),
+            &installed,
+            &installed,
+            &[("Ann-Mod".into(), None)],
+            &mut from_list,
+        )
+        .unwrap();
+        assert!(
+            !names(&r).iter().any(|n| n.starts_with("Lib-Core")),
+            "{:?}",
+            names(&r)
+        );
+        assert!(r.all.contains(&"Lib-Core".to_string()));
+        // A version asked for by name is fixed too, even under a pin.
+        let r = resolve_fixed(
+            &index(),
+            &installed,
+            &installed,
+            &[("Lib-Core".into(), Some("2.0.0".into()))],
+            &mut from_list,
+        )
+        .unwrap();
+        assert!(names(&r).contains(&"Lib-Core@2.0.0".to_string()));
     }
 
     #[test]

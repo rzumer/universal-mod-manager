@@ -759,6 +759,42 @@ pub struct TsReportDto {
     pub missing: Vec<String>,
     pub warnings: Vec<String>,
     pub notes: Vec<String>,
+    /// Pinned packages older than other packages of the profile need. When there are any,
+    /// nothing was installed: the interface asks to downgrade those or remove the pins.
+    pub conflicts: Vec<PinConflictDto>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PinConflictDto {
+    pub dependent: String,
+    pub dependent_version: String,
+    pub pinned: String,
+    pub pin: String,
+    pub needs: String,
+    pub can_unpin: bool,
+}
+
+impl TsReportDto {
+    pub fn conflicts(c: Vec<umm_core::PinConflict>) -> Self {
+        TsReportDto {
+            installed: Vec::new(),
+            missing: Vec::new(),
+            warnings: Vec::new(),
+            notes: Vec::new(),
+            conflicts: c
+                .into_iter()
+                .map(|c| PinConflictDto {
+                    dependent: c.dependent,
+                    dependent_version: c.dependent_version,
+                    pinned: c.pinned,
+                    pin: c.pin,
+                    needs: c.needs,
+                    can_unpin: c.can_unpin,
+                })
+                .collect(),
+        }
+    }
 }
 
 /// A version of a package, offered to change to.
@@ -767,8 +803,13 @@ pub struct TsReportDto {
 pub struct TsVersionDto {
     pub version: String,
     pub size: u64,
+    /// The version the profile uses.
     pub installed: bool,
-    /// Installed packages needing a newer version than this one.
+    /// The version the profile is pinned to.
+    pub pinned: bool,
+    /// Stored already: no download needed.
+    pub stored: bool,
+    /// Packages of the profile needing a newer version than this one.
     pub needed_by: Vec<TsNeedDto>,
 }
 
@@ -785,6 +826,8 @@ impl From<umm_core::TsVersionChoice> for TsVersionDto {
             version: c.version,
             size: c.size,
             installed: c.installed,
+            pinned: c.pinned,
+            stored: c.stored,
             needed_by: c
                 .needed_by
                 .into_iter()
@@ -832,6 +875,7 @@ impl From<umm_core::TsInstallReport> for TsReportDto {
             missing: r.missing,
             warnings: r.warnings,
             notes: r.notes,
+            conflicts: Vec::new(),
         }
     }
 }

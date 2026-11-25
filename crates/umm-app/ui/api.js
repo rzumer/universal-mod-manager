@@ -47,8 +47,9 @@ export const api = {
   fomodApply: (game, id, choices, target) => backend.invoke("fomod_apply", { game, id, choices, target }),
   modImage: (game, id, path) => backend.invoke("mod_image", { game, id, path }),
   gameIcon: (game) => backend.invoke("game_icon", { game }),
-  tsVersions: (game, name) => backend.invoke("ts_versions", { game, name }),
-  tsInstallVersion: (game, name, version, profile) => backend.invoke("ts_install_version", { game, name, version, profile }),
+  tsVersions: (game, name, profile) => backend.invoke("ts_versions", { game, name, profile }),
+  tsInstallVersion: (game, name, version, profile, choice) => backend.invoke("ts_install_version", { game, name, version, profile, choice }),
+  tsFollowLatest: (game, name, profile, choice) => backend.invoke("ts_follow_latest", { game, name, profile, choice }),
   modIcon: (game, id) => backend.invoke("mod_icon", { game, id }),
   placementView: (game, id, placement) => backend.invoke("placement_view", { game, id, placement }),
   setPlacement: (game, id, placement) => backend.invoke("set_placement", { game, id, placement }),
@@ -75,12 +76,12 @@ export const api = {
   tsSearch: (game, query) => backend.invoke("ts_search", { game, query }),
   tsRefresh: (game) => backend.invoke("ts_refresh", { game }),
   // packages: "Owner-Name" or "Owner-Name@1.2.3"
-  tsInstall: (game, packages, profile) => backend.invoke("ts_install", { game, packages, profile }),
-  tsUpdate: (game, packages, profile) => backend.invoke("ts_update", { game, packages, profile }),
+  tsInstall: (game, packages, profile, choice) => backend.invoke("ts_install", { game, packages, profile, choice }),
+  tsUpdate: (game, packages, profile, choice) => backend.invoke("ts_update", { game, packages, profile, choice }),
   tsDependents: (game, modId) => backend.invoke("ts_dependents", { game, modId }),
   tsLookup: (game, name) => backend.invoke("ts_lookup", { game, name }),
-  tsInstallUnlisted: (game, name, version, profile) =>
-    backend.invoke("ts_install_unlisted", { game, name, version: version || null, profile }),
+  tsInstallUnlisted: (game, name, version, profile, choice) =>
+    backend.invoke("ts_install_unlisted", { game, name, version: version || null, profile, choice }),
   exportPreview: (game, profile) => backend.invoke("profile_export_preview", { game, profile }),
   exportCode: (game, profile) => backend.invoke("profile_export_code", { game, profile }),
   exportFile: (game, profile) => backend.invoke("profile_export_file", { game, profile }),

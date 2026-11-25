@@ -125,6 +125,7 @@ fn lovely_games_run_mods_from_the_runtime_folder() {
         "jokers",
         &[("Steamodded-smods".into(), None)],
         DEFAULT_PROFILE,
+        umm_core::PinConflictChoice::Ask,
         &mut |_| {},
     )
     .unwrap();

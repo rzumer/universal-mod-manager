@@ -123,6 +123,7 @@ fn return_of_modding_runs_mods_from_the_runtime_folder() {
             "hell",
             &[("Me-Mine".into(), None)],
             DEFAULT_PROFILE,
+            umm_core::PinConflictChoice::Ask,
             &mut |_| {},
         )
         .unwrap();

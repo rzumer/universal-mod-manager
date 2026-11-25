@@ -28,7 +28,7 @@ pub struct ProfileImport {
     pub profile: String,
     pub installed: TsInstallReport,
     /// Packages the export names that Thunderstore no longer has, or versions it no longer
-    /// has (the latest was installed instead).
+    /// has (the next newer one was installed instead, else the latest).
     pub notes: Vec<String>,
     pub files: usize,
     /// Files in the export that were not copied (unsafe types or paths, or outside BepInEx).
@@ -44,7 +44,10 @@ impl Session {
         let mut mods = Vec::new();
         let mut left_out = Vec::new();
         for e in &p.mods {
-            match umm_store::load_mod(&game, &e.id) {
+            // The version the profile uses: its pin, else the latest.
+            match umm_store::versions::load_mod_version(&game, &e.id, e.version.as_deref())
+                .map(|(m, _)| m)
+            {
                 Ok(m) => match m.thunderstore {
                     Some(t) => mods.push(ExportMod {
                         name: t.full_name,
@@ -143,8 +146,10 @@ impl Session {
         self.profile_import(id, &r2z, progress)
     }
 
-    /// Creates a profile named after the export, installs its packages at their versions,
-    /// sets which are enabled, and copies its config files into the profile's runtime folder.
+    /// Creates a profile named after the export, installs its packages pinned at their
+    /// versions, sets which are enabled, and copies its config files into the profile's
+    /// runtime folder. A version Thunderstore no longer has is replaced by the next newer
+    /// one it has, else its latest.
     pub fn profile_import(
         &self,
         id: &str,
@@ -154,9 +159,7 @@ impl Session {
         let export = profile::read_r2z(r2z)?;
         let (packages, _) = self.ts_packages(id, false)?;
 
-        // A game keeps one version of each package, shared by its profiles, so an import never
-        // downgrades one: a newer installed version is kept, and the summary says so.
-        let installed = self.installed_versions(id)?;
+        // Each package is pinned at the export's version, whatever other profiles use.
         let mut wanted = Vec::new();
         let mut notes = Vec::new();
         for m in &export.mods {
@@ -167,35 +170,36 @@ impl Session {
                 notes.push(format!("{} is not on Thunderstore for this game", m.name));
                 continue;
             };
-            let have = installed
-                .iter()
-                .find(|(k, _)| k.eq_ignore_ascii_case(&p.full_name))
-                .map(|(_, v)| v.clone())
-                .filter(|h| p.version(h).is_some());
-            let listed = p.version(&m.version).is_some();
-            match have {
-                Some(h) if !listed || compare_versions(&h, &m.version) == Ordering::Greater => {
-                    notes.push(format!(
-                        "Kept {} {h} (the profile had {})",
-                        p.name.replace('_', " "),
-                        m.version
-                    ));
-                    wanted.push((p.full_name.clone(), Some(h)));
-                }
-                _ if listed => wanted.push((p.full_name.clone(), Some(m.version.clone()))),
-                _ => {
-                    notes.push(format!(
-                        "{} {} is no longer on Thunderstore; installed the latest instead",
-                        m.name, m.version
-                    ));
-                    wanted.push((p.full_name.clone(), None));
-                }
+            if p.version(&m.version).is_some() {
+                wanted.push((p.full_name.clone(), m.version.clone()));
+                continue;
             }
+            // Retracted: the closest newer version, else the latest.
+            let newer = p
+                .versions
+                .iter()
+                .filter(|v| compare_versions(&v.version, &m.version) == Ordering::Greater)
+                .min_by(|a, b| compare_versions(&a.version, &b.version));
+            let (v, which) = match newer {
+                Some(v) => (v, "the next newer version"),
+                None => match p.latest() {
+                    Some(v) => (v, "the latest"),
+                    None => {
+                        notes.push(format!("{} has no versions on Thunderstore", m.name));
+                        continue;
+                    }
+                },
+            };
+            notes.push(format!(
+                "{} {} is no longer on Thunderstore; pinned {which}, {}, instead",
+                m.name, m.version, v.version
+            ));
+            wanted.push((p.full_name.clone(), v.version.clone()));
         }
 
         let name = self.free_profile_name(id, &export.profile_name);
         self.create_profile(id, &name, None)?;
-        let installed = match self.ts_install(id, &wanted, &name, progress) {
+        let installed = match self.ts_install_pinned(id, &wanted, &name, progress) {
             Ok(r) => r,
             Err(e) => {
                 let _ = self.delete_profile(id, &name);

@@ -122,6 +122,7 @@ fn northstar_runs_its_profile_from_the_runtime_folder() {
         "titan",
         &[("Me-Mine".into(), None)],
         DEFAULT_PROFILE,
+        umm_core::PinConflictChoice::Ask,
         &mut |_| {},
     )
     .unwrap();

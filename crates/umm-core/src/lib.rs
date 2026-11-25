@@ -49,8 +49,8 @@ pub use setup::LoaderChoice;
 pub use share::{ProfileExport, ProfileImport};
 pub use steam::{Draft, Engine, Note, SteamApp, SteamCandidate, SteamList};
 pub use ts::{
-    package_mod_id, InstalledPackage, TsInstallReport, TsItem, TsLookup, TsPage, TsQuery, TsSort,
-    TsVersionChoice,
+    package_mod_id, InstalledPackage, PinConflict, PinConflictChoice, TsInstallReport, TsItem,
+    TsLookup, TsPage, TsQuery, TsSort, TsVersionChoice,
 };
 pub use umm_deploy::{
     Conflict, DeployError, Faults, Journal, Method as DeployMethod, Op as DeployOp, Plan,
@@ -120,6 +120,10 @@ pub enum CoreError {
     /// download that landed in the Downloads folder meanwhile).
     #[error("this file is {0} on Nexus Mods, not the one being downloaded")]
     NexusOtherMod(String),
+    /// Pinned packages older than other packages of the profile need: the user chooses to
+    /// downgrade those, or remove the pins.
+    #[error("{}", crate::ts::describe_conflicts(.0))]
+    PinConflicts(Vec<crate::ts::PinConflict>),
 }
 
 impl From<umm_gamedef::RelPathError> for CoreError {
@@ -376,10 +380,7 @@ impl Session {
         };
         let mut p = umm_store::load_profile(&game, profile)?;
         if p.position(&meta.id).is_none() {
-            p.mods.push(ProfileEntry {
-                id: meta.id.clone(),
-                enabled: true,
-            });
+            p.mods.push(ProfileEntry::new(meta.id.clone(), true));
             umm_store::save_profile(&game, &p)?;
         }
         Ok(meta)
@@ -456,10 +457,12 @@ impl Session {
         Ok(umm_store::load_profile(&self.data.game(id), name)?)
     }
 
+    /// Saves a profile, then removes the package versions no profile is pinned to any more.
     pub fn save_profile(&self, id: &str, profile: &Profile) -> Result<()> {
         let game = self.data.game(id);
         game.ensure()?;
-        Ok(umm_store::save_profile(&game, profile)?)
+        umm_store::save_profile(&game, profile)?;
+        self.prune_versions(id)
     }
 
     /// Profile names; `Default` is always present.
@@ -512,7 +515,9 @@ impl Session {
             fs::remove_dir_all(&runtime).ctx(|| format!("removing {}", runtime.display()))?;
         }
         weidu::forget_profile(&game, name).ctx(|| format!("removing {name}'s WeiDU install"))?;
-        Ok(())
+        drop(_lock);
+        // Package versions only this profile was pinned to.
+        self.prune_versions(id)
     }
 
     pub fn plan(&self, id: &str, profile: &str) -> Result<Plan> {
