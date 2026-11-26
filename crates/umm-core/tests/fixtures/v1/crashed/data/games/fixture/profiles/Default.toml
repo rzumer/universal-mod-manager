@@ -1,0 +1,9 @@
+name = "Default"
+
+[[mods]]
+id = "alpha"
+enabled = true
+
+[[mods]]
+id = "beta"
+enabled = true

@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "game": "fixture",
+  "profile": "Default",
+  "game_root": "@@ROOT_JSON@@\\game",
+  "backup_root": "@@ROOT_JSON@@\\data\\games\\fixture\\backups",
+  "backup_in_game": false,
+  "started_unix": 1795651556,
+  "phase": "applying",
+  "ops": [
+    {
+      "kind": "add",
+      "path": "@user/alpha.txt",
+      "method": "hardlink",
+      "src": "@@ROOT_JSON@@\\data\\games\\fixture\\mods\\alpha\\files\\@user\\alpha.txt",
+      "hash": "b3:3f5ea6bfd0ff62679a354c53142b9ba330de8b0450a260e9f345e3250ad6c730",
+      "size": 11
+    },
+    {
+      "kind": "add",
+      "path": "Data/Alpha.esp",
+      "method": "hardlink",
+      "src": "@@ROOT_JSON@@\\data\\games\\fixture\\mods\\alpha\\files\\Data\\Alpha.esp",
+      "hash": "b3:9411a20b9782b06cba78a5c705f033cd291d661fa8765050b352715ab147cbd5",
+      "size": 12
+    },
+    {
+      "kind": "add",
+      "path": "Data/Beta.esp",
+      "method": "hardlink",
+      "src": "@@ROOT_JSON@@\\data\\games\\fixture\\mods\\beta\\files\\Data\\Beta.esp",
+      "hash": "b3:87917d085742c785da8f158bc0836db7e0a7de754379cbd7282e3a33c8b906c8",
+      "size": 8
+    },
+    {
+      "kind": "replace",
+      "path": "Data/textures/rock.dds",
+      "method": "hardlink",
+      "src": "@@ROOT_JSON@@\\data\\games\\fixture\\mods\\alpha\\files\\Data\\textures\\rock.dds",
+      "hash": "b3:b747dee1c7feac03ee70ad1eeaf29f85bb2e6cbeec354c71ffc502b6f03b7318",
+      "size": 10,
+      "orig_hash": "b3:629bdf8135e3407d45afcfbfb0ff576cc9944f1cd2ed07ff6b8eb8c5cad4bdc6"
+    },
+    {
+      "kind": "external",
+      "path": "@@ROOT_JSON@@\\user\\plugins.txt",
+      "src": "@@ROOT_JSON@@\\data\\games\\fixture\\generated\\plugins.txt",
+      "hash": "b3:3fd0269ae8b08ad9ba84a0db39bafcfae691991683a9b7ac71d1dc92061eda36",
+      "orig_hash": "b3:2e31da4499e72f34b6baef6793695fe733586948c954681483cf6e73192abd14",
+      "backup": "@@ROOT_JSON@@\\data\\games\\fixture\\backups\\.external\\0-plugins.txt",
+      "tolerated": [
+        "alpha.esp",
+        "base.esm",
+        "beta.esp"
+      ]
+    },
+    {
+      "kind": "ini_set",
+      "path": "@@ROOT_JSON@@\\user\\Prefs.ini",
+      "section": "Display",
+      "key": "Mods",
+      "value": "1",
+      "orig": null,
+      "created": false,
+      "section_added": false
+    }
+  ],
+  "folders": {
+    "user": "@@ROOT_JSON@@\\user"
+  }
+}

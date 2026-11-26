@@ -1,0 +1,8 @@
+id = "beta"
+name = "beta"
+version = "2.0"
+imported_unix = 1795651556
+
+[files."Data/Beta.esp"]
+size = 8
+hash = "b3:87917d085742c785da8f158bc0836db7e0a7de754379cbd7282e3a33c8b906c8"

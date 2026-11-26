@@ -422,7 +422,7 @@ pub enum GameDefError {
         path: PathBuf,
         source: Box<toml::de::Error>,
     },
-    #[error("unsupported schema version {0} (this build supports {SCHEMA_VERSION})")]
+    #[error("unsupported schema version {0} (this version of UMM reads up to {SCHEMA_VERSION}; a newer one may read it)")]
     Schema(u32),
     #[error("invalid id `{0}` (use a-z, 0-9, `-` and `_`)")]
     Id(String),
@@ -899,7 +899,9 @@ impl GameDef {
     }
 
     pub fn validate(&self) -> Result<(), GameDefError> {
-        if self.schema != SCHEMA_VERSION {
+        // A file from an older UMM is read as it is (or converted here, once there is an
+        // older schema); a newer one is refused.
+        if self.schema > SCHEMA_VERSION || self.schema < 1 {
             return Err(GameDefError::Schema(self.schema));
         }
         if !is_valid_id(&self.id) {

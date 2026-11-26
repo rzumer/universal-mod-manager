@@ -682,6 +682,28 @@ mod tests {
         (tmp, g)
     }
 
+    #[test]
+    fn the_data_folder_names_its_format_and_a_newer_one_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("data");
+        DataDir::open(&root).unwrap();
+        let marker = root.join(crate::FORMAT_FILE);
+        assert_eq!(
+            fs::read_to_string(&marker).unwrap().trim(),
+            format!("format = {}", crate::DATA_FORMAT)
+        );
+        fs::write(&marker, "format = 999\n").unwrap();
+        assert!(matches!(
+            DataDir::open(&root),
+            Err(StoreError::NewerFormat { found: 999 })
+        ));
+        assert_eq!(
+            fs::read_to_string(&marker).unwrap(),
+            "format = 999\n",
+            "left as it was"
+        );
+    }
+
     fn seven_zip(path: &Path, entries: &[(&str, &str)]) {
         let mut w = sevenz_rust2::ArchiveWriter::create(path).unwrap();
         for (name, body) in entries {

@@ -62,6 +62,33 @@ pub enum StoreError {
     Path(#[from] RelPathError),
     #[error("placement: {0}")]
     Placement(String),
+    #[error(
+        "this data folder was written by a newer version of UMM (format {found}; this one reads up to {DATA_FORMAT}); update UMM to use it"
+    )]
+    NewerFormat { found: u32 },
+    #[error("this data folder has an unknown format, {0}")]
+    UnknownFormat(u32),
+}
+
+/// The data folder's format: how everything in it is written (game files, mods, profiles,
+/// journals). It changes only for what an older UMM would misread, and a newer UMM upgrades
+/// an older folder ([`upgrade`]); an older UMM refuses a newer one rather than lose what it
+/// cannot read. New optional fields need no new format.
+pub const DATA_FORMAT: u32 = 1;
+
+/// The file at the top of the data folder naming its format.
+pub const FORMAT_FILE: &str = "umm.toml";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct FormatFile {
+    format: u32,
+}
+
+/// Upgrades a data folder written in an older format, one format at a time. Format 1 is the
+/// first, so there is nothing to upgrade from yet: each later format adds its step here,
+/// with a fixture of the format before it (`crates/umm-core/tests/fixtures/`).
+fn upgrade(_root: &Path, from: u32) -> Result<()> {
+    Err(StoreError::UnknownFormat(from))
 }
 
 pub type Result<T, E = StoreError> = std::result::Result<T, E>;
@@ -96,10 +123,28 @@ impl DataDir {
             .join("umm")
     }
 
+    /// Opens the data folder, creating it if needed. One written by a newer UMM is refused;
+    /// one in an older format is upgraded first.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         let games = root.join("games");
         fs::create_dir_all(&games).ctx(|| format!("creating {}", games.display()))?;
+        let marker = root.join(FORMAT_FILE);
+        if marker.is_file() {
+            let found = read_toml::<FormatFile>(&marker)?.format;
+            match found.cmp(&DATA_FORMAT) {
+                std::cmp::Ordering::Greater => return Err(StoreError::NewerFormat { found }),
+                std::cmp::Ordering::Less => upgrade(&root, found)?,
+                std::cmp::Ordering::Equal => return Ok(Self { root }),
+            }
+        }
+        // A new folder, or one from before the marker (written as format 1), or just upgraded.
+        write_toml(
+            &marker,
+            &FormatFile {
+                format: DATA_FORMAT,
+            },
+        )?;
         Ok(Self { root })
     }
 

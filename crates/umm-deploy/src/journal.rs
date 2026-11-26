@@ -163,10 +163,21 @@ impl Journal {
             path: path.to_path_buf(),
             message: e.to_string(),
         })?;
-        if j.version != JOURNAL_VERSION {
+        // A journal left by an older UMM (a crash, then an update) must still be undone: each
+        // later version converts older ones here. A newer one is refused, untouched.
+        if j.version > JOURNAL_VERSION {
             return Err(DeployError::Journal {
                 path: path.to_path_buf(),
-                message: format!("unsupported version {}", j.version),
+                message: format!(
+                    "written by a newer version of UMM (journal version {}); undo it with that version",
+                    j.version
+                ),
+            });
+        }
+        if j.version < 1 {
+            return Err(DeployError::Journal {
+                path: path.to_path_buf(),
+                message: format!("unknown journal version {}", j.version),
             });
         }
         Ok(Some(j))

@@ -1,0 +1,23 @@
+schema = 1
+name = "Fixture"
+protect = ["*.exe"]
+writable = ["**/*.ini"]
+[detect]
+marker = "Game.exe"
+path = '@@ROOT@@\game'
+[launch]
+exe = "Game.exe"
+[mod_list]
+list = '@@ROOT@@\user\plugins.txt'
+format = "asterisk"
+folder = "Data"
+[[ini]]
+file = '@@ROOT@@\user\Prefs.ini'
+section = "Display"
+key = "Mods"
+value = "1"
+[[install]]
+match = "**"
+target = ""
+[folders]
+user = '@@ROOT@@\user'

@@ -1,0 +1,16 @@
+id = "alpha"
+name = "alpha"
+version = "1.0"
+imported_unix = 1795651556
+
+[files."@user/alpha.txt"]
+size = 11
+hash = "b3:3f5ea6bfd0ff62679a354c53142b9ba330de8b0450a260e9f345e3250ad6c730"
+
+[files."Data/Alpha.esp"]
+size = 12
+hash = "b3:9411a20b9782b06cba78a5c705f033cd291d661fa8765050b352715ab147cbd5"
+
+[files."Data/textures/rock.dds"]
+size = 10
+hash = "b3:b747dee1c7feac03ee70ad1eeaf29f85bb2e6cbeec354c71ffc502b6f03b7318"
