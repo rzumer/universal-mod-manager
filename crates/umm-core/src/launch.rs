@@ -419,7 +419,7 @@ impl Session {
             injection,
             find_steam_exe(),
         )?;
-        spec.args.extend(self.paradox_mod_args(&def));
+        spec.args.extend(self.paradox_mod_args(&def, &profile));
 
         let outcome = umm_launch::run(&spec, stop, &mut |e| {
             on_event(match e {

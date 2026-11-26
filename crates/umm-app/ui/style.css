@@ -162,7 +162,9 @@ select, input[type="text"], input[type="search"] {
 .mock-note { font-size: 12px; color: var(--warn); background: var(--warn-soft); padding: 4px 8px; border-radius: 6px; margin-bottom: 6px; }
 
 /* ---------- main ---------- */
-#main { overflow-y: auto; padding: 24px 32px 40px; }
+/* The scrollbar's room kept when there is nothing to scroll, so a shorter list (a filter on)
+   does not shift what is aligned right. */
+#main { overflow-y: auto; scrollbar-gutter: stable; padding: 24px 32px 40px; }
 .game-header { margin-bottom: 18px; }
 .title-row { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
 .install { display: flex; align-items: center; gap: 10px; margin-top: 6px; flex-wrap: wrap; color: var(--muted); }
@@ -196,6 +198,7 @@ button.launch { justify-content: center; font-size: 16px; padding: 11px 18px; bo
 .mod-row:first-child, .store-list li:first-child { border-top: none; }
 .mod-row.disabled .mod-main, .mod-row.disabled .mod-icon { opacity: 0.55; }
 .mod-row.missing .mod-meta { color: var(--danger); }
+.mod-row.locked .toggle { opacity: 0.6; cursor: not-allowed; }
 .mod-row.dragging { opacity: 0.4; }
 .mod-row.drop-target { box-shadow: inset 0 2px 0 var(--accent); }
 .mod-row.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
@@ -287,6 +290,7 @@ details.all-files summary { cursor: pointer; font-weight: 600; margin-bottom: 8p
 .toast.ok { border-left: 4px solid var(--ok); }
 .toast.error { border-left: 4px solid var(--danger); }
 .toast.leaving { opacity: 0; transform: translateY(6px); }
+.toast button { margin-left: 10px; }
 
 #banners { position: fixed; top: 12px; left: 260px; right: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 20; pointer-events: none; }
 .banner { pointer-events: auto; display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 10px 14px; border-radius: 8px; box-shadow: var(--shadow); border: 1px solid var(--border); background: var(--surface); }
@@ -442,6 +446,7 @@ button.ts-name:hover svg, button.ts-name:focus-visible svg { opacity: 1; fill: v
 .collection-name { font-size: 15px; }
 .collection-optional { margin: 16px 0 8px; font-size: 14px; }
 .ts-share { display: flex; gap: 14px; align-items: baseline; margin-bottom: 10px; font-size: 13px; }
+.ts-share button { white-space: nowrap; flex: none; }
 .chip.ok { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
 .modal input[type="text"] { width: 100%; margin-top: 8px; }
 label.check { display: flex; align-items: center; gap: 8px; margin-top: 16px; font-size: 13px; color: var(--muted); cursor: pointer; }

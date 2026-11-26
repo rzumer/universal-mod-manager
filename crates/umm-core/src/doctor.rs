@@ -139,10 +139,20 @@ pub(crate) fn run(s: &Session, id: &str) -> Result<Vec<Finding>> {
         ),
     ));
 
+    // Workshop items are Steam's, not installed in UMM: checked against what Steam records
+    // as subscribed, when it records anything for the game.
+    let subscribed = s.workshop_subscribed_ids(&def.def);
     for name in umm_store::list_profiles(&game) {
         let p = umm_store::load_profile(&game, &name)?;
         for m in &p.mods {
-            if !mods.iter().any(|x| x.id == m.id) {
+            if let Some(item) = m.workshop_item() {
+                if subscribed.as_ref().is_some_and(|s| !s.contains(item)) {
+                    out.push(f(
+                        Level::Warn,
+                        format!("profile `{name}` lists Workshop item {item}, which is not subscribed to in Steam"),
+                    ));
+                }
+            } else if !mods.iter().any(|x| x.id == m.id) {
                 out.push(f(
                     Level::Warn,
                     format!("profile `{name}` lists `{}`, which is not installed", m.id),

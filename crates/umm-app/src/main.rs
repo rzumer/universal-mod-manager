@@ -9,6 +9,7 @@ mod dto;
 mod fomod;
 mod nexus;
 mod patcher;
+mod steam;
 #[cfg(test)]
 mod tests;
 
@@ -51,6 +52,13 @@ macro_rules! umm_handlers {
             commands::ts_install_version,
             commands::ts_follow_latest,
             commands::ts_dependency_issues,
+            commands::workshop_items,
+            commands::open_workshop_page,
+            crate::steam::open_workshop_window,
+            crate::steam::workshop_action,
+            crate::steam::open_steam_sign_in,
+            commands::workshop_browse,
+            commands::workshop_available,
             commands::mod_icon,
             commands::ts_refresh,
             commands::ts_install,
@@ -161,6 +169,20 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(state)
         .on_window_event(|window, event| {
+            // UMM's other windows (Steam's, the hidden one included) end with the main one;
+            // otherwise the hidden one would keep UMM running with no window to show.
+            if let WindowEvent::Destroyed = event {
+                if window.label() == "main" {
+                    let app = window.app_handle();
+                    for (label, w) in app.webview_windows() {
+                        if label != "main" {
+                            let _ = w.destroy();
+                        }
+                    }
+                    app.exit(0);
+                }
+                return;
+            }
             // Closing while a game runs would leave its mods deployed until the next start.
             // Ask first; the UI calls `quit_anyway` if the user confirms.
             if let WindowEvent::CloseRequested { api, .. } = event {

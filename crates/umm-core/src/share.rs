@@ -44,6 +44,10 @@ impl Session {
         let mut mods = Vec::new();
         let mut left_out = Vec::new();
         for e in &p.mods {
+            if let Some(item) = e.workshop_item() {
+                left_out.push(format!("Steam Workshop item {item}"));
+                continue;
+            }
             // The version the profile uses: its pin, else the latest.
             match umm_store::versions::load_mod_version(&game, &e.id, e.version.as_deref())
                 .map(|(m, _)| m)

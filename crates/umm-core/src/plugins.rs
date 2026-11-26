@@ -333,12 +333,12 @@ impl Session {
         let folder = RelPath::parse(&cfg.folder)?;
         // The mods' entries, by load order. The loader pack (not in the profile) loads first.
         let order = |owner: &str| profile.position(owner).map_or(0, |p| p + 1);
-        let mut ours: Vec<(&PlannedFile, String)> = match cfg.format {
+        let mut ours: Vec<(&str, String)> = match cfg.format {
             // Plugins: files directly in the plugin folder.
             Asterisk | Plain | MorrowindIni => files
                 .iter()
                 .filter(|f| f.target.parent().is_some_and(|p| p.key() == folder.key()))
-                .filter_map(|f| Some((f, f.target.file_name()?.to_string())))
+                .filter_map(|f| Some((f.owner.as_str(), f.target.file_name()?.to_string())))
                 .filter(|(_, n)| rank(n) < PLUGIN_EXTENSIONS.len())
                 .collect(),
             // RimWorld mods: a folder each, named by its About/About.xml.
@@ -357,7 +357,7 @@ impl Session {
                             .and_then(|r| r.strip_suffix("/about/about.xml"))
                             .is_some_and(|d| !d.is_empty() && !d.contains('/'))
                     })
-                    .filter_map(|f| Some((f, package_id(&f.source)?)))
+                    .filter_map(|f| Some((f.owner.as_str(), package_id(&f.source)?)))
                     .collect()
             }
             // Factorio mods: a folder each, named by its info.json.
@@ -366,19 +366,39 @@ impl Session {
                 files
                     .iter()
                     .filter(|f| crate::factorio::info_folder(&f.target, &prefix).is_some())
-                    .filter_map(|f| Some((f, crate::factorio::mod_name(&f.source)?)))
+                    .filter_map(|f| Some((f.owner.as_str(), crate::factorio::mod_name(&f.source)?)))
                     .collect()
             }
         };
-        if ours.is_empty() {
+        // RimWorld's Workshop items the profile has: on as it says, by their package ids;
+        // the others are left as the user's list has them.
+        let mut off: HashSet<String> = HashSet::new();
+        let workshop_ids: Vec<(String, bool)> = profile
+            .workshop()
+            .map(|(i, on)| (format!("{}{i}", umm_store::WORKSHOP_PREFIX), on))
+            .collect();
+        if cfg.format == RimworldXml && !workshop_ids.is_empty() {
+            let folders = self.workshop_folders(&def.def);
+            for (entry, on) in &workshop_ids {
+                let item = &entry[umm_store::WORKSHOP_PREFIX.len()..];
+                let Some(pid) = folders
+                    .get(item)
+                    .and_then(|f| package_id(&f.join("About").join("About.xml")))
+                else {
+                    continue;
+                };
+                if *on {
+                    ours.push((entry.as_str(), pid));
+                } else {
+                    off.insert(pid);
+                }
+            }
+        }
+        if ours.is_empty() && off.is_empty() {
             return Ok(None);
         }
         ours.sort_by(|(a, an), (b, bn)| {
-            (order(&a.owner), rank(an), an.to_lowercase()).cmp(&(
-                order(&b.owner),
-                rank(bn),
-                bn.to_lowercase(),
-            ))
+            (order(a), rank(an), an.to_lowercase()).cmp(&(order(b), rank(bn), bn.to_lowercase()))
         });
         let text = match fs::read(&path) {
             Ok(b) => decode(&b, cfg.format),
@@ -391,15 +411,18 @@ impl Session {
         };
         let mut entries = read_list(&text, cfg.format);
         let names: HashSet<String> = ours.iter().map(|(_, n)| n.to_lowercase()).collect();
-        entries.retain(|e| !names.contains(&e.name.to_lowercase()));
+        entries.retain(|e| {
+            let n = e.name.to_lowercase();
+            !names.contains(&n) && !off.contains(&n)
+        });
         let mut seen = HashSet::new();
         entries.extend(
             ours.into_iter()
                 .filter(|(_, n)| seen.insert(n.to_lowercase()))
-                .map(|(f, name)| PluginEntry {
+                .map(|(owner, name)| PluginEntry {
                     name,
                     enabled: true,
-                    owner: Some(f.owner.clone()),
+                    owner: Some(owner.to_string()),
                 }),
         );
         Ok(Some((

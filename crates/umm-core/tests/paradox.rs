@@ -179,7 +179,7 @@ fn crusader_kings_ii_mods_are_enabled_in_its_settings() {
     // Started past its launcher, the game is given them as arguments, the user's own too.
     let def = s.def("ck2").unwrap();
     assert_eq!(
-        s.paradox_mod_args(&def),
+        s.paradox_mod_args(&def, &s.profile("ck2", DEFAULT_PROFILE).unwrap()),
         ["-mod=mod/theirs.mod", "-mod=mod/umm_agot.mod"]
     );
 

@@ -8,6 +8,11 @@ use umm_gamedef::RelPath;
 
 pub const DEFAULT_PROFILE: &str = "Default";
 
+/// How a profile names a Steam Workshop item: `workshop:<item id>`. These entries are not
+/// mods in the store (Steam keeps their files), so deploys never place them; for a game whose
+/// mod list UMM writes, an entry turns the item on or off there.
+pub const WORKSHOP_PREFIX: &str = "workshop:";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {
     pub name: String,
@@ -30,6 +35,13 @@ pub struct ProfileEntry {
 }
 
 impl ProfileEntry {
+    /// The Workshop item this entry names, if it is one.
+    pub fn workshop_item(&self) -> Option<&str> {
+        self.id
+            .strip_prefix(WORKSHOP_PREFIX)
+            .filter(|i| !i.is_empty() && i.chars().all(|c| c.is_ascii_digit()))
+    }
+
     /// An entry following the latest installed version.
     pub fn new(id: impl Into<String>, enabled: bool) -> Self {
         Self {
@@ -53,16 +65,23 @@ impl Profile {
         }
     }
 
+    /// The enabled mods in the store, in order (not Workshop items).
     pub fn enabled_ids(&self) -> impl Iterator<Item = &str> {
-        self.mods
-            .iter()
-            .filter(|m| m.enabled)
-            .map(|m| m.id.as_str())
+        self.enabled().map(|m| m.id.as_str())
     }
 
-    /// The enabled entries, in order.
+    /// The enabled entries for mods in the store, in order (not Workshop items).
     pub fn enabled(&self) -> impl Iterator<Item = &ProfileEntry> {
-        self.mods.iter().filter(|m| m.enabled)
+        self.mods
+            .iter()
+            .filter(|m| m.enabled && m.workshop_item().is_none())
+    }
+
+    /// The Workshop items the profile has, each with whether it is enabled, in order.
+    pub fn workshop(&self) -> impl Iterator<Item = (&str, bool)> {
+        self.mods
+            .iter()
+            .filter_map(|m| Some((m.workshop_item()?, m.enabled)))
     }
 
     /// The version the profile is pinned to for this mod, if any.

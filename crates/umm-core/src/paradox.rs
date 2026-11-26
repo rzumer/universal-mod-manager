@@ -96,8 +96,9 @@ fn launcher_descriptor(game: &GameDir, m: &umm_store::ModMeta) -> Option<String>
 }
 
 /// `dlc_load.json` with these descriptors (`mod/<name>.mod`) enabled after the user's own,
-/// everything else in it kept.
-pub fn dlc_load(original: Option<&str>, ours: &[String]) -> Result<String> {
+/// without those in `drop` (Workshop items a profile turns off, or enables through UMM's own
+/// descriptor), everything else in it kept.
+pub fn dlc_load(original: Option<&str>, ours: &[String], drop: &[String]) -> Result<String> {
     let mut v: serde_json::Value = match original.map(str::trim).filter(|t| !t.is_empty()) {
         Some(t) => serde_json::from_str(t)
             .map_err(|e| CoreError::Invalid(format!("reading {DLC_LOAD}: {e}")))?,
@@ -111,6 +112,10 @@ pub fn dlc_load(original: Option<&str>, ours: &[String]) -> Result<String> {
         .and_then(|m| m.as_array())
         .cloned()
         .unwrap_or_default();
+    enabled.retain(|e| {
+        !e.as_str()
+            .is_some_and(|s| drop.iter().any(|d| d.eq_ignore_ascii_case(s)))
+    });
     for m in ours {
         if !enabled.iter().any(|e| e.as_str() == Some(m)) {
             enabled.push(serde_json::Value::String(m.clone()));
@@ -142,8 +147,8 @@ impl Session {
     /// The game's arguments for its enabled mods, for a game that takes them so: Crusader
     /// Kings II, started past its launcher, loads only the mods given as
     /// `-mod=mod/<name>.mod`. Those are its `last_mods` (the user's and UMM's), which its
-    /// launcher shows ticked.
-    pub fn paradox_mod_args(&self, def: &CompiledDef) -> Vec<String> {
+    /// launcher shows ticked, less the Workshop items the profile has off.
+    pub fn paradox_mod_args(&self, def: &CompiledDef, profile: &Profile) -> Vec<String> {
         let Some(px) = def
             .def
             .paradox
@@ -162,9 +167,16 @@ impl Session {
         let Ok(bytes) = fs::read(user.join(SETTINGS)) else {
             return Vec::new();
         };
+        let descriptors = self.workshop_descriptors(def);
+        let off: Vec<&String> = profile
+            .workshop()
+            .filter(|(_, on)| !on)
+            .filter_map(|(item, _)| descriptors.get(item))
+            .collect();
         umm_deploy::block::get(&umm_deploy::block::decode(&bytes), LAST_MODS)
             .unwrap_or_default()
             .into_iter()
+            .filter(|m| !off.iter().any(|o| o.eq_ignore_ascii_case(m)))
             .map(|m| format!("-mod={m}"))
             .collect()
     }
@@ -241,10 +253,58 @@ impl Session {
                 writable: false,
                 target,
             });
-            ours.push(format!("mod/{file}"));
+            ours.push((id.to_string(), format!("mod/{file}")));
         }
+        // Workshop items the profile has (games with `dlc_load.json`): a descriptor of UMM's
+        // for each one on, its folder where Steam keeps it, and the launcher's own entry for
+        // each (`mod/ugc_<id>.mod`) left out. Crusader Kings II, on Steam's older Workshop:
+        // the descriptor the game wrote for each one on (those off it is not given, see
+        // `paradox_mod_args`). Items the profile does not have stay as they are.
+        let mut drop = Vec::new();
+        if px.list == ParadoxList::Settings && profile.workshop().next().is_some() {
+            let descriptors = self.workshop_descriptors(def);
+            for (item, on) in profile.workshop() {
+                if let Some(d) = descriptors.get(item).filter(|_| on) {
+                    ours.push((format!("{}{item}", umm_store::WORKSHOP_PREFIX), d.clone()));
+                }
+            }
+        }
+        if px.list == ParadoxList::DlcLoad && profile.workshop().next().is_some() {
+            let folders = self.workshop_folders(&def.def);
+            for (item, on) in profile.workshop() {
+                drop.push(format!("mod/ugc_{item}.mod"));
+                let Some(folder) = folders.get(item).filter(|_| on) else {
+                    continue;
+                };
+                let own = fs::read(folder.join(DESCRIPTOR))
+                    .ok()
+                    .map(|b| String::from_utf8_lossy(&b).into_owned());
+                let path = folder.display().to_string().replace('\\', "/");
+                let text = descriptor(own.as_deref(), &format!("Workshop item {item}"), &path);
+                let file = format!("umm-workshop-{item}.mod");
+                let src = out.join(&file);
+                write_atomic(&src, text.as_bytes()).ctx(|| format!("writing {}", src.display()))?;
+                let target = RelPath::parse(&format!("{prefix}{file}"))?;
+                plan.files.retain(|f| f.target.key() != target.key());
+                plan.files.push(PlannedFile {
+                    hash: hash_file(&src).ctx(|| format!("hashing {}", src.display()))?,
+                    size: text.len() as u64,
+                    source: src,
+                    owner: format!("{}{item}", umm_store::WORKSHOP_PREFIX),
+                    writable: false,
+                    target,
+                });
+                ours.push((
+                    format!("{}{item}", umm_store::WORKSHOP_PREFIX),
+                    format!("mod/{file}"),
+                ));
+            }
+        }
+        // In the profile's order, Workshop items with its other mods.
+        ours.sort_by_key(|(owner, _)| profile.position(owner).unwrap_or(usize::MAX));
+        let ours: Vec<String> = ours.into_iter().map(|(_, m)| m).collect();
         plan.files.sort_by_key(|f| f.target.key());
-        if ours.is_empty() {
+        if ours.is_empty() && drop.is_empty() {
             return Ok(());
         }
         if px.list == ParadoxList::Settings {
@@ -259,7 +319,7 @@ impl Session {
         let original = fs::read(&list)
             .ok()
             .map(|b| String::from_utf8_lossy(&b).into_owned());
-        let text = dlc_load(original.as_deref(), &ours)?;
+        let text = dlc_load(original.as_deref(), &ours, &drop)?;
         let src = out.join(DLC_LOAD);
         write_atomic(&src, text.as_bytes()).ctx(|| format!("writing {}", src.display()))?;
         plan.external.push(PlannedExternal {
@@ -310,6 +370,7 @@ mod tests {
             &dlc_load(
                 Some(r#"{"enabled_mods":["mod/ugc_1.mod"],"disabled_dlcs":["dlc/x.dlc"]}"#),
                 &mine,
+                &[],
             )
             .unwrap(),
         )
@@ -319,7 +380,19 @@ mod tests {
             serde_json::json!(["mod/ugc_1.mod", "mod/umm-a.mod"])
         );
         assert_eq!(j["disabled_dlcs"], serde_json::json!(["dlc/x.dlc"]));
-        let j: serde_json::Value = serde_json::from_str(&dlc_load(None, &mine).unwrap()).unwrap();
+        let j: serde_json::Value =
+            serde_json::from_str(&dlc_load(None, &mine, &[]).unwrap()).unwrap();
         assert_eq!(j["enabled_mods"], serde_json::json!(["mod/umm-a.mod"]));
+        // A Workshop item turned off: the launcher's entry for it goes.
+        let j: serde_json::Value = serde_json::from_str(
+            &dlc_load(
+                Some(r#"{"enabled_mods":["mod/ugc_1.mod","mod/ugc_2.mod"]}"#),
+                &[],
+                &["mod/ugc_1.mod".to_string()],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(j["enabled_mods"], serde_json::json!(["mod/ugc_2.mod"]));
     }
 }

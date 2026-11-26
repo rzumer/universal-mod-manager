@@ -82,6 +82,28 @@ const S = {
   // Thunderstore tab: the query, the page shown (null while loading), and an install/update
   // in progress ({ message }).
   ts: { game: null, query: { text: "", category: "", sort: "rating", installedOnly: false, offset: 0, limit: 40 }, page: null, busy: null },
+  // Whether Steam games have a Workshop, by game: true, false, or null (not known).
+  workshopAvailable: {},
+  // The Workshop tab: the game it shows, and its items Steam has here (or "loading").
+  workshop: {
+    game: null,
+    list: null,
+    // Items subscribed to or unsubscribed from here that Steam's record does not show yet, by
+    // game: `{ [game]: { [item]: item shown meanwhile, or false once unsubscribed } }`.
+    pending: {},
+    // Browsing (or only the items Steam has here, when `subscribedOnly`): the search, and its
+    // results (or "loading").
+    subscribedOnly: false,
+    query: { text: "", sort: "trend", tag: "", page: 1 },
+    found: null,
+    // The search the browse results are for (game, words, sort, tag).
+    foundKey: null,
+    more: false,
+    // Items being subscribed to or unsubscribed from, and whether the user is signed in.
+    busy: {},
+    signedIn: null,
+    signInChecked: false,
+  },
   // Nexus Mods tab: the game's Nexus game, the query and page shown, installed mods' updates,
   // and an install in progress ({ message }).
   // The Configs tab: the profile's config files, and the one open in the editor
@@ -107,8 +129,13 @@ const S = {
 
 /// Shows a message for long enough to read it: longer for longer text and for errors, longer
 /// again when others are showing, and for as long as the pointer is over it.
-function toast(message, kind = "info") {
-  const t = h("div", { class: `toast ${kind}`, role: kind === "error" ? "alert" : "status" }, message);
+function toast(message, kind = "info", action = null) {
+  const t = h(
+    "div",
+    { class: `toast ${kind}`, role: kind === "error" ? "alert" : "status" },
+    message,
+    action && h("button", { class: "small", onclick: () => { t.remove(); action.run(); } }, action.label),
+  );
   const box = $("#toasts");
   const others = box.querySelectorAll(".toast:not(.leaving)").length;
   box.append(t);
@@ -207,8 +234,28 @@ function promptModal(title, label, placeholder = "") {
 
 // ---------- data loading ----------
 
+/// Reloads UMM's window (and so the game definitions), coming back to the game, profile and
+/// tab shown.
+function reloadDefinitions() {
+  try {
+    sessionStorage.setItem("umm-view", JSON.stringify({ game: S.gameId, profile: S.profileName, tab: S.tab }));
+  } catch {}
+  location.reload();
+}
+
 async function loadGames() {
   S.games = (await attempt(api.listGames)) || [];
+  // What was shown before "Reload game definitions", if the game is still there.
+  let kept = null;
+  try {
+    kept = JSON.parse(sessionStorage.getItem("umm-view") || "null");
+    sessionStorage.removeItem("umm-view");
+  } catch {}
+  if (kept && S.games.some((g) => g.id === kept.game)) {
+    S.gameId = kept.game;
+    if (kept.profile) S.profileName = kept.profile;
+    if (kept.tab) S.tab = kept.tab;
+  }
   if (!S.gameId && S.games.length) S.gameId = S.games[0].id;
   renderSidebar();
 }
@@ -222,6 +269,7 @@ async function loadGame() {
   const d = await attempt(() => api.gameDetails(S.gameId));
   if (!d) return;
   S.details = d;
+  if (S.tab === "workshop" && !workshopShown(d.game)) S.tab = "mods";
   if (!d.profiles.includes(S.profileName)) S.profileName = "Default";
   S.profile = await attempt(() => api.getProfile(S.gameId, S.profileName));
   await loadDepIssues();
@@ -234,6 +282,17 @@ async function loadGame() {
   if (S.tab === "config") loadConfigs();
   if (S.tab === "actions") loadActions();
   if (S.tab === "nexus" && S.nexus.game?.game !== S.gameId) loadNexus(true);
+  // Workshop items show in the Mods tab too.
+  if (d.game.steam && S.workshop.game !== S.gameId) loadWorkshop(false);
+  if (d.game.steam && d.game.workshopAvailable == null && S.workshopAvailable[S.gameId] == null && !workshopChecking.has(S.gameId)) checkWorkshopAvailable(S.gameId);
+  if (S.tab === "workshop") {
+    if (workshopShown(d.game)) {
+      if (S.workshop.game !== S.gameId) loadWorkshop(false);
+    } else {
+      S.tab = "mods";
+      renderMain();
+    }
+  }
   if (S.tab === "thunderstore") {
     if (d.game.thunderstore) loadTs(S.ts.game !== S.gameId);
     else {
@@ -241,6 +300,22 @@ async function loadGame() {
       renderMain();
     }
   }
+}
+
+/// Whether the game's Steam Workshop tab shows: only once it is known to have a Workshop.
+function workshopShown(g) {
+  return !!g?.steam && (S.workshopAvailable[g.id] ?? g.workshopAvailable) === true;
+}
+
+/// Asks Steam whether a Steam game has a Workshop, when this machine does not say; its tab
+/// shows when it has one.
+const workshopChecking = new Set();
+async function checkWorkshopAvailable(game) {
+  workshopChecking.add(game);
+  const has = await api.workshopAvailable(game).catch(() => null);
+  workshopChecking.delete(game);
+  S.workshopAvailable[game] = has;
+  if (S.gameId === game && has === true) renderMain();
 }
 
 async function loadPlan() {
@@ -362,6 +437,10 @@ function iconImage(key, load, name, cls) {
 
 const gameIcon = (g) => iconImage(`game/${g.id}`, () => api.gameIcon(g.id), g.name, "game-icon");
 const modIcon = (game, id, name) => iconImage(`mod/${game}/${id}`, () => api.modIcon(game, id), name, "mod-icon");
+const workshopIcon = (item, name) => iconImage(`workshop/${item.id}`, () => Promise.resolve(item.previewUrl || null), name, "mod-icon");
+
+/// A profile entry's Workshop item id (`workshop:<id>`), if it names one.
+const workshopId = (id) => (id.startsWith("workshop:") ? id.slice(9) : null);
 
 function renderSidebar() {
   const list = S.games.length
@@ -428,7 +507,7 @@ function renderSidebar() {
           icon("folder"),
           "Open data folder",
         ),
-      h("button", { class: "link", onclick: () => location.reload() }, "Reload game definitions"),
+      h("button", { class: "link", onclick: reloadDefinitions }, "Reload game definitions"),
       h("button", { class: "link", onclick: linkSettings }, "Install buttons on mod sites…"),
       hiddenNotes().size > 0 &&
         h(
@@ -549,6 +628,7 @@ function tabs() {
     ["mods", "Mods"],
     ...(S.details?.game.thunderstore ? [["thunderstore", "Thunderstore"]] : []),
     ["nexus", "Nexus Mods"],
+    ...(workshopShown(S.details?.game) ? [["workshop", "Steam Workshop"]] : []),
     ["files", "Files"],
     ["config", "Configs"],
     ["health", "Health"],
@@ -573,6 +653,7 @@ function tabs() {
             if (id === "actions") loadActions();
             if (id === "thunderstore" && (!S.ts.page || S.ts.game !== S.gameId || S.ts.stale)) loadTs(true);
             if (id === "nexus" && (!S.nexus.page || S.nexus.game?.game !== S.gameId || S.nexus.stale)) loadNexus(true);
+            if (id === "workshop" && S.workshop.game !== S.gameId) loadWorkshop(false);
             // What is installed may have changed in another tab.
             else if (id === "nexus" && S.nexus.view === "collections") refreshCollections();
           },
@@ -593,6 +674,14 @@ function modsTab(d) {
   const entries = S.profile?.mods || [];
   const inProfile = new Set(entries.map((e) => e.id));
   const notIn = d.mods.filter((m) => !inProfile.has(m.id));
+  // Steam Workshop items: in the profile where UMM controls them, else shown as Steam has them.
+  const control = d.game.workshop;
+  const wsLoaded = S.workshop.game === S.gameId && Array.isArray(S.workshop.list?.items);
+  const wsItems = wsLoaded ? S.workshop.list.items.filter((i) => i.subscribed) : [];
+  const wsById = Object.fromEntries((wsLoaded ? S.workshop.list.items : []).map((i) => [i.id, i]));
+  const wsNotIn = control === "profile" ? wsItems.filter((i) => !inProfile.has(`workshop:${i.id}`)) : [];
+  const wsLocked = control && control !== "profile" ? wsItems : [];
+  const wsName = (i) => i.title || `Workshop item ${i.id}`;
 
   const move = async (from, to) => {
     if (to < 0 || to >= entries.length || from === to) return;
@@ -618,7 +707,8 @@ function modsTab(d) {
         // The position the row would end up at: before the first row whose middle is below
         // the pointer, counted without the row being dragged.
         const over = (y) => {
-          const rows = [...list.children];
+          // Locked rows (Workshop items Steam loads) have no place in the order.
+          const rows = [...list.children].filter((r) => !r.classList.contains("locked"));
           const before = rows.findIndex((r) => {
             const b = r.getBoundingClientRect();
             return y < b.top + b.height / 2;
@@ -655,11 +745,21 @@ function modsTab(d) {
     const waiting = m?.installer === "waiting";
     // Shown off, and locked off, until the mod can do anything: its installer's options
     // chosen, its WeiDU install done, its patcher run. A mod switched off stays switchable.
-    const lock = waiting ? "Off until its install options are chosen" : e.enabled ? pendingInstall(m) : null;
+    const wid = workshopId(e.id);
+    const wi = wid ? wsById[wid] || { id: wid, title: null, folder: null, gone: wsLoaded } : null;
+    const lock = wi
+      ? control === "profile"
+        ? null
+        : "Steam and the game decide whether it loads"
+      : waiting
+        ? "Off until its install options are chosen"
+        : e.enabled
+          ? pendingInstall(m)
+          : null;
     const on = e.enabled && !lock;
     const row = h(
       "li",
-      { class: `mod-row ${on ? "" : "disabled"} ${m ? "" : "missing"}` },
+      { class: `mod-row ${on ? "" : "disabled"} ${m || (wi && !wi.gone) ? "" : "missing"}` },
       grip,
       h("span", { class: "order" }, i + 1),
       h(
@@ -669,7 +769,7 @@ function modsTab(d) {
           type: "checkbox",
           checked: on,
           disabled: playing || !!lock,
-          "aria-label": `Enable ${m?.name || e.id}`,
+          "aria-label": `Enable ${wi ? wsName(wi) : m?.name || e.id}`,
           onchange: async (ev) => {
             e.enabled = ev.target.checked;
             renderMain();
@@ -678,15 +778,21 @@ function modsTab(d) {
         }),
         h("span", { class: "track" }),
       ),
-      modIcon(S.gameId, e.id, m ? m.name : e.id),
+      wi ? workshopIcon(wi, wsName(wi)) : modIcon(S.gameId, e.id, m ? m.name : e.id),
       h(
         "div",
         { class: "mod-main" },
-        h("div", { class: "mod-name" }, m ? m.name : e.id, (e.version || m?.version) && h("span", { class: "version" }, e.version || m.version)),
+        h("div", { class: "mod-name" }, wi ? wsName(wi) : m ? m.name : e.id, !wi && (e.version || m?.version) && h("span", { class: "version" }, e.version || m.version)),
         h(
           "div",
           { class: "mod-meta" },
-          m ? `${m.thunderstore ? "Thunderstore · " : m.nexusUrl ? "Nexus Mods · " : ""}${e.id} · ${m.files} file${m.files === 1 ? "" : "s"} · ${fmtBytes(m.size)}` : "No longer installed — remove it from the profile or import it again",
+          wi
+            ? wi.gone
+              ? `Steam Workshop · ${wi.id} · no longer subscribed in Steam — remove it from the profile`
+              : `Steam Workshop · ${wi.id}${wi.folder ? (wi.size ? ` · ${fmtBytes(wi.size)}` : "") : S.workshop.list?.gameDownloads ? " · the game downloads it when it starts" : " · not downloaded by Steam yet"}`
+            : m
+              ? `${m.thunderstore ? "Thunderstore · " : m.nexusUrl ? "Nexus Mods · " : ""}${e.id} · ${m.files} file${m.files === 1 ? "" : "s"} · ${fmtBytes(m.size)}`
+              : "No longer installed — remove it from the profile or import it again",
           m?.thunderstore && e.version
             ? h(
                 "button",
@@ -726,6 +832,8 @@ function modsTab(d) {
           h("button", { class: "icon-btn", title: "Open its page on Nexus Mods", "aria-label": "Open on Nexus Mods", onclick: () => attempt(() => api.openNexusPage(m.nexusUrl)) }, "↗"),
         m?.thunderstore &&
           h("button", { class: "icon-btn", title: "Open its page on Thunderstore", "aria-label": "Open on Thunderstore", onclick: () => attempt(() => api.openPackagePage(S.gameId, m.thunderstore)) }, "↗"),
+        wi &&
+          h("button", { class: "icon-btn", title: "Open its Workshop page", "aria-label": "Open its Workshop page", onclick: () => attempt(() => api.openWorkshopWindow(S.gameId, wi.id)) }, "↗"),
         h("button", { class: "icon-btn", title: "Move up", "aria-label": "Move up", disabled: playing || i === 0, onclick: () => move(i, i - 1) }, icon("up")),
         h(
           "button",
@@ -746,6 +854,43 @@ function modsTab(d) {
     return row;
   });
 
+  // Workshop items UMM does not control, after the profile's mods: always as Steam has them,
+  // so locked, with no place in the order.
+  const lockedWhy = "Subscribed in Steam: the game loads it through Steam, whatever the profile. Unsubscribe in Steam to remove it.";
+  const lockedRows = wsLocked.map((i) =>
+    h(
+      "li",
+      { class: "mod-row locked", title: lockedWhy },
+      h("span", { class: "grip off" }),
+      h("span", { class: "order" }, ""),
+      control === "steam"
+        ? h(
+            "label",
+            { class: "toggle" },
+            h("input", { type: "checkbox", checked: true, disabled: true, "aria-label": `${wsName(i)} is loaded through Steam` }),
+            h("span", { class: "track" }),
+          )
+        : h("span", { class: "toggle" }),
+      workshopIcon(i, wsName(i)),
+      h(
+        "div",
+        { class: "mod-main" },
+        h("div", { class: "mod-name" }, wsName(i)),
+        h(
+          "div",
+          { class: "mod-meta" },
+          `Steam Workshop · ${i.id}${i.folder ? (i.size ? ` · ${fmtBytes(i.size)}` : "") : " · not downloaded by Steam yet"}`,
+          h("span", { class: "chip" }, "Loaded through Steam"),
+        ),
+      ),
+      h(
+        "div",
+        { class: "row-actions" },
+        h("button", { class: "icon-btn", title: "Open its Workshop page", "aria-label": "Open its Workshop page", onclick: () => attempt(() => api.openWorkshopWindow(S.gameId, i.id)) }, "↗"),
+      ),
+    ),
+  );
+
   return h(
     "section",
     { class: "panel" },
@@ -761,14 +906,42 @@ function modsTab(d) {
       ),
     ),
     weiduPanel(entries, byId, playing),
-    entries.length
-      ? h("ol", { class: "mod-list" }, rows)
+    entries.length || lockedRows.length
+      ? h("ol", { class: "mod-list" }, rows, lockedRows)
       : h(
           "div",
           { class: "empty drop-hint" },
           h("p", { class: "big" }, "No mods in this profile yet"),
           h("p", {}, "Import an archive (.zip, .7z or .rar) or a folder, or drop one onto this window."),
         ),
+    wsNotIn.length > 0 &&
+      h(
+        "div",
+        { class: "store-section" },
+        h("h3", {}, "Subscribed in Steam, not in this profile"),
+        h("p", { class: "muted small" }, "The game keeps these as they are in its own mod list. Add one to turn it on or off with this profile."),
+        h(
+          "ul",
+          { class: "store-list" },
+          wsNotIn.map((i) =>
+            h(
+              "li",
+              {},
+              workshopIcon(i, wsName(i)),
+              h("div", { class: "mod-main" }, h("div", { class: "mod-name" }, wsName(i)), h("div", { class: "mod-meta" }, `Steam Workshop · ${i.id}`)),
+              h(
+                "div",
+                { class: "row-actions" },
+                h("button", { class: "small", disabled: playing, onclick: async () => {
+                  entries.push({ id: `workshop:${i.id}`, enabled: true });
+                  renderMain();
+                  await saveProfile();
+                } }, "Add"),
+              ),
+            ),
+          ),
+        ),
+      ),
     notIn.length > 0 &&
       h(
         "div",
@@ -1835,6 +2008,341 @@ async function tsVersionsDialog(it) {
 const tsInstall = (pkgs) => tsRun("Installing…", (c) => api.tsInstall(S.gameId, pkgs, S.profileName, c));
 const tsUpdate = (names) => tsRun("Updating…", (c) => api.tsUpdate(S.gameId, names, S.profileName, c));
 
+// ----- Workshop tab -----
+
+/// Loads the game's Workshop items (`refresh` asks Steam for their details again; `quiet`
+/// keeps the list shown until the new one is there).
+async function loadWorkshop(refresh, quiet = false) {
+  const game = S.gameId;
+  S.workshop = { ...S.workshop, game, list: quiet && S.workshop.game === game ? S.workshop.list : "loading" };
+  renderMain();
+  const list = await attempt(() => api.workshopItems(game, refresh));
+  if (S.gameId !== game) return;
+  S.workshop.list = workshopMerge(game, list || { error: true, items: [] });
+  renderMain();
+}
+
+/// Steam's record of the game's items, with the subscriptions made here that it does not show
+/// yet; those it shows are no longer pending.
+function workshopMerge(game, list) {
+  const pend = S.workshop.pending[game];
+  if (!pend || !Array.isArray(list?.items)) return list;
+  const items = list.items.map((i) => {
+    const p = pend[i.id];
+    if (p === undefined) return i;
+    if (i.subscribed === !!p) {
+      delete pend[i.id];
+      return i;
+    }
+    return { ...i, subscribed: !!p };
+  });
+  for (const [id, p] of Object.entries(pend)) {
+    if (list.items.some((i) => i.id === id)) continue;
+    if (p) items.push(p);
+    else delete pend[id];
+  }
+  return { ...list, items };
+}
+
+/// Searches the game's Workshop (`append`: the next page, after the ones shown).
+function workshopBrowseKey(game, q) {
+  return JSON.stringify([game, q.text.trim(), q.sort, q.tag]);
+}
+
+async function loadWorkshopBrowse(append = false) {
+  const game = S.gameId;
+  const W = S.workshop;
+  const q = W.query;
+  q.page = append && W.found?.items ? W.found.page + 1 : 1;
+  W.foundKey = workshopBrowseKey(game, q);
+  if (!append) W.found = "loading";
+  else W.more = true;
+  renderMain();
+  const page = await attempt(() => api.workshopBrowse(game, q));
+  if (S.gameId !== game) return;
+  W.more = false;
+  if (!page) W.found = append && W.found?.items ? W.found : { error: true, items: [] };
+  else if (append && W.found?.items) W.found = { ...page, items: [...W.found.items, ...page.items] };
+  else W.found = page;
+  renderMain();
+}
+
+/// Waits for the answer to a Workshop action from Steam's page: `ok`, `login`, `error`, or
+/// `timeout` when none comes.
+const workshopWaiting = new Map();
+/// Steam's reason for the last answer that was not `ok`, when it gave one.
+let workshopLastWhy = "";
+function workshopAnswer(e) {
+  const key = `${e.game}/${e.action}/${e.item}`;
+  if (e.why) console.warn(`Steam Workshop ${e.action} ${e.item}: ${e.why}`);
+  workshopLastWhy = e.why || "";
+  workshopWaiting.get(key)?.(e.result);
+  workshopWaiting.delete(key);
+}
+let workshopQueue = Promise.resolve();
+function workshopAct(game, action, item = "") {
+  const run = workshopQueue.then(() => workshopActNow(game, action, item));
+  workshopQueue = run.catch(() => {});
+  return run;
+}
+async function workshopActNow(game, action, item) {
+  const key = `${game}/${action}/${item}`;
+  const answer = new Promise((resolve) => {
+    workshopWaiting.set(key, resolve);
+    setTimeout(() => {
+      if (workshopWaiting.get(key) === resolve) {
+        workshopWaiting.delete(key);
+        resolve("timeout");
+      }
+    }, 30000);
+  });
+  try {
+    await api.workshopAction(game, action, item || null);
+  } catch (e) {
+    workshopWaiting.delete(key);
+    toast(String(e), "error");
+    return "error";
+  }
+  return answer;
+}
+
+/// Whether the user is signed in to Steam (in UMM's Steam windows), asked once per game.
+async function checkSteamSignIn() {
+  const W = S.workshop;
+  if (W.signInChecked) return;
+  W.signInChecked = true;
+  const r = await workshopAct(S.gameId, "status");
+  if (W.signedIn === null) W.signedIn = r === "ok" ? true : r === "login" ? false : null;
+  renderMain();
+}
+
+/// Opens Steam's sign-in page in UMM's Steam Workshop window. With an item, subscribes to it
+/// once the user is signed in.
+async function steamSignIn(g, item = null) {
+  const W = S.workshop;
+  W.afterSignIn = item ? { game: g.id, item } : null;
+  const opened = await attempt(() => api.openSteamSignIn(g.id));
+  if (opened === undefined) {
+    W.afterSignIn = null;
+    return;
+  }
+  toast(
+    item
+      ? `Sign in to Steam in the window that opened, and UMM then subscribes to ${item.title}. UMM never sees your password.`
+      : "Sign in to Steam in the window that opened. UMM never sees your password.",
+  );
+}
+
+/// A page shown in the Steam Workshop window: if a sign-in is awaited, whether it is done.
+async function steamWindowPage() {
+  const W = S.workshop;
+  const wait = W.afterSignIn;
+  if (!wait && W.signedIn !== false) return;
+  const r = await workshopAct(wait ? wait.game : S.gameId, "status");
+  if (r !== "ok") return;
+  W.signedIn = true;
+  if (wait && W.afterSignIn === wait) {
+    W.afterSignIn = null;
+    const g = S.games.find((x) => x.id === wait.game);
+    if (g) await workshopSubscribe(g, wait.item, true);
+  }
+  renderMain();
+}
+
+/// Subscribes to an item (or unsubscribes), through Steam's page with the user's session.
+async function workshopSubscribe(g, item, on) {
+  const W = S.workshop;
+  W.busy = { ...(W.busy || {}), [item.id]: on ? "Subscribing…" : "Unsubscribing…" };
+  renderMain();
+  const r = await workshopAct(g.id, on ? "subscribe" : "unsubscribe", item.id);
+  delete W.busy[item.id];
+  if (r === "ok") {
+    item.subscribed = on;
+    W.signedIn = true;
+    toast(on ? `Subscribed to ${item.title}. Steam downloads it while it runs.` : `Unsubscribed from ${item.title}.`, "ok");
+    // Shown at once, as Steam's record will show it once Steam notes the change (UMM hears
+    // of that and reads it again).
+    const pend = (W.pending[g.id] ||= {});
+    pend[item.id] = on && {
+      id: item.id,
+      subscribed: true,
+      folder: null,
+      size: item.fileSize || 0,
+      updatedUnix: item.timeUpdated || 0,
+      updatePending: false,
+      title: item.title,
+      description: item.description || "",
+      previewUrl: item.previewUrl || null,
+      tags: item.tags || [],
+      subscriptions: item.subscriptions || 0,
+      favorited: item.favorited || 0,
+      createdUnix: 0,
+    };
+    if (W.game === g.id && Array.isArray(W.list?.items)) W.list = workshopMerge(g.id, W.list);
+  } else if (r === "login") {
+    W.signedIn = false;
+    renderMain();
+    await steamSignIn(g, on ? item : null);
+  } else {
+    const what = on ? "subscribe" : "unsubscribe";
+    toast(
+      r === "timeout"
+        ? `Steam did not answer. Try again, or ${what} on the item's Workshop page.`
+        : `Steam turned down the request${workshopLastWhy ? ` (${workshopLastWhy})` : ""}. You can ${what} on the item's Workshop page instead.`,
+      "error",
+      { label: "Open page", run: () => attempt(() => api.openWorkshopWindow(g.id, item.id)) },
+    );
+  }
+  renderMain();
+}
+
+/// The Steam Workshop tab: the game's Workshop to browse and subscribe from, and the items
+/// subscribed to on this machine.
+function workshopTab(d) {
+  const g = d.game;
+  const W = S.workshop;
+  const q = W.query;
+  const mine = W.subscribedOnly;
+  // Searched again only when the search is not the one shown (ticking Subscribed off goes
+  // back to it as it was).
+  if (!mine && W.foundKey !== workshopBrowseKey(g.id, q) && W.found !== "loading" && workshopShown(g)) setTimeout(() => loadWorkshopBrowse(false));
+  checkSteamSignIn();
+  const pend = W.pending[g.id] || {};
+  const open = (item) => attempt(() => api.openWorkshopWindow(g.id, item));
+  // Subscribed: the items Steam has on this machine, filtered here; otherwise the Workshop.
+  const search = () => (W.subscribedOnly ? renderMain() : loadWorkshopBrowse(false));
+  const set = (key) => (v) => {
+    q[key] = v;
+    search();
+  };
+  const list = W.list;
+  const local = list && list !== "loading" && Array.isArray(list.items) ? list.items : [];
+  const p = W.found;
+  const banners = [];
+  if (mine && list?.stale) banners.push(storeBanner("Steam could not be reached: some titles and pictures may be missing or out of date.", null, true));
+  const subscribeButton = (i, subscribed) => {
+    const busy = W.busy?.[i.id];
+    const it = { ...i, title: i.title || `Item ${i.id}` };
+    return busy
+      ? h("button", { class: "small", disabled: true }, h("span", { class: "spinner" }), busy)
+      : subscribed
+        ? h("button", { class: "ghost small", onclick: () => workshopSubscribe(g, it, false) }, "Unsubscribe")
+        : h("button", { class: "primary small", onclick: () => workshopSubscribe(g, it, true) }, "Subscribe");
+  };
+  const found = (i) => {
+    const subscribed = pend[i.id] !== undefined ? !!pend[i.id] : i.subscribed;
+    return storeRow({
+      image: i.previewUrl,
+      name: i.title || `Item ${i.id}`,
+      site: "Steam",
+      onOpen: () => open(i.id),
+      by: i.author,
+      chips: subscribed && h("span", { class: "chip ok" }, "Subscribed"),
+      text: i.description.replace(/\[\/?[a-z0-9=*]+\]/gi, "").slice(0, 200),
+      meta: [`${fmtCount(i.subscriptions)} subscribers`, i.fileSize ? fmtBytes(i.fileSize) : null, i.timeUpdated ? `updated ${new Date(i.timeUpdated * 1000).toLocaleDateString()}` : null, i.tags.slice(0, 4).join(", ")],
+      action: subscribeButton(i, subscribed),
+    });
+  };
+  const here = (i) =>
+    storeRow({
+      image: i.previewUrl,
+      name: i.title || `Item ${i.id}`,
+      site: "Steam",
+      onOpen: () => open(i.id),
+      chips: [
+        !i.subscribed && h("span", { class: "chip" }, "Not subscribed"),
+        // The game downloads its own (Steam's older Workshop): nothing to warn of here.
+        i.subscribed && list.gameDownloads && h("span", { class: "chip ok" }, "Subscribed"),
+        i.subscribed && !i.folder && !list.gameDownloads && h("span", { class: "chip warn", title: "Steam has not downloaded it yet; it does while it runs" }, "Not downloaded"),
+        i.updatePending && h("span", { class: "chip", title: "Steam has a newer version, which it downloads on its own" }, "Update pending"),
+        !i.title && h("span", { class: "chip warn", title: "Steam does not show it: removed from the Workshop, or private" }, "Unavailable"),
+      ],
+      text: i.description.split("\n").find((l) => l.trim())?.replace(/\[\/?[a-z0-9=*]+\]/gi, "").slice(0, 200) || "",
+      meta: [i.subscriptions ? `${fmtCount(i.subscriptions)} subscribers` : null, i.size ? fmtBytes(i.size) : null, i.updatedUnix ? `updated ${new Date(i.updatedUnix * 1000).toLocaleDateString()}` : null, i.tags.slice(0, 4).join(", ")],
+      dim: !i.subscribed,
+      action: h(
+        "div",
+        { class: "row" },
+        i.folder && h("button", { class: "ghost small", title: i.folder, onclick: () => attempt(() => api.openFolder(i.folder)) }, "Open folder"),
+        subscribeButton(i, i.subscribed),
+      ),
+    });
+  const text = q.text.trim().toLowerCase();
+  // Sorted as the Workshop sorts, from what Steam says of each item.
+  const by = { trend: "subscriptions", subscribers: "subscriptions", rating: "favorited", recent: "createdUnix", updated: "updatedUnix" }[q.sort] || "subscriptions";
+  const shown = local
+    .filter((i) => (!text || (i.title || i.id).toLowerCase().includes(text) || i.tags.some((t) => t.toLowerCase().includes(text))) && (!q.tag || i.tags.includes(q.tag)))
+    .sort((a, b) => (b[by] || 0) - (a[by] || 0) || (a.title || a.id).localeCompare(b.title || b.id));
+  const tags = mine ? [...new Set([...local.flatMap((i) => i.tags), ...(q.tag ? [q.tag] : [])])].sort() : p?.tags || [];
+  const subscribedCount = local.filter((i) => i.subscribed).length;
+  const control =
+    g.workshop === "profile"
+      ? "Add them to a profile in the Mods tab to turn them on or off with it."
+      : "The game loads them through Steam; they show in the Mods tab too.";
+  return storeTab({
+    header: [
+      h("span", { class: "muted small" }, `${W.signedIn === true ? "Signed in to Steam. " : ""}${list?.gameDownloads ? "The game downloads what you subscribe to when it starts." : "Steam downloads what you subscribe to while it runs."}`),
+      // Browsing needs no sign-in; subscribing does, and asks for it then too.
+      W.signedIn !== true && h("button", { class: "link", onclick: () => steamSignIn(g) }, "Sign in to Steam"),
+      h("button", { class: "link", onclick: () => attempt(() => api.openWorkshopPage(g.id, null)) }, "Open in the Steam client"),
+    ],
+    toolbar: [
+      storeSearch("Search mods", q, search, mine ? 150 : 400),
+        storeSelect(
+          "Sort",
+          [
+            ["trend", "Most popular"],
+            ["subscribers", "Most subscribed"],
+            ["rating", "Top rated"],
+            ["recent", "Most recent"],
+            ["updated", "Recently updated"],
+          ],
+          q.sort,
+          set("sort"),
+        ),
+      storeSelect("Tag", [["", "All tags"], ...tags.map((t) => [t, t])], q.tag, set("tag")),
+      storeCheck("Subscribed", mine, (v) => {
+        W.subscribedOnly = v;
+        renderMain();
+      }),
+      h(
+        "button",
+        {
+          class: "ghost small",
+          disabled: list === "loading" || p === "loading",
+          title: "Search the Workshop again, and read Steam's record of the items here",
+          onclick: () => {
+            loadWorkshop(true);
+            if (!W.subscribedOnly) loadWorkshopBrowse(false);
+          },
+        },
+        "Refresh",
+      ),
+    ],
+    banners,
+    count: mine
+      ? list === "loading"
+        ? "Reading Steam's Workshop items…"
+        : list?.error
+          ? "Could not read the game's Workshop items."
+          : local.length
+            ? `${plural(subscribedCount, "subscribed item")}${shown.length !== local.length ? ` · ${shown.length} shown` : ""}. ${control}`
+            : "No Workshop items for this game on this machine yet. Untick Subscribed to browse the Workshop."
+      : p === "loading"
+        ? "Searching the Workshop…"
+        : p?.error
+          ? "The Steam Workshop could not be reached."
+          : p
+            ? `${fmtCount(p.total)} item${p.total === 1 ? "" : "s"}${q.text.trim() ? ` matching “${q.text.trim()}”` : ""}`
+            : null,
+    list: h("div", { class: "ts-list" }, mine ? shown.map(here) : (p && p !== "loading" ? p.items : []).map(found)),
+    more:
+      !mine && p && p !== "loading" && !p.error && p.page < p.totalPages
+        ? h("div", { class: "ts-more" }, h("button", { class: "ghost", disabled: W.more, onclick: () => loadWorkshopBrowse(true) }, W.more ? "Loading…" : "Show more"))
+        : null,
+  });
+}
+
 function tsTab(d) {
   const g = d.game;
   const playing = S.session.phase !== "idle" && S.session.game === g.id;
@@ -1919,7 +2427,7 @@ function tsTab(d) {
       h("button", { class: "link", disabled: locked, onclick: importProfile }, "Import a profile…"),
     ],
     toolbar: [
-      storeSearch("Search packages", q, () => loadTs(true), 250),
+      storeSearch("Search mods", q, () => loadTs(true), 250),
       storeSelect("Category", [["", "All categories"], ...(p?.categories || []).map((c) => [c, c])], q.category, set("category")),
       storeSelect(
         "Sort",
@@ -2486,7 +2994,7 @@ function nexusTab(d) {
   return storeTab({
     header,
     toolbar: [
-      storeSearch("Search mods by name", q, () => loadNexus(false)),
+      storeSearch("Search mods", q, () => loadNexus(false)),
       storeSelect(
         "Sort",
         [
@@ -3007,6 +3515,8 @@ function renderMain() {
         ? tsTab(d)
         : S.tab === "nexus"
           ? nexusTab(d)
+        : S.tab === "workshop"
+          ? workshopTab(d)
         : S.tab === "files"
           ? filesTab()
         : S.tab === "config"
@@ -3900,6 +4410,15 @@ async function main() {
   api.listen("install-link", (url) => handleInstallLink(url));
   api.listen("ts-progress", (e) => storeProgress(S.ts, e));
   api.listen("nexus-progress", (e) => storeProgress(S.nexus, e));
+  api.listen("workshop-action", (e) => workshopAnswer(e));
+  api.listen("steam-window-page", () => steamWindowPage());
+  // Steam's record of a game's Workshop items changed (an item subscribed to, downloaded or
+  // removed, from UMM's Steam Workshop window or Steam itself).
+  api.listen("workshop-changed", async (game) => {
+    if (game !== S.gameId) return;
+    await loadWorkshop(false, true);
+    await loadGames();
+  });
   api.listen("close-blocked", async () => {
     const ok = await confirmModal(
       "A game is still running",

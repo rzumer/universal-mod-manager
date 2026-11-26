@@ -21,6 +21,7 @@ mod share;
 mod steam;
 mod ts;
 mod weidu;
+pub mod workshop;
 
 pub use config::{ConfigChange, ConfigEntry, ConfigFile, ConfigSection, ConfigView};
 pub use doctor::{Finding, Level};
@@ -285,7 +286,8 @@ impl Session {
             let found = self.install_path(&def)?.filter(|(p, _)| p.is_dir());
             out.push(GameStatus {
                 deployed: game.journal_path().exists(),
-                mod_count: umm_store::list_mods(&game)?.len(),
+                // Its mods, and the Workshop items subscribed to in Steam.
+                mod_count: umm_store::list_mods(&game)?.len() + self.workshop_subscribed(&def),
                 install: found.as_ref().map(|(p, _)| p.clone()),
                 found_via: found.map(|(_, v)| v),
                 def,

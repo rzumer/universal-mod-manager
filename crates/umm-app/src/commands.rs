@@ -74,7 +74,8 @@ fn game_dtos(s: &Session) -> Result<Vec<GameDto>, umm_core::CoreError> {
         .into_iter()
         .map(|st| {
             let running = s.is_running(&st.def).unwrap_or(false);
-            GameDto::new(st, running)
+            let workshop = s.workshop_known(&st.def);
+            GameDto::new(st, running, workshop)
         })
         .collect())
 }
@@ -329,6 +330,81 @@ pub fn open_folder(path: String) -> Res<()> {
         .spawn()
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+/// A Steam game's subscribed and downloaded Workshop items (`refresh` asks Steam for their
+/// details again).
+#[tauri::command]
+pub async fn workshop_items(
+    state: State<'_, AppState>,
+    game: String,
+    refresh: bool,
+) -> Res<WorkshopListDto> {
+    blocking(&state, move |s| {
+        Ok(s.workshop_items(&game, refresh)?.into())
+    })
+    .await
+}
+
+/// Whether a Steam game has a Workshop (`null` when Steam could not be asked).
+#[tauri::command]
+pub async fn workshop_available(state: State<'_, AppState>, game: String) -> Res<Option<bool>> {
+    blocking(&state, move |s| s.workshop_available(&game)).await
+}
+
+/// A page of the game's Steam Workshop: `sort` is `trend`, `subscribers`, `rating`, `recent`
+/// or `updated`; `text` searches.
+#[tauri::command]
+pub async fn workshop_browse(
+    state: State<'_, AppState>,
+    game: String,
+    text: String,
+    sort: String,
+    tag: Option<String>,
+    page: u32,
+) -> Res<WorkshopPageDto> {
+    use umm_core::workshop::{WorkshopQuery, WorkshopSort};
+    let sort = match sort.as_str() {
+        "subscribers" => WorkshopSort::MostSubscribed,
+        "rating" => WorkshopSort::TopRated,
+        "recent" => WorkshopSort::Recent,
+        "updated" => WorkshopSort::Updated,
+        _ => WorkshopSort::Trend,
+    };
+    let q = WorkshopQuery {
+        text,
+        sort,
+        tag: tag.filter(|t| !t.is_empty()),
+        page: page.max(1),
+    };
+    blocking(&state, move |s| Ok(s.workshop_browse(&game, &q)?.into())).await
+}
+
+/// Opens a Workshop item's page (`item`), or the game's Workshop, in the Steam client. The
+/// address is built here from numbers only.
+#[tauri::command]
+pub async fn open_workshop_page(
+    state: State<'_, AppState>,
+    game: String,
+    item: Option<String>,
+) -> Res<()> {
+    let url = blocking(&state, move |s| {
+        let def = s.def(&game)?.def;
+        let app = def.detect.steam_app_id.ok_or_else(|| {
+            umm_core::CoreError::Invalid(format!("{} is not a Steam game", def.name))
+        })?;
+        match item {
+            Some(i) if !i.is_empty() && i.chars().all(|c| c.is_ascii_digit()) => {
+                Ok(umm_core::workshop::item_page(&i))
+            }
+            Some(i) => Err(umm_core::CoreError::Invalid(format!(
+                "`{i}` is not a Workshop item id"
+            ))),
+            None => Ok(umm_core::workshop::workshop_page(app)),
+        }
+    })
+    .await?;
+    open_url(&url)
 }
 
 /// Opens a package's page on thunderstore.io in the default browser. The address is built

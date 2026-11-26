@@ -5,6 +5,8 @@
 const listeners = {};
 const emit = (event, payload) => (listeners[event] || []).forEach((cb) => cb(payload));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// The sample Steam session: signed in once the sign-in page is opened.
+const mockSteam = { signedIn: false, subscribed: new Set() };
 /// A square icon in two colours, as a `data:` URL.
 const mockIcon = (bg, fg) =>
   "data:image/svg+xml;base64," +
@@ -302,7 +304,8 @@ const profiles = {
 };
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
-const status = (g) => ({ ...g, modCount: mods[g.id].length });
+// The sample game's count includes its four subscribed Workshop items.
+const status = (g) => ({ ...g, modCount: mods[g.id].length + (g.id === "example-unity-game" ? 4 : 0), steam: g.id === "example-unity-game", workshop: g.id === "example-unity-game" ? q.get("workshop") || "steam" : null, workshopAvailable: g.id === "example-unity-game" ? (q.get("workshop") === "ask" ? null : q.get("workshop") !== "none") : null });
 
 const SETUP_LABELS = {
   thunderstore: "BepInEx from Thunderstore",
@@ -334,6 +337,89 @@ const handlers = {
     defErrors: [],
   }),
   recover_all: () => [],
+  // Workshop items Steam has for the sample game: subscribed, one not downloaded, one with an
+  // update coming, one removed from the Workshop, and one downloaded but unsubscribed.
+  workshop_items: async ({ game }) => {
+    await sleep(300);
+    const dir = "C:\\Program Files (x86)\\Steam\\steamapps\\workshop\\content\\123456";
+    const item = (id, title, extra) => ({
+      id,
+      subscribed: true,
+      folder: `${dir}\\${id}`,
+      size: 1_250_000,
+      updatedUnix: 1_760_000_000,
+      updatePending: false,
+      title,
+      description: title ? `[b]${title}[/b]: a sample Workshop item.
+More text.` : "",
+      previewUrl: null,
+      tags: title ? ["Mod", "1.5"] : [],
+      subscriptions: title ? 1000 * title.length : 0,
+      favorited: 10,
+      createdUnix: 1_700_000_000,
+      ...extra,
+    });
+    return {
+      appId: 123456,
+      contentDir: dir,
+      stale: false,
+      items: [
+        item("818773962", "Better Lanterns"),
+        item("2009463077", "Fog Tweaks", { updatePending: true }),
+        item("3011223344", "Map Pins Redux", { folder: null, size: 0, updatedUnix: 0 }),
+        item("1700000001", "Old Shaders", { subscribed: false }),
+        item("1600000002", null),
+      ],
+    };
+  },
+  open_workshop_page: () => null,
+  // `?workshop=none`: the sample game has no Workshop.
+  // `?workshop=ask`: this machine does not say; Steam is asked (and says yes).
+  workshop_available: async () => {
+    await sleep(800);
+    return q.get("workshop") !== "none";
+  },
+  open_workshop_window: () => null,
+  // The sign-in page, then (as if the user signed in) the Workshop it goes on to.
+  open_steam_sign_in: () => {
+    setTimeout(() => emit("steam-window-page"), 300);
+    setTimeout(() => {
+      mockSteam.signedIn = true;
+      emit("steam-window-page");
+    }, 2500);
+    return null;
+  },
+  // A page of the Workshop: sample items, searched by title, 30 per page of 3.
+  workshop_browse: async ({ text, sort, tag, page }) => {
+    await sleep(300);
+    const all = Array.from({ length: 75 }, (_, n) => ({
+      id: String(3000000000 + n),
+      title: ["Lantern Lights", "Fog Machine", "Quiet Steps", "Map Pins", "Night Sky"][n % 5] + ` ${n + 1}`,
+      description: "A sample Workshop item, with [b]markup[/b] Steam uses.",
+      previewUrl: null,
+      author: ["Ann", "Bob", "Cy"][n % 3],
+      subscriptions: 100000 - n * 1000,
+      favorited: 50,
+      fileSize: 1_200_000,
+      timeUpdated: 1_760_000_000 - n * 86400,
+      tags: n % 2 ? ["Mod"] : ["Mod", "Visual"],
+      subscribed: mockSteam.subscribed.has(String(3000000000 + n)),
+    }));
+    const found = all.filter((i) => (!text || i.title.toLowerCase().includes(text.toLowerCase())) && (!tag || i.tags.includes(tag)));
+    if (sort === "recent") found.reverse();
+    return { items: found.slice((page - 1) * 30, page * 30), page, totalPages: Math.max(1, Math.ceil(found.length / 30)), total: found.length, tags: ["Mod", "Visual"] };
+  },
+  // Answered as Steam's page would, through the workshop-action event: not signed in until
+  // the sign-in page is opened.
+  workshop_action: ({ game, action, item }) => {
+    setTimeout(() => {
+      const result = mockSteam.signedIn ? "ok" : "login";
+      if (result === "ok" && action === "subscribe") mockSteam.subscribed.add(item);
+      if (result === "ok" && action === "unsubscribe") mockSteam.subscribed.delete(item);
+      emit("workshop-action", { game, action, item: item || "", result });
+    }, 600);
+    return null;
+  },
   list_games: () => Object.values(games).map(status),
   game_details: ({ game }) => ({
     game: status(games[game]),

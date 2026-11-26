@@ -78,8 +78,11 @@ fn call_err(url: &str, e: ureq::Error) -> NetError {
             NetError {
                 url: url.to_string(),
                 status: Some(code),
-                message: if body.is_empty() {
-                    format!("HTTP {code}")
+                message: if body.is_empty() || is_html(body) {
+                    match status_text(code) {
+                        Some(t) => format!("HTTP {code} ({t})"),
+                        None => format!("HTTP {code}"),
+                    }
                 } else {
                     format!("HTTP {code}: {body}")
                 },
@@ -87,6 +90,30 @@ fn call_err(url: &str, e: ureq::Error) -> NetError {
         }
         e => net(url, e),
     }
+}
+
+/// Whether an error response's body is a web page (a site's error page), which says nothing a
+/// message can use.
+fn is_html(body: &str) -> bool {
+    let head = body.get(..body.len().min(256)).unwrap_or(body);
+    let head = head.to_ascii_lowercase();
+    head.starts_with("<!doctype html") || head.starts_with("<html") || head.contains("<head")
+}
+
+/// What an HTTP error status means, for the common ones.
+fn status_text(code: u16) -> Option<&'static str> {
+    Some(match code {
+        400 => "bad request",
+        401 => "not signed in",
+        403 => "access denied",
+        404 => "not found",
+        408 => "timed out",
+        429 => "too many requests",
+        500 => "server error",
+        502 | 504 => "the server's gateway failed",
+        503 => "service unavailable",
+        _ => return None,
+    })
 }
 
 fn read_body(url: &str, resp: ureq::Response) -> Result<Vec<u8>> {

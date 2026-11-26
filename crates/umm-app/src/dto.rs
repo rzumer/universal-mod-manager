@@ -25,10 +25,18 @@ pub struct GameDto {
     pub community: Option<String>,
     /// Set up with its mod loader from Thunderstore, so the Thunderstore tab applies.
     pub thunderstore: bool,
+    /// A Steam game (it has an app id), so the Workshop tab applies.
+    pub steam: bool,
+    /// For a Steam game, how far UMM controls its Workshop items: `profile` (each profile
+    /// turns them on or off), `launcher` (the game's launcher does) or `steam` (the game
+    /// loads every subscribed item).
+    pub workshop: Option<&'static str>,
+    /// Whether it has a Steam Workshop, as far as this machine says (`null`: ask Steam).
+    pub workshop_available: Option<bool>,
 }
 
 impl GameDto {
-    pub fn new(s: GameStatus, running: bool) -> Self {
+    pub fn new(s: GameStatus, running: bool, workshop_available: Option<bool>) -> Self {
         let loader = s.def.loader.as_ref();
         GameDto {
             setup: match s.def.setup() {
@@ -37,6 +45,14 @@ impl GameDto {
             },
             community: s.def.community().map(str::to_string),
             thunderstore: loader.is_some_and(|l| l.from_thunderstore()),
+            steam: s.def.detect.steam_app_id.is_some(),
+            workshop: s.def.detect.steam_app_id.map(
+                |_| match umm_core::workshop::workshop_control(&s.def) {
+                    umm_core::workshop::WorkshopControl::Profile => "profile",
+                    umm_core::workshop::WorkshopControl::Steam => "steam",
+                },
+            ),
+            workshop_available,
             install: s.install.map(|p| p.display().to_string()),
             found_via: s.found_via,
             deployed: s.deployed,
@@ -762,6 +778,130 @@ pub struct TsReportDto {
     /// Pinned packages older than other packages of the profile need. When there are any,
     /// nothing was installed: the interface asks to downgrade those or remove the pins.
     pub conflicts: Vec<PinConflictDto>,
+}
+
+/// A Steam game's Workshop items.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkshopListDto {
+    pub app_id: u32,
+    pub items: Vec<WorkshopItemDto>,
+    pub content_dir: Option<String>,
+    pub stale: bool,
+    /// The game downloads the items itself when it starts, not Steam.
+    pub game_downloads: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkshopItemDto {
+    pub id: String,
+    pub subscribed: bool,
+    pub folder: Option<String>,
+    pub size: u64,
+    pub updated_unix: u64,
+    pub update_pending: bool,
+    /// Absent when Steam does not show it (removed, private) or could not be reached.
+    pub title: Option<String>,
+    pub description: String,
+    pub preview_url: Option<String>,
+    pub tags: Vec<String>,
+    /// What Steam says, for sorting: 0 when it says nothing.
+    pub subscriptions: u64,
+    pub favorited: u64,
+    pub created_unix: u64,
+}
+
+impl From<umm_core::workshop::WorkshopList> for WorkshopListDto {
+    fn from(w: umm_core::workshop::WorkshopList) -> Self {
+        WorkshopListDto {
+            app_id: w.app_id,
+            content_dir: w.content_dir.map(|d| d.display().to_string()),
+            stale: w.stale,
+            game_downloads: w.game_downloads,
+            items: w
+                .items
+                .into_iter()
+                .map(|i| {
+                    let update_pending = i.update_pending();
+                    let d = i.details;
+                    WorkshopItemDto {
+                        id: i.id,
+                        subscribed: i.subscribed,
+                        folder: i.folder.map(|f| f.display().to_string()),
+                        size: i.size,
+                        updated_unix: i.updated_unix,
+                        update_pending,
+                        title: d.as_ref().map(|d| d.title.clone()),
+                        description: d
+                            .as_ref()
+                            .map(|d| d.description.clone())
+                            .unwrap_or_default(),
+                        preview_url: d.as_ref().and_then(|d| d.preview_url.clone()),
+                        subscriptions: d.as_ref().map_or(0, |d| d.subscriptions),
+                        favorited: d.as_ref().map_or(0, |d| d.favorited),
+                        created_unix: d.as_ref().map_or(0, |d| d.time_created),
+                        tags: d.map(|d| d.tags).unwrap_or_default(),
+                    }
+                })
+                .collect(),
+        }
+    }
+}
+
+/// A page of a game's Steam Workshop.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkshopPageDto {
+    pub items: Vec<WorkshopFoundDto>,
+    pub page: u32,
+    pub total_pages: u32,
+    pub total: u64,
+    pub tags: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkshopFoundDto {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub preview_url: Option<String>,
+    pub author: Option<String>,
+    pub subscriptions: u64,
+    pub favorited: u64,
+    pub file_size: u64,
+    pub time_updated: u64,
+    pub tags: Vec<String>,
+    pub subscribed: bool,
+}
+
+impl From<umm_core::workshop::WorkshopPage> for WorkshopPageDto {
+    fn from(p: umm_core::workshop::WorkshopPage) -> Self {
+        WorkshopPageDto {
+            page: p.page,
+            total_pages: p.total_pages,
+            total: p.total,
+            tags: p.tags,
+            items: p
+                .items
+                .into_iter()
+                .map(|i| WorkshopFoundDto {
+                    id: i.id,
+                    title: i.title,
+                    description: i.description,
+                    preview_url: i.preview_url,
+                    author: i.author,
+                    subscriptions: i.subscriptions,
+                    favorited: i.favorited,
+                    file_size: i.file_size,
+                    time_updated: i.time_updated,
+                    tags: i.tags,
+                    subscribed: i.subscribed,
+                })
+                .collect(),
+        }
+    }
 }
 
 /// A stated dependency the profile does not meet.

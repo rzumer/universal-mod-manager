@@ -1,6 +1,7 @@
 //! Game definitions: one TOML file per game describing how to find it, which loader it needs and
 //! where each mod's files go. Adding a game means adding a file, not code.
 
+pub mod appinfo;
 pub mod detect;
 pub mod edit;
 pub mod relpath;

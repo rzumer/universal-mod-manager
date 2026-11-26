@@ -384,6 +384,22 @@ enum Cmd {
     /// Mods from Nexus Mods: sign in, install from links, updates
     #[command(subcommand)]
     Nexus(nexus::NexusCmd),
+    /// List a Steam game's subscribed and downloaded Workshop items
+    Workshop {
+        game: String,
+        /// Ask Steam for the items' details again
+        #[arg(long)]
+        refresh: bool,
+        /// Browse the game's Workshop instead (most popular first)
+        #[arg(long)]
+        browse: bool,
+        /// Search the game's Workshop for these words
+        #[arg(long)]
+        search: Option<String>,
+        /// The page of results, from 1
+        #[arg(long, default_value_t = 1)]
+        page: u32,
+    },
 }
 
 #[derive(Subcommand)]
@@ -678,6 +694,68 @@ fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Ts(cmd) => ts(&s, cmd)?,
         Cmd::Nexus(cmd) => nexus::run(&s, cmd)?,
+        Cmd::Workshop {
+            game,
+            browse,
+            search,
+            page,
+            ..
+        } if browse || search.is_some() => {
+            let q = umm_core::workshop::WorkshopQuery {
+                text: search.unwrap_or_default(),
+                page,
+                ..Default::default()
+            };
+            let p = s.workshop_browse(&game, &q)?;
+            for i in &p.items {
+                println!(
+                    "{:<12} {}{}  [{} subscribers{}]",
+                    i.id,
+                    i.title,
+                    i.author
+                        .as_deref()
+                        .map(|a| format!(" by {a}"))
+                        .unwrap_or_default(),
+                    i.subscriptions,
+                    if i.subscribed { ", subscribed" } else { "" }
+                );
+            }
+            println!(
+                "page {} of {} ({} items); tags: {}",
+                p.page,
+                p.total_pages,
+                p.total,
+                p.tags.join(", ")
+            );
+        }
+        Cmd::Workshop { game, refresh, .. } => {
+            let w = s.workshop_items(&game, refresh)?;
+            if w.stale {
+                eprintln!("note: Steam could not be reached; details may be missing or old");
+            }
+            for i in &w.items {
+                let title = i
+                    .details
+                    .as_ref()
+                    .map_or("(no details)", |d| d.title.as_str());
+                let state = match (i.subscribed, i.folder.is_some()) {
+                    (true, true) => "subscribed",
+                    (true, false) => "subscribed, not downloaded",
+                    (false, true) => "downloaded, not subscribed",
+                    (false, false) => "",
+                };
+                let pending = if i.update_pending() {
+                    ", update pending"
+                } else {
+                    ""
+                };
+                println!("{:<12} {title}  [{state}{pending}]", i.id);
+            }
+            match &w.content_dir {
+                Some(d) => println!("{} item(s), in {}", w.items.len(), d.display()),
+                None => println!("{} item(s)", w.items.len()),
+            }
+        }
         Cmd::Game(GameCmd::Add {
             folder,
             name,

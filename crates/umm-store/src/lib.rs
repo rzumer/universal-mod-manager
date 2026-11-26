@@ -19,6 +19,7 @@ pub use mods::{
 pub use placement::{LeftOut, Placement};
 pub use profile::{
     list_profiles, load_profile, save_profile, Profile, ProfileEntry, DEFAULT_PROFILE,
+    WORKSHOP_PREFIX,
 };
 
 use serde::de::DeserializeOwned;

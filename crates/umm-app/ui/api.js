@@ -80,6 +80,13 @@ export const api = {
   tsUpdate: (game, packages, profile, choice) => backend.invoke("ts_update", { game, packages, profile, choice }),
   tsDependents: (game, modId) => backend.invoke("ts_dependents", { game, modId }),
   tsDependencyIssues: (game, profile) => backend.invoke("ts_dependency_issues", { game, profile }),
+  workshopItems: (game, refresh) => backend.invoke("workshop_items", { game, refresh: !!refresh }),
+  openWorkshopPage: (game, item) => backend.invoke("open_workshop_page", { game, item: item || null }),
+  openWorkshopWindow: (game, item) => backend.invoke("open_workshop_window", { game, item: item || null }),
+  openSteamSignIn: (game) => backend.invoke("open_steam_sign_in", { game }),
+  workshopAvailable: (game) => backend.invoke("workshop_available", { game }),
+  workshopBrowse: (game, q) => backend.invoke("workshop_browse", { game, text: q.text, sort: q.sort, tag: q.tag || null, page: q.page }),
+  workshopAction: (game, action, item) => backend.invoke("workshop_action", { game, action, item: item || null }),
   tsLookup: (game, name) => backend.invoke("ts_lookup", { game, name }),
   tsInstallUnlisted: (game, name, version, profile, choice) =>
     backend.invoke("ts_install_unlisted", { game, name, version: version || null, profile, choice }),
