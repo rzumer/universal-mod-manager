@@ -117,6 +117,9 @@ pub enum Engine {
     /// XCOM 2 (Unreal Engine 3): a folder per mod in `XComGame/Mods/`, enabled in the user's
     /// `XComModOptions.ini`.
     Xcom2,
+    /// GameMaker: the game's code and assets in one data file (`data.win`), which mods
+    /// replace or patch (`.xdelta`).
+    GameMaker,
     Unknown,
 }
 
@@ -133,6 +136,7 @@ impl Engine {
             Engine::OxygenNotIncluded => "Unity (Mono), Klei's mod loader",
             Engine::Bannerlord => "TaleWorlds Engine (Bannerlord)",
             Engine::Xcom2 => "Unreal Engine 3 (XCOM 2)",
+            Engine::GameMaker => "GameMaker",
             Engine::Unknown => "Unknown engine",
         }
     }
@@ -512,6 +516,18 @@ pub fn inspect_folder(root: &Path) -> Inspection {
             larian: None,
         };
     }
+    // GameMaker: its data file next to the exe.
+    if !exes.is_empty() && exists_ci(root, GAMEMAKER_DATA) {
+        return Inspection {
+            engine: Engine::GameMaker,
+            exe: exes.first().cloned().unwrap_or_default(),
+            exes,
+            unreal_project: None,
+            data_folder: None,
+            paradox: None,
+            larian: None,
+        };
+    }
     Inspection {
         engine: Engine::Unknown,
         exe: exes.first().cloned().unwrap_or_default(),
@@ -522,6 +538,9 @@ pub fn inspect_folder(root: &Path) -> Inspection {
         larian: None,
     }
 }
+
+/// A GameMaker game's data file (Windows builds').
+pub const GAMEMAKER_DATA: &str = "data.win";
 
 /// Factorio's exe, relative to its folder.
 pub const FACTORIO_EXE: &str = "bin/x64/factorio.exe";
@@ -1081,6 +1100,13 @@ fn build(
                 ));
             }
         }
+        Engine::GameMaker => notes.push(Note::new(
+            "gamemaker",
+            "GameMaker: mods replace files in the game folder, data.win included, or patch \
+             data.win with .xdelta files. UMM applies those while mods are deployed, in the \
+             profile's order (each to data.win as the mods before it left it), and the \
+             original comes back afterwards.",
+        )),
         Engine::Unknown if setup == LoaderSetup::Generic => notes.push(Note::new(
             "unknown-engine",
             "Engine not recognised: mod files keep their paths relative to the game folder.",
@@ -1704,6 +1730,31 @@ mod tests {
             .with_setup(LoaderSetup::Generic, None)
             .unwrap();
         assert_eq!(again.install[0].target, "mods/{mod}/");
+    }
+
+    #[test]
+    fn gamemaker_games_are_recognised_by_their_data_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        touch(&root.join("UNDERTALE.exe"), 100);
+        touch(&root.join("data.win"), 1000);
+        let found = inspect_folder(root);
+        assert_eq!(
+            (found.engine, found.exe.as_str()),
+            (Engine::GameMaker, "UNDERTALE.exe")
+        );
+        let d = draft_manual(
+            root,
+            "Undertale",
+            &found.exe,
+            &found,
+            LoaderSetup::Generic,
+            None,
+        )
+        .unwrap();
+        assert!(d.notes.iter().any(|n| n.key == "gamemaker"));
+        assert!(!d.notes.iter().any(|n| n.key == "unknown-engine"));
+        assert_eq!(d.def.install[0].target, "");
     }
 
     #[test]

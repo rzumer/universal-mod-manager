@@ -2,6 +2,7 @@
 
 mod bannerlord;
 mod config;
+mod delta;
 mod doctor;
 mod downloads;
 mod factorio;
@@ -25,10 +26,12 @@ mod setup;
 mod share;
 mod steam;
 mod ts;
+pub mod vcdiff;
 mod weidu;
 pub mod workshop;
 
 pub use config::{ConfigChange, ConfigEntry, ConfigFile, ConfigSection, ConfigView};
+pub use delta::is_delta_patch;
 pub use doctor::{Finding, Level};
 pub use downloads::{downloads_dir, DownloadWatch};
 pub use fomod::{FomodGroupView, FomodOptionView, FomodStepView, FomodView};

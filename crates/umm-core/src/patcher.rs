@@ -101,7 +101,7 @@ pub struct PatcherStatus {
     pub ran_unix: u64,
 }
 
-fn patch_dir(game: &GameDir, mod_id: &str) -> PathBuf {
+pub(crate) fn patch_dir(game: &GameDir, mod_id: &str) -> PathBuf {
     game.generated_dir().join(PATCHES).join(mod_id)
 }
 
@@ -525,7 +525,7 @@ impl Session {
         Ok((files, output))
     }
 
-    /// Puts patchers' results in a deploy plan: each patcher mod's own files are left out,
+    /// Puts patchers' results (and delta patches', see [`crate::delta`]) in a deploy plan: each patcher mod's own files are left out,
     /// and the game files it patched go in, replacing the game's (protected or not: the user
     /// approved the patcher). A run that is out of date is redone first when `run` (a
     /// deploy); otherwise (a preview) the files are left out with the reason. Returns the
@@ -544,6 +544,11 @@ impl Session {
             let Ok(meta) = umm_store::load_mod(&game, id) else {
                 continue;
             };
+            // Delta patches (`.xdelta`), applied in the profile's order.
+            if let Some(files) = self.add_deltas(def, &meta, root, plan, run)? {
+                patched.extend(files);
+                continue;
+            }
             let Some(exe) = self.patcher_in(def, &meta) else {
                 continue;
             };
