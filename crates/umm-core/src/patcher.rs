@@ -551,7 +551,6 @@ impl Session {
     ) -> Result<Vec<RelPath>> {
         let game = self.data.game(&def.def.id);
         let mut patched = Vec::new();
-        crate::delta::skip_unsupported(root, plan);
         if crate::delta::is_gamemaker(root) {
             crate::deltamod::place_data_files(root, plan);
         }

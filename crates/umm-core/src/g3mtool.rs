@@ -170,19 +170,52 @@ impl Session {
         out: &Path,
         progress: &mut dyn FnMut(&str),
     ) -> Result<String> {
+        let mut args: Vec<std::ffi::OsString> =
+            vec!["patch".into(), "merge".into(), original.into()];
+        args.extend(inputs.iter().map(|i| i.as_os_str().to_owned()));
+        args.extend([
+            "--properties".into(),
+            "--apply".into(),
+            out.as_os_str().to_owned(),
+        ]);
+        self.run_g3mtool(&args, out, "merge them", progress)
+    }
+
+    /// Applies a G3M patch (`.g3mpatch`) or an UndertaleModTool script (`.csx`) to the data
+    /// file `data`, writing the result to `out`, with G3MTool. Returns what it printed.
+    pub(crate) fn g3m_apply(
+        &self,
+        data: &Path,
+        patch: &Path,
+        out: &Path,
+        progress: &mut dyn FnMut(&str),
+    ) -> Result<String> {
+        let args: Vec<std::ffi::OsString> = vec![
+            "patch".into(),
+            "apply".into(),
+            data.into(),
+            patch.into(),
+            out.into(),
+        ];
+        self.run_g3mtool(&args, out, "apply it", progress)
+    }
+
+    /// Runs G3MTool with `args`, which write the data file `out`; `what` names the job for
+    /// an error ("merge them").
+    fn run_g3mtool(
+        &self,
+        args: &[std::ffi::OsString],
+        out: &Path,
+        what: &str,
+        progress: &mut dyn FnMut(&str),
+    ) -> Result<String> {
         let exe = self.g3mtool(progress)?;
         if let Some(p) = out.parent() {
             fs::create_dir_all(p).ctx(|| format!("creating {}", p.display()))?;
         }
         let _ = fs::remove_file(out);
         let mut cmd = std::process::Command::new(&exe);
-        cmd.arg("patch")
-            .arg("merge")
-            .arg(original)
-            .args(inputs)
-            .arg("--properties")
-            .arg("--apply")
-            .arg(out)
+        cmd.args(args)
             .current_dir(exe.parent().unwrap_or(Path::new(".")))
             .stdin(std::process::Stdio::null());
         #[cfg(windows)]
@@ -207,7 +240,7 @@ impl Session {
                 tail(&text, 3)
             };
             return Err(CoreError::Invalid(format!(
-                "G3MTool could not merge them: {why}"
+                "G3MTool could not {what}: {why}"
             )));
         }
         Ok(text)

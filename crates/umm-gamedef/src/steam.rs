@@ -1113,12 +1113,14 @@ fn build(
             "gamemaker",
             "GameMaker: mods replace files in the game folder, data files included (one going \
              where the game's data file of the same name is, as a DELTARUNE chapter's), or \
-             patch them with .xdelta files, which UMM applies while mods are deployed and takes \
-             back afterwards. UMM finds the file each patch is for by trying it, and follows a \
-             DELTAMOD package's modding.xml. Two mods patching the same data file, each made \
-             for the game's own, are merged with G3MTool (downloaded the first time), the later \
-             one winning where both change the same thing; if that fails, UMM says why and \
-             launches nothing until one is disabled.",
+             patch them with .xdelta files, G3M patches (.g3mpatch) or UndertaleModTool \
+             scripts (.csx), which UMM applies while mods are deployed and takes back \
+             afterwards. UMM finds the file each patch is for by trying it, and follows a \
+             DELTAMOD package's modding.xml. Two mods' xdelta patches for the same data file, \
+             each made for the game's own, are merged, and G3M patches and scripts apply on top \
+             of other mods' changes, with G3MTool (downloaded the first time), the later mod \
+             winning where both change the same thing; if that fails, UMM says why and launches \
+             nothing until one is disabled.",
         )),
         Engine::Unknown if setup == LoaderSetup::Generic => notes.push(Note::new(
             "unknown-engine",

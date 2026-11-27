@@ -6,8 +6,8 @@
 //!
 //! UMM follows the list: an `xdelta` patch goes to its `to` file first (still tried, see
 //! [`crate::delta`]); an `override` or `copy` file is deployed at its `to` path; the package's
-//! own files stay out of the game folder. `csx` scripts and `g3mpatch` files need other tools
-//! and are left out (see [`crate::delta::unsupported_patch`]).
+//! own files stay out of the game folder. `csx` scripts and `g3mpatch` files go to their `to`
+//! file, applied with G3MTool (see [`crate::delta`]).
 //!
 //! Also here, for GameMaker games with several data files (a DELTARUNE chapter each): a mod's
 //! replacement data file goes where the game's data file with the same name is (its `GEN8`
@@ -194,7 +194,7 @@ pub(crate) fn apply_manifest(plan: &mut Plan, owner: &str) -> Option<Manifest> {
         };
         let full_file = patch.as_str().to_ascii_lowercase().ends_with(".win");
         match kind.as_str() {
-            "xdelta" if !full_file => {
+            "xdelta" | "csx" | "g3mpatch" if !full_file => {
                 manifest.targets.insert(patch.key(), to);
             }
             "override" | "copy" | "xdelta" => {

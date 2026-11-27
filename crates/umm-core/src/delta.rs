@@ -62,16 +62,75 @@ pub fn is_delta_patch(path: &str) -> bool {
         .any(|e| p.len() > e.len() && p.ends_with(e))
 }
 
-/// A mod file UMM cannot apply, and why: GameMaker modding formats that need another tool.
-pub fn unsupported_patch(path: &str) -> Option<&'static str> {
+/// Whether a file is a patch G3MTool applies to a GameMaker data file resource by resource:
+/// a G3M patch (`.g3mpatch`) or an UndertaleModTool script (`.csx`).
+pub fn is_resource_patch(path: &str) -> bool {
     let p = path.to_lowercase();
-    if p.ends_with(".csx") {
-        Some("an UndertaleModTool script (.csx), which UMM cannot run")
-    } else if p.ends_with(".g3mpatch") {
-        Some("a G3M patch (.g3mpatch), which UMM cannot apply")
-    } else {
-        None
+    p.ends_with(".g3mpatch") || p.ends_with(".csx")
+}
+
+/// What a G3M patch's manifest (`g3mpatch.json`) says of the data file it was made from.
+#[derive(Debug, Clone, Default)]
+struct G3mSource {
+    size: Option<u64>,
+    md5: Option<String>,
+    display_name: Option<String>,
+}
+
+/// Reads a `.g3mpatch` (a zip) for its `g3mpatch.json`.
+fn g3m_source(path: &Path) -> Option<G3mSource> {
+    use std::io::Read;
+    let mut zip = zip::ZipArchive::new(fs::File::open(path).ok()?).ok()?;
+    let mut entry = zip.by_name("g3mpatch.json").ok()?;
+    if entry.size() > 8 << 20 {
+        return None;
     }
+    let mut text = String::new();
+    entry.read_to_string(&mut text).ok()?;
+    let v: serde_json::Value = serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()?;
+    let o = v.get("original")?;
+    Some(G3mSource {
+        size: o.get("size").and_then(|s| s.as_u64()),
+        md5: o
+            .get("md5")
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_ascii_lowercase()),
+        display_name: o
+            .get("generalInfo")
+            .and_then(|g| g.get("displayName"))
+            .and_then(|s| s.as_str())
+            .map(String::from),
+    })
+}
+
+/// Packs a mod's unpacked G3M patch (a folder holding `g3mpatch.json`) into the `.g3mpatch`
+/// archive G3MTool reads: `files` are its files, by path inside the folder.
+fn pack_g3m(files: &[(String, PathBuf)], out: &Path) -> Result<()> {
+    use std::io::Write;
+    if let Some(p) = out.parent() {
+        fs::create_dir_all(p).ctx(|| format!("creating {}", p.display()))?;
+    }
+    let tmp = out.with_extension("part");
+    let f = fs::File::create(&tmp).ctx(|| format!("creating {}", tmp.display()))?;
+    let mut zip = zip::ZipWriter::new(f);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    let bad =
+        |e: zip::result::ZipError| crate::CoreError::Invalid(format!("packing a G3M patch: {e}"));
+    for (name, source) in files {
+        zip.start_file(name.as_str(), options).map_err(bad)?;
+        let bytes = fs::read(source).ctx(|| format!("reading {}", source.display()))?;
+        zip.write_all(&bytes)
+            .ctx(|| format!("writing {}", tmp.display()))?;
+    }
+    zip.finish().map_err(bad)?;
+    fs::rename(&tmp, out).ctx(|| format!("moving {}", out.display()))?;
+    Ok(())
+}
+
+/// The MD5 of a file, lower-case hex.
+fn md5_hex(path: &Path) -> Option<String> {
+    crate::nexus::md5_file(path).ok()
 }
 
 /// Whether a file is a program for applying delta patches by hand (`DeltaPatcher.exe`,
@@ -227,6 +286,50 @@ fn read_prefix(path: &Path, n: u64) -> std::io::Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// The data file a G3M patch or script (placed at `patch`, stored at `stored`) is for: for a
+/// G3M patch, the game's data file of the size and MD5 its manifest gives, else of its
+/// display name; for a script, the game's only data file. `None` when that cannot be told.
+fn resource_target(root: &Path, plan: &Plan, patch: &RelPath, stored: &Path) -> Option<RelPath> {
+    let files: Vec<RelPath> = umm_gamedef::gamemaker::data_files(root)
+        .iter()
+        .filter_map(|p| RelPath::parse(p).ok())
+        .collect();
+    if !patch.as_str().to_lowercase().ends_with(".g3mpatch") {
+        return match files.as_slice() {
+            [only] => Some(only.clone()),
+            _ => None,
+        };
+    }
+    let src = g3m_source(stored)?;
+    // The game's own file it was made from, or the version in the plan it was made from.
+    for t in &files {
+        for path in [
+            Some(t.to_path(root)),
+            input_of(root, plan, t).map(|(p, _)| p),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let len = fs::metadata(&path).map(|m| m.len()).ok();
+            if src.size.is_some() && len != src.size {
+                continue;
+            }
+            if let Some(want) = &src.md5 {
+                if md5_hex(&path).as_deref() == Some(want.as_str()) {
+                    return Some(t.clone());
+                }
+            }
+        }
+    }
+    let name = src.display_name?;
+    files.into_iter().find(|t| {
+        umm_gamedef::gamemaker::data_info(&t.to_path(root))
+            .and_then(|i| i.display_name)
+            .as_deref()
+            == Some(name.as_str())
+    })
+}
+
 /// What a game file to patch is now: in the plan (another mod's, or an earlier patch's
 /// result) or the game's own.
 fn input_of(root: &Path, plan: &Plan, target: &RelPath) -> Option<(PathBuf, String)> {
@@ -241,31 +344,6 @@ pub(crate) fn is_gamemaker(root: &Path) -> bool {
     GAMEMAKER_DATA
         .iter()
         .any(|n| umm_gamedef::gamemaker::is_data_file(&root.join(n)))
-}
-
-/// For a GameMaker game: leaves out of the plan the files UMM cannot apply (UndertaleModTool
-/// scripts, G3M patches), with the reason. They would do nothing in the game folder.
-pub(crate) fn skip_unsupported(root: &Path, plan: &mut Plan) {
-    if !plan
-        .files
-        .iter()
-        .any(|f| unsupported_patch(f.target.as_str()).is_some())
-        || !is_gamemaker(root)
-    {
-        return;
-    }
-    let mut kept = Vec::new();
-    for f in std::mem::take(&mut plan.files) {
-        match unsupported_patch(f.target.as_str()) {
-            Some(why) => plan.skipped.push(Skipped {
-                owner: f.owner.clone(),
-                file: f.target.as_str().to_string(),
-                reason: format!("{why}; the mod may not work without it"),
-            }),
-            None => kept.push(f),
-        }
-    }
-    plan.files = kept;
 }
 
 impl Session {
@@ -367,7 +445,7 @@ impl Session {
         let mut v: Vec<_> = self
             .placed_files(def, meta)
             .into_iter()
-            .filter(|(t, _, _)| is_delta_patch(t.as_str()))
+            .filter(|(t, _, _)| is_delta_patch(t.as_str()) || is_resource_patch(t.as_str()))
             .collect();
         v.sort_by_key(|(t, _, _)| t.key());
         v
@@ -388,12 +466,69 @@ impl Session {
         manifest: Option<&crate::deltamod::Manifest>,
         progress: &mut dyn FnMut(&str),
     ) -> Result<Option<Vec<RelPath>>> {
-        let patches = self.deltas_in(def, meta);
+        let dir = patch_dir(&self.data.game(&def.def.id), &meta.id);
+        let mut patches = self.deltas_in(def, meta);
+        // Unpacked G3M patches: a folder holding g3mpatch.json, packed for G3MTool.
+        let folders: Vec<Option<RelPath>> = plan
+            .files
+            .iter()
+            .filter(|f| {
+                f.owner == meta.id
+                    && f.target
+                        .file_name()
+                        .is_some_and(|n| n.eq_ignore_ascii_case("g3mpatch.json"))
+            })
+            .map(|f| f.target.parent().filter(|p| !p.is_root()))
+            .collect();
+        for folder in folders {
+            let prefix = folder
+                .as_ref()
+                .map(|f| format!("{}/", f.key()))
+                .unwrap_or_default();
+            let mut files: Vec<(String, PathBuf, String)> = plan
+                .files
+                .iter()
+                .filter(|f| f.owner == meta.id && f.target.key().starts_with(&prefix))
+                .map(|f| {
+                    let inside = f.target.as_str()[prefix.len()..].to_string();
+                    (inside, f.source.clone(), f.hash.clone())
+                })
+                .collect();
+            files.sort();
+            plan.files
+                .retain(|f| !(f.owner == meta.id && f.target.key().starts_with(&prefix)));
+            let name = match &folder {
+                Some(f) => format!("{}.g3mpatch", f.as_str()),
+                None => "patch.g3mpatch".to_string(),
+            };
+            let hash = files.iter().fold(String::new(), |mut s, (n, _, h)| {
+                s.push_str(n);
+                s.push(':');
+                s.push_str(h);
+                s.push(';');
+                s
+            });
+            let hash = {
+                use md5::Digest;
+                format!("{:x}", md5::Md5::digest(hash.as_bytes()))
+            };
+            let packed = dir.join("packed").join(&hash).join("patch.g3mpatch");
+            if !packed.is_file() {
+                let list: Vec<(String, PathBuf)> =
+                    files.into_iter().map(|(n, s, _)| (n, s)).collect();
+                pack_g3m(&list, &packed)?;
+            }
+            if let Ok(rel) = RelPath::parse(&name) {
+                patches.push((rel, packed, hash));
+            }
+        }
         if patches.is_empty() {
             return Ok(None);
         }
-        plan.files
-            .retain(|f| !(f.owner == meta.id && is_delta_patch(f.target.as_str())));
+        plan.files.retain(|f| {
+            !(f.owner == meta.id
+                && (is_delta_patch(f.target.as_str()) || is_resource_patch(f.target.as_str())))
+        });
         let skip = |plan: &mut Plan, file: &RelPath, reason: String| {
             plan.skipped.push(Skipped {
                 owner: meta.id.clone(),
@@ -401,6 +536,10 @@ impl Session {
                 reason,
             })
         };
+        // Resource patches (G3M patches, scripts) go after the xdelta ones, in order.
+        let (resource, patches): (Vec<Patch>, Vec<Patch>) = patches
+            .into_iter()
+            .partition(|(p, _, _)| is_resource_patch(p.as_str()));
         // The tools mods ship for applying their patches by hand (Delta Patcher, xdelta3)
         // have nothing to do in the game folder.
         let tools: Vec<RelPath> = plan
@@ -419,7 +558,6 @@ impl Session {
             );
         }
 
-        let dir = patch_dir(&self.data.game(&def.def.id), &meta.id);
         let old = load_record(&dir);
         // Each patch by the file it patches.
         let mut by_target: BTreeMap<String, (RelPath, Vec<Patch>)> = BTreeMap::new();
@@ -686,6 +824,117 @@ impl Session {
                 target: target.clone(),
             });
             patched.push(target);
+            record.applied.push(applied);
+        }
+        // G3M patches and scripts, each on top of the file as it is now (the game's own,
+        // another mod's version, or this mod's patched one): they change only what they
+        // touch, so they need no merge.
+        for (patch, stored, hash) in resource {
+            let hint = manifest.and_then(|m| m.targets.get(&patch.key()).cloned());
+            let Some(target) = hint.or_else(|| resource_target(root, plan, &patch, &stored)) else {
+                let why = if patch.as_str().to_lowercase().ends_with(".csx") {
+                    "UMM cannot tell which of the game's data files this script is for"
+                } else {
+                    "fits none of the game's data files: made for another version of the game?"
+                };
+                skip(plan, &patch, why.into());
+                continue;
+            };
+            let Some((input, key)) = input_of(root, plan, &target) else {
+                skip(
+                    plan,
+                    &patch,
+                    format!("the game has no {} to patch", target.as_str()),
+                );
+                continue;
+            };
+            // Another mod's version, which this one goes on top of.
+            let under = plan
+                .files
+                .iter()
+                .find(|f| f.target.key() == target.key() && f.owner != meta.id)
+                .map(|f| {
+                    umm_store::load_mod(&self.data.game(&def.def.id), &f.owner)
+                        .map(|m| m.name)
+                        .unwrap_or_else(|_| f.owner.clone())
+                });
+            let step: String = patch
+                .as_str()
+                .chars()
+                .map(|c| {
+                    if c.is_alphanumeric() || c == '.' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            let out = target.to_path(&dir.join(OUT).join("steps").join(step));
+            let kept = old.applied.iter().find(|a| {
+                a.target == target.as_str()
+                    && a.input == key
+                    && a.patch == patch.as_str()
+                    && a.patch_hash == hash
+                    && fs::metadata(&out).is_ok_and(|m| m.len() == a.size)
+            });
+            let applied = match kept {
+                Some(a) => a.clone(),
+                None if !run => {
+                    skip(
+                        plan,
+                        &patch,
+                        format!(
+                            "applied to {} at the next deploy (with G3MTool, which UMM downloads the first time)",
+                            target.as_str()
+                        ),
+                    );
+                    continue;
+                }
+                None => {
+                    progress(&format!(
+                        "Applying {}'s {} to {}",
+                        meta.name,
+                        patch.file_name().unwrap_or_default(),
+                        target.as_str()
+                    ));
+                    match self.g3m_apply(&input, &stored, &out, progress) {
+                        Ok(_) => Applied {
+                            target: target.as_str().to_string(),
+                            patch: patch.as_str().to_string(),
+                            patch_hash: hash.clone(),
+                            input: key.clone(),
+                            hash: hash_file(&out).ctx(|| format!("hashing {}", out.display()))?,
+                            size: fs::metadata(&out).map(|m| m.len()).unwrap_or(0),
+                        },
+                        // On top of another mod's changes: as a failed merge.
+                        Err(e) if under.is_some() => {
+                            return Err(crate::CoreError::PatchClash(format!(
+                                "UMM could not apply {}'s {} on top of {}'s changes to {}: {e}. Disable one of them to launch.",
+                                meta.name,
+                                patch.file_name().unwrap_or_default(),
+                                under.unwrap_or_default(),
+                                target.as_str()
+                            )))
+                        }
+                        Err(e) => {
+                            skip(plan, &patch, format!("not applied to {}: {e}", target.as_str()));
+                            continue;
+                        }
+                    }
+                }
+            };
+            plan.files.retain(|f| f.target.key() != target.key());
+            plan.files.push(PlannedFile {
+                source: out,
+                owner: meta.id.clone(),
+                hash: applied.hash.clone(),
+                size: applied.size,
+                writable: false,
+                target: target.clone(),
+            });
+            if !patched.iter().any(|t: &RelPath| t.key() == target.key()) {
+                patched.push(target);
+            }
             record.applied.push(applied);
         }
         if run && record.applied != old.applied {

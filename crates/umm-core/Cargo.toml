@@ -19,6 +19,7 @@ toml.workspace = true
 umm-fomod.workspace = true
 md-5 = "0.10"
 sha2 = "0.10"
+zip.workspace = true
 dirs.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }

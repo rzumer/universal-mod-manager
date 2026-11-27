@@ -821,8 +821,6 @@ function modsTab(d) {
               )
             : m?.patcher
             ? patcherChip(m)
-            : m?.unsupported
-            ? h("span", { class: "chip warn", title: m.unsupported }, "Needs another tool")
             : m?.installer === "waiting"
             ? h("button", { class: "chip warn chip-button", title: "Nothing of this mod is installed until its installer's options are chosen", onclick: () => fomodDialog(m) }, "Choose its install options")
             : m?.placement?.guessed &&

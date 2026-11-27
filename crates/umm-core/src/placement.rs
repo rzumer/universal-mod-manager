@@ -337,7 +337,23 @@ pub fn suggest(files: &[&str], game: &GameIndex, def: &CompiledDef) -> Option<Pl
                 .iter()
                 .filter_map(|r| under(r, &root))
                 .any(|c| def.has_specific_rule(&c));
-            (root, String::new(), !specific)
+            // Patches (xdelta, G3M patches, scripts) find the file they are for by
+            // themselves, and a DELTAMOD package's list says where its files go: nothing to
+            // ask about.
+            let patches_only = rels.iter().filter_map(|r| under(r, &root)).all(|c| {
+                let name = c.file_name().unwrap_or_default().to_ascii_lowercase();
+                is_doc(&c)
+                    || crate::is_delta_patch(c.as_str())
+                    || crate::is_resource_patch(c.as_str())
+                    || name == "modding.xml"
+                    || name.ends_with(".exe")
+            });
+            let deltamod = rels.iter().filter_map(|r| under(r, &root)).any(|c| {
+                c.file_name().is_some_and(|n| {
+                    n.eq_ignore_ascii_case("modding.xml") || n.eq_ignore_ascii_case("g3mpatch.json")
+                })
+            });
+            (root, String::new(), !(specific || patches_only || deltamod))
         }
     };
     let skip = doc_skips(&rels, &root, &target, game);

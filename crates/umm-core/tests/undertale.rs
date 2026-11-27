@@ -335,14 +335,13 @@ fn patches_find_their_data_file_and_clashing_ones_stop_the_deploy() {
         .for_each(|m| m.enabled = !m.id.starts_with('x'));
     s.save_profile("dr", &p).unwrap();
 
-    // An UndertaleModTool script: left out, and said why.
+    // A script, with several data files and no list naming one: left out, and said why.
     import("scripted", &[("fix.csx", b"script".to_vec())]);
     let plan = s.plan("dr", DEFAULT_PROFILE).unwrap();
     assert!(plan.files.iter().all(|f| f.target.as_str() != "fix.csx"));
-    assert!(plan
-        .skipped
-        .iter()
-        .any(|k| k.file == "fix.csx" && k.reason.contains("UndertaleModTool")));
+    assert!(plan.skipped.iter().any(|k| k.file == "fix.csx"
+        && k.reason
+            .contains("cannot tell which of the game's data files this script is for")));
 }
 
 /// A GameMaker data file whose `GEN8` chunk names the game: its display name at offset 100,
@@ -468,4 +467,131 @@ fn deltamod_packages_follow_their_list_and_data_files_go_by_name() {
     );
     assert_eq!(fs::read(root.join("data.win")).unwrap(), menu);
     s.revert("dr", false, &mut Faults::none()).unwrap();
+}
+
+/// A `.g3mpatch`: a zip with its `g3mpatch.json` manifest naming the data file it was made
+/// from (size and MD5).
+fn g3mpatch(source: &[u8]) -> Vec<u8> {
+    use md5::Digest;
+    use std::io::Write;
+    let md5: String = md5::Md5::digest(source)
+        .iter()
+        .fold(String::new(), |mut s, b| {
+            use std::fmt::Write;
+            let _ = write!(s, "{b:02x}");
+            s
+        });
+    let manifest = format!(
+        "{{\"original\":{{\"filename\":\"data.win\",\"size\":{},\"md5\":\"{md5}\"}}}}",
+        source.len()
+    );
+    let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    w.start_file("g3mpatch.json", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    w.write_all(manifest.as_bytes()).unwrap();
+    w.finish().unwrap().into_inner()
+}
+
+/// G3M patches and UndertaleModTool scripts go to their data file (by the manifest's MD5;
+/// the game's only data file for a script), applied with G3MTool. Without it (no network
+/// here), one that fails on the game's own file is left out with the reason, and one that
+/// fails on top of another mod's version stops the deploy.
+#[test]
+fn g3m_patches_and_scripts_find_their_file_and_failures_are_reported() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("game");
+    let ch1 = gm_named("DELTARUNE Chapter 1", b"chapter one");
+    let ch2 = gm_named("DELTARUNE Chapter 2", b"chapter two");
+    write(&root.join("DELTARUNE.exe"), b"exe");
+    write(&root.join("chapter1_windows/data.win"), &ch1);
+    write(&root.join("chapter2_windows/data.win"), &ch2);
+    let s = Session::open_with(
+        Some(tmp.path().join("data")),
+        std::sync::Arc::new(umm_thunderstore::http::FakeHttp::default()),
+    )
+    .unwrap();
+    write(
+        &s.data().game("dr").def_path(),
+        b"schema = 1\nname = \"DELTARUNE\"\n[detect]\nmarker = \"DELTARUNE.exe\"\n\
+          [[install]]\nmatch = \"**\"\ntarget = \"\"\n",
+    );
+    s.set_install_path("dr", &root).unwrap();
+    let import = |id: &str, files: &[(&str, Vec<u8>)]| {
+        let src = tmp.path().join("src").join(id);
+        for (f, b) in files {
+            write(&src.join(f), b);
+        }
+        s.import(
+            "dr",
+            &src,
+            ImportOptions {
+                id: Some(id.into()),
+                unwrap: true,
+                ..Default::default()
+            },
+            DEFAULT_PROFILE,
+        )
+        .unwrap()
+    };
+    // Made from chapter 2: found by its manifest's MD5. Imported as is: no placement guess.
+    let m = import("g3m", &[("fix.g3mpatch", g3mpatch(&ch2))]);
+    assert!(!m.placement.as_ref().is_some_and(|p| p.guessed));
+    // A script for chapter 1, as its package's list says.
+    import(
+        "script",
+        &[
+            (
+                "tweak.csx",
+                b"Data.GeneralInfo.DisplayName.Content = \"x\";".to_vec(),
+            ),
+            (
+                "modding.xml",
+                b"<patch type=\"csx\" patch=\"./tweak.csx\" to=\"./chapter1_windows/data.win\" />"
+                    .to_vec(),
+            ),
+        ],
+    );
+    let plan = s.plan("dr", DEFAULT_PROFILE).unwrap();
+    let reason = |file: &str| {
+        plan.skipped
+            .iter()
+            .find(|k| k.file == file)
+            .map(|k| k.reason.clone())
+            .unwrap_or_default()
+    };
+    assert!(
+        reason("fix.g3mpatch").contains("applied to chapter2_windows/data.win"),
+        "{}",
+        reason("fix.g3mpatch")
+    );
+    assert!(
+        reason("tweak.csx").contains("applied to chapter1_windows/data.win"),
+        "{}",
+        reason("tweak.csx")
+    );
+
+    // On the game's own files, failures leave them out: the deploy goes on.
+    s.deploy("dr", DEFAULT_PROFILE, &mut Faults::none())
+        .unwrap();
+    s.revert("dr", false, &mut Faults::none()).unwrap();
+
+    // On top of another mod's chapter 2: a failure stops the deploy.
+    import(
+        "remade",
+        &[("data.win", gm_named("DELTARUNE Chapter 2", b"remade"))],
+    );
+    let mut p = s.profile("dr", DEFAULT_PROFILE).unwrap();
+    let g3m = p.mods.iter().position(|m| m.id == "g3m").unwrap();
+    let entry = p.mods.remove(g3m);
+    p.mods.push(entry);
+    s.save_profile("dr", &p).unwrap();
+    let e = s
+        .deploy("dr", DEFAULT_PROFILE, &mut Faults::none())
+        .unwrap_err();
+    assert!(
+        e.to_string().contains("on top of remade's changes")
+            && e.to_string().contains("Disable one of them"),
+        "{e}"
+    );
+    assert!(!s.data().game("dr").journal_path().exists());
 }
