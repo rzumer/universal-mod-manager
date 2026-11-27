@@ -253,6 +253,9 @@ pub fn suggest(files: &[&str], game: &GameIndex, def: &CompiledDef) -> Option<Pl
         _ if def.def.bannerlord.is_some() => Some(marked_root(&rels, |n| {
             n.eq_ignore_ascii_case(crate::bannerlord::SUBMODULE)
         })),
+        _ if def.def.loader.as_ref().is_some_and(|l| l.kind == "lovely") => {
+            Some(lovely_root(&rels))
+        }
         _ => None,
     };
     if let Some(p) = own_folder {
@@ -447,6 +450,42 @@ fn marked_root(rels: &[RelPath], marks: impl Fn(&str) -> bool) -> Option<Placeme
             let root = r.parent().unwrap_or_else(RelPath::root);
             (root.depth(), root.as_str().to_string())
         })
+        .collect();
+    roots.sort();
+    roots.dedup_by(|a, b| a.1.eq_ignore_ascii_case(&b.1));
+    let (depth, root) = roots.first()?.clone();
+    let guessed = roots.get(1).is_some_and(|(d, _)| *d == depth);
+    let p = Placement {
+        root,
+        guessed,
+        ..Default::default()
+    };
+    (p != Placement::default()).then_some(p)
+}
+
+/// A Lovely mod's folder (Balatro's, with Steamodded): the shallowest one holding its
+/// `lovely.toml`, its `lovely/` patches, its Steamodded manifest (`.json`) or a `.lua` file.
+/// Lovely reads a mod's patches only from directly inside its folder in `mods/`, so wrapper
+/// folders must go. The install rules give it a folder of its own there.
+fn lovely_root(rels: &[RelPath]) -> Option<Placement> {
+    let mut roots: Vec<(usize, String)> = rels
+        .iter()
+        .filter_map(|r| {
+            let comps: Vec<&str> = r.components().collect();
+            let name = comps.last()?.to_ascii_lowercase();
+            // `<root>/lovely/<patch>.toml`
+            if name.ends_with(".toml") {
+                if let Some(i) = comps[..comps.len() - 1]
+                    .iter()
+                    .position(|c| c.eq_ignore_ascii_case("lovely"))
+                {
+                    return Some(comps[..i].to_vec());
+                }
+            }
+            (name == "lovely.toml" || name.ends_with(".lua") || name.ends_with(".json"))
+                .then(|| comps[..comps.len() - 1].to_vec())
+        })
+        .map(|c| (c.len(), c.join("/")))
         .collect();
     roots.sort();
     roots.dedup_by(|a, b| a.1.eq_ignore_ascii_case(&b.1));
@@ -849,6 +888,37 @@ mod tests {
             "DI/Data/sound.fsb",
             "steam_appid.txt",
         ])
+    }
+
+    #[test]
+    fn lovely_mods_lose_their_wrapper_folders() {
+        let d = def(
+            "[loader]\nkind = \"lovely\"\nsource = \"thunderstore\"\ninject = \"args\"\n\
+             [thunderstore]\ncommunity = \"balatro\"\n",
+        );
+        let root = |files: &[&str]| {
+            let p = suggest(files, &game(), &d).unwrap_or_default();
+            (p.root, p.guessed)
+        };
+        // A GameBanana deck: its folder, then its main file.
+        assert_eq!(
+            root(&[
+                "DeltaruneDeck/DeltaruneDeck.lua",
+                "DeltaruneDeck/assets/1x/a.png"
+            ]),
+            ("DeltaruneDeck".to_string(), false)
+        );
+        // Steamodded from GitHub: its Lovely patches mark its folder, not its sources'.
+        assert_eq!(
+            root(&[
+                "smods-main/lovely/core.toml",
+                "smods-main/src/core.lua",
+                "smods-main/README.md",
+            ]),
+            ("smods-main".to_string(), false)
+        );
+        // Already at the top: nothing to drop.
+        assert_eq!(root(&["lovely.toml", "main.lua"]), (String::new(), false));
     }
 
     #[test]
