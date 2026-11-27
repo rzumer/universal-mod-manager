@@ -32,7 +32,7 @@ mod weidu;
 pub mod workshop;
 
 pub use config::{ConfigChange, ConfigEntry, ConfigFile, ConfigSection, ConfigView};
-pub use delta::is_delta_patch;
+pub use delta::{is_delta_patch, unsupported_patch};
 pub use doctor::{Finding, Level};
 pub use downloads::{downloads_dir, DownloadWatch};
 pub use fomod::{FomodGroupView, FomodOptionView, FomodStepView, FomodView};
@@ -137,6 +137,10 @@ pub enum CoreError {
     /// download that landed in the Downloads folder meanwhile).
     #[error("this file is {0} on Nexus Mods, not the one being downloaded")]
     NexusOtherMod(String),
+    /// Mods' delta patches for the same game file, each made for the original: UMM cannot
+    /// use them together, so nothing deploys until one is disabled.
+    #[error("{0}")]
+    PatchClash(String),
     /// Pinned packages older than other packages of the profile need: the user chooses to
     /// downgrade those, or remove the pins.
     #[error("{}", crate::ts::describe_conflicts(.0))]
@@ -180,6 +184,8 @@ pub struct Session {
     ts: Mutex<ts::TsCache>,
     /// Nexus games looked up by domain name.
     nexus_games: Mutex<std::collections::HashMap<String, umm_nexus::graph::Game>>,
+    /// Whether a delta patch fits a file, by the patch's hash and the file's state.
+    delta_fits: Mutex<std::collections::HashMap<String, Option<bool>>>,
     /// Runs the Godot Mod Loader's setup; `None` for the real thing.
     godotml_runner: Mutex<Option<godotml::SetupRunner>>,
 }
@@ -198,6 +204,7 @@ impl Session {
             ecosystem: Mutex::new(None),
             ts: Mutex::new(ts::TsCache::new()),
             nexus_games: Mutex::new(Default::default()),
+            delta_fits: Mutex::new(Default::default()),
             godotml_runner: Mutex::new(None),
         })
     }

@@ -72,7 +72,7 @@ const gbMods = [
 const gbFiles = {
   496958: [
     { fileId: 1782602, name: "red_and_yellow_v140.zip", description: "v1.4.0", version: null, size: 39_103_150, added: 1786599226, downloads: 1200, clean: true, containsExe: [] },
-    { fileId: 1472284, name: "red_and_yellow_v120_mac.zip", description: "v1.2.0 (Mac)", version: null, size: 68_352_833, added: 1751782767, downloads: 300, clean: true, containsExe: [] },
+    { fileId: 1472284, name: "red_and_yellow_v120_mac.zip", description: "v1.2.0 (Mac)", version: null, size: 68_352_833, added: 1751782767, downloads: 300, clean: true, containsExe: [], platform: "Mac" },
     { fileId: 1307994, name: "red_and_yellow_v120.zip", description: "v1.2.0", version: null, size: 38_125_640, added: 1729967498, downloads: 5400, clean: true, containsExe: [] },
   ],
 };

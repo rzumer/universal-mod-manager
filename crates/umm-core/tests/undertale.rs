@@ -168,9 +168,11 @@ fn xdelta_mods_patch_data_win_in_profile_order_while_deployed() {
         .unwrap();
     assert_eq!(data.owner, "bigger");
     assert_eq!(fs::read(&data.source).unwrap(), BOTH);
-    assert!(plan.skipped.iter().any(|k| k.file == "bigger v1.00.xdelta"
-        && k.reason
-            .contains("bigger v1.08.xdelta patched data.win first")));
+    assert!(plan
+        .skipped
+        .iter()
+        .any(|k| k.file == "bigger v1.00.xdelta"
+            && k.reason.contains("fits none of the game's files")));
 
     // A game update: the patches no longer fit, and the game's own data.win stays.
     write(&root.join("data.win"), b"GEN8 Undertale 1.09");
@@ -185,5 +187,119 @@ fn xdelta_mods_patch_data_win_in_profile_order_while_deployed() {
     assert!(plan
         .skipped
         .iter()
-        .any(|k| k.file == "kinder.xdelta" && k.reason.contains("at the next deploy")));
+        .any(|k| k.file == "kinder.xdelta" && k.reason.contains("fits none")));
+}
+
+/// A GameMaker data file: `FORM`, its size, `GEN8`, then `content`.
+fn gm(content: &[u8]) -> Vec<u8> {
+    let mut body = b"GEN8".to_vec();
+    body.extend((content.len() as u32).to_le_bytes());
+    body.extend(content);
+    let mut f = b"FORM".to_vec();
+    f.extend((body.len() as u32).to_le_bytes());
+    f.extend(body);
+    f
+}
+
+/// A game with a data file per chapter (as DELTARUNE): a patch naming no file goes to the
+/// one it was made from, found by trying it. Two mods' patches for the same file, both made
+/// for the game's own, clash: the preview says so, and nothing deploys until one is off.
+#[test]
+fn patches_find_their_data_file_and_clashing_ones_stop_the_deploy() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("game");
+    let menu = gm(b"the chapter select menu");
+    let ch1 = gm(b"chapter one: the dark world");
+    let ch2 = gm(b"chapter two: the cyber world");
+    write(&root.join("DELTARUNE.exe"), b"exe");
+    write(&root.join("data.win"), &menu);
+    write(&root.join("chapter1_windows/data.win"), &ch1);
+    write(&root.join("chapter2_windows/data.win"), &ch2);
+    let s = Session::open(Some(tmp.path().join("data"))).unwrap();
+    write(
+        &s.data().game("dr").def_path(),
+        b"schema = 1\nname = \"DELTARUNE\"\n[detect]\nmarker = \"DELTARUNE.exe\"\n\
+          [[install]]\nmatch = \"**\"\ntarget = \"\"\n",
+    );
+    s.set_install_path("dr", &root).unwrap();
+    let import = |id: &str, files: &[(&str, Vec<u8>)]| {
+        let src = tmp.path().join("src").join(id);
+        for (f, b) in files {
+            write(&src.join(f), b);
+        }
+        s.import(
+            "dr",
+            &src,
+            ImportOptions {
+                id: Some(id.into()),
+                unwrap: true,
+                ..Default::default()
+            },
+            DEFAULT_PROFILE,
+        )
+        .unwrap();
+    };
+    let ch2_hard = [ch2.clone(), b" + hard mode".to_vec()].concat();
+    let ch2_easy = [ch2.clone(), b" + easy mode".to_vec()].concat();
+    import(
+        "hard",
+        &[("Hard Mode.xdelta", xdelta(&ch2, &ch2_hard, None))],
+    );
+
+    s.deploy("dr", DEFAULT_PROFILE, &mut Faults::none())
+        .unwrap();
+    assert_eq!(
+        fs::read(root.join("chapter2_windows/data.win")).unwrap(),
+        ch2_hard
+    );
+    assert_eq!(fs::read(root.join("data.win")).unwrap(), menu);
+    s.revert("dr", false, &mut Faults::none()).unwrap();
+
+    // Another mod for chapter 2, also made for the game's own file.
+    import(
+        "easy",
+        &[("easy.xdelta", xdelta(&ch2, &ch2_easy, Some("x//data.win/")))],
+    );
+    let plan = s.plan("dr", DEFAULT_PROFILE).unwrap();
+    assert!(
+        plan.skipped
+            .iter()
+            .any(|k| k.owner == "easy" && k.reason.contains("clashes with hard")),
+        "{:?}",
+        plan.skipped
+    );
+    let e = s
+        .deploy("dr", DEFAULT_PROFILE, &mut Faults::none())
+        .unwrap_err();
+    assert!(
+        e.to_string()
+            .contains("both patch chapter2_windows/data.win"),
+        "{e}"
+    );
+    // Nothing was deployed.
+    assert_eq!(
+        fs::read(root.join("chapter2_windows/data.win")).unwrap(),
+        ch2
+    );
+    assert!(!s.data().game("dr").journal_path().exists());
+
+    let mut p = s.profile("dr", DEFAULT_PROFILE).unwrap();
+    p.mods.iter_mut().find(|m| m.id == "hard").unwrap().enabled = false;
+    s.save_profile("dr", &p).unwrap();
+    s.deploy("dr", DEFAULT_PROFILE, &mut Faults::none())
+        .unwrap();
+    assert_eq!(
+        fs::read(root.join("chapter2_windows/data.win")).unwrap(),
+        ch2_easy
+    );
+    s.revert("dr", false, &mut Faults::none()).unwrap();
+
+    // An UndertaleModTool script: left out, and said why.
+    import("scripted", &[("fix.csx", b"script".to_vec())]);
+    let plan = s.plan("dr", DEFAULT_PROFILE).unwrap();
+    assert!(plan.files.iter().all(|f| f.target.as_str() != "fix.csx"));
+    assert!(plan
+        .skipped
+        .iter()
+        .any(|k| k.file == "fix.csx" && k.reason.contains("UndertaleModTool")));
 }

@@ -516,8 +516,17 @@ pub fn inspect_folder(root: &Path) -> Inspection {
             larian: None,
         };
     }
-    // GameMaker: its data file next to the exe.
-    if !exes.is_empty() && exists_ci(root, GAMEMAKER_DATA) {
+    // GameMaker: its data file next to the exe, a real one (`FORM` … `GEN8`).
+    let gamemaker_data = fs::read_dir(root).ok().and_then(|rd| {
+        rd.flatten()
+            .find(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(GAMEMAKER_DATA)
+            })
+            .map(|e| e.path())
+    });
+    if !exes.is_empty() && gamemaker_data.is_some_and(|p| crate::gamemaker::is_data_file(&p)) {
         return Inspection {
             engine: Engine::GameMaker,
             exe: exes.first().cloned().unwrap_or_default(),
@@ -1738,7 +1747,13 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         touch(&root.join("UNDERTALE.exe"), 100);
+        // Not a real data file: not GameMaker.
         touch(&root.join("data.win"), 1000);
+        assert_eq!(inspect_folder(root).engine, Engine::Unknown);
+        let mut data = b"FORM".to_vec();
+        data.extend(8u32.to_le_bytes());
+        data.extend(b"GEN8\0\0\0\0");
+        std::fs::write(root.join("data.win"), data).unwrap();
         let found = inspect_folder(root);
         assert_eq!(
             (found.engine, found.exe.as_str()),

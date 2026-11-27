@@ -4,6 +4,7 @@
 pub mod appinfo;
 pub mod detect;
 pub mod edit;
+pub mod gamemaker;
 pub mod relpath;
 pub mod setup;
 pub mod steam;

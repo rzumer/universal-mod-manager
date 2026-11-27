@@ -522,6 +522,7 @@ impl Session {
                             md5: g.md5.clone(),
                             clean: None,
                             contains_exe: vec![],
+                            platform: None,
                         });
                     match umm_gamebanana::newer_in_line(&d.files, &installed) {
                         Some(f) => GbUpdateState::Newer {

@@ -550,6 +550,7 @@ impl Session {
     ) -> Result<Vec<RelPath>> {
         let game = self.data.game(&def.def.id);
         let mut patched = Vec::new();
+        crate::delta::skip_unsupported(root, plan);
         for id in profile.enabled_ids() {
             let Ok(meta) = umm_store::load_mod(&game, id) else {
                 continue;

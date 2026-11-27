@@ -119,6 +119,37 @@ fn xdelta3_patches_apply_with_each_compressor() {
     }
 }
 
+/// A patch's fit is told from its first part, and the size of file it needs from its headers.
+#[test]
+fn a_patch_tells_the_file_it_fits() {
+    let source = source();
+    for name in ["none", "djw", "lzma", "fgk"] {
+        let patch = fixture(&format!("{name}.xdelta"));
+        assert_eq!(vcdiff::fits(&source, &patch).unwrap(), Some(true), "{name}");
+        let mut other = source.clone();
+        other[3] ^= 1;
+        assert_eq!(vcdiff::fits(&other, &patch).unwrap(), Some(false), "{name}");
+        let needed = vcdiff::source_needed(&patch).unwrap();
+        assert!(
+            needed > 0 && needed <= source.len() as u64,
+            "{name}: {needed}"
+        );
+        let (end, checked) = vcdiff::first_source_window(&patch).unwrap().unwrap();
+        assert!(checked && end <= needed, "{name}");
+        // The first part's source is all it needs.
+        assert_eq!(
+            vcdiff::fits(&source[..end as usize], &patch).unwrap(),
+            Some(true),
+            "{name}"
+        );
+    }
+    // Made from nothing: no source to tell by.
+    assert_eq!(
+        vcdiff::fits(&[], &fixture("text-lzma.xdelta")).unwrap(),
+        None
+    );
+}
+
 #[test]
 fn compressed_patches_still_tell_a_wrong_source() {
     let mut other = source();

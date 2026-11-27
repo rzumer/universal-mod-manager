@@ -821,6 +821,8 @@ function modsTab(d) {
               )
             : m?.patcher
             ? patcherChip(m)
+            : m?.unsupported
+            ? h("span", { class: "chip warn", title: m.unsupported }, "Needs another tool")
             : m?.installer === "waiting"
             ? h("button", { class: "chip warn chip-button", title: "Nothing of this mod is installed until its installer's options are chosen", onclick: () => fomodDialog(m) }, "Choose its install options")
             : m?.placement?.guessed &&
@@ -3651,23 +3653,26 @@ async function gbFilesDialog(it) {
   const game = S.gameId;
   const f = await attempt(() => api.gbFiles(game, it.modId));
   if (!f) return;
-  const first = f.files.find((x) => !x.installed) || f.files[0];
+  // Files for other platforms (Mac, Linux, ...) last, and not picked for you.
+  const files_ = [...f.files.filter((x) => !x.platform), ...f.files.filter((x) => x.platform)];
+  const first = files_.find((x) => !x.installed && !x.platform) || files_.find((x) => !x.platform) || files_[0];
   const row = (x) =>
     h(
       "label",
-      { class: "nexus-file" },
+      { class: `nexus-file ${x.platform ? "old" : ""}` },
       h("input", { type: "radio", name: "gb-file", value: String(x.fileId), checked: x === first }),
       h(
         "span",
         {},
         h("strong", {}, x.description || x.name),
+        x.platform && h("span", { class: "chip warn", title: `This file is for ${x.platform}, not this computer` }, `For ${x.platform}`),
         " ",
         h("span", { class: "muted small" }, [x.description && x.name, x.version, fmtBytes(x.size), fmtDate(x.added), `${fmtCount(x.downloads)} downloads`, x.installed ? "installed" : null].filter(Boolean).join(" · ")),
         x.clean === false && h("span", { class: "nexus-file-desc chip warn" }, "GameBanana’s virus scan flagged this file"),
         x.containsExe.length > 0 && h("span", { class: "nexus-file-desc muted small" }, `Contains programs: ${x.containsExe.join(", ")}`),
       ),
     );
-  const files = h("div", { class: "nexus-files" }, f.files.map(row));
+  const files = h("div", { class: "nexus-files" }, files_.map(row));
   const body = [
     f.text && h("details", {}, h("summary", { class: "muted small" }, "Description"), h("p", { class: "gb-text small" }, f.text)),
     f.files.length ? files : h("p", { class: "muted" }, "This mod has no files."),

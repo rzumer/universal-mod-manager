@@ -92,6 +92,8 @@ pub struct ModDto {
     pub patcher: Option<String>,
     /// Its WeiDU installer (`setup-<mod>.exe`), when it is a WeiDU mod.
     pub weidu: Option<String>,
+    /// Why some of its files cannot be applied (an UndertaleModTool script, a G3M patch).
+    pub unsupported: Option<String>,
 }
 
 /// Where a mod's files go; see `umm_store::Placement`.
@@ -177,9 +179,15 @@ impl From<umm_core::PlacementView> for PlacementViewDto {
 impl From<ModMeta> for ModDto {
     fn from(m: ModMeta) -> Self {
         let patcher = umm_core::patcher_of(&m);
+        let unsupported = m
+            .files
+            .keys()
+            .find_map(|f| umm_core::unsupported_patch(f))
+            .map(|why| format!("It has {why}; the mod may not work without it."));
         let weidu = umm_core::weidu_setup_of(&m);
         let is_weidu = weidu.is_some();
         ModDto {
+            unsupported,
             patcher,
             weidu,
             // A WeiDU mod goes to the game folder as it is laid out: no placement to choose.

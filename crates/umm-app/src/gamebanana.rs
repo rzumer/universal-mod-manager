@@ -118,6 +118,8 @@ pub struct GbFileDto {
     pub downloads: u64,
     pub clean: Option<bool>,
     pub contains_exe: Vec<String>,
+    /// The platform it is for, when not Windows (`Mac`, `Linux`, ...).
+    pub platform: Option<String>,
     /// The UMM mod holding this file, when it is installed.
     pub installed: Option<String>,
 }
@@ -302,6 +304,7 @@ pub async fn gb_files(state: State<'_, AppState>, game: String, mod_id: u64) -> 
                     downloads: x.downloads,
                     clean: x.clean,
                     contains_exe: x.contains_exe,
+                    platform: x.platform.map(String::from),
                 })
                 .collect(),
         })

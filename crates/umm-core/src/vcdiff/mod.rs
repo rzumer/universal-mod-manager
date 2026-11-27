@@ -309,6 +309,66 @@ const MISMATCH: &str = "the patch does not fit this file: it was made from anoth
 
 /// Applies a patch to the source it was made from, returning the target.
 pub fn apply(source: &[u8], patch: &[u8]) -> Result<Vec<u8>> {
+    Ok(run(source, patch, false)?.0)
+}
+
+/// Whether the patch was made from this source, as far as its start tells: the first window
+/// that copies from the source is decoded and checked against its checksum. `None` when the
+/// patch cannot tell (no window copies from the source, or none carries a checksum).
+pub fn fits(source: &[u8], patch: &[u8]) -> Result<Option<bool>> {
+    match run(source, patch, true) {
+        Ok((_, true)) => Ok(Some(true)),
+        Ok((_, false)) => Ok(None),
+        Err(e) if e.0 == MISMATCH => Ok(Some(false)),
+        Err(e) => Err(e),
+    }
+}
+
+/// How large a file the patch was made from must at least be: the end of the furthest part
+/// of the source it copies from. Read from the windows' headers alone, without decoding.
+pub fn source_needed(patch: &[u8]) -> Result<u64> {
+    let mut r = Reader::new(patch);
+    header(&mut r)?;
+    let mut needed = 0u64;
+    while !r.done() {
+        let win = r.byte()?;
+        if win & (VCD_SOURCE | VCD_TARGET) != 0 {
+            let len = r.int()?;
+            let pos = r.int()?;
+            if win & VCD_SOURCE != 0 {
+                needed = needed.max(pos.saturating_add(len));
+            }
+        }
+        let delta_len = r.size()?;
+        r.take(delta_len)?;
+    }
+    Ok(needed)
+}
+
+/// How much of the source the patch's first window copying from it needs (the end of its
+/// segment), and whether that window carries a checksum: what [`fits`] reads of a source.
+/// `None` when no window copies from the source.
+pub fn first_source_window(patch: &[u8]) -> Result<Option<(u64, bool)>> {
+    let mut r = Reader::new(patch);
+    header(&mut r)?;
+    while !r.done() {
+        let win = r.byte()?;
+        if win & (VCD_SOURCE | VCD_TARGET) != 0 {
+            let len = r.int()?;
+            let pos = r.int()?;
+            if win & VCD_SOURCE != 0 {
+                return Ok(Some((pos.saturating_add(len), win & VCD_ADLER32 != 0)));
+            }
+        }
+        let delta_len = r.size()?;
+        r.take(delta_len)?;
+    }
+    Ok(None)
+}
+
+/// Decodes the patch; with `until_checked`, only up to the first window that copies from the
+/// source and has a checksum, and says whether there was one.
+fn run(source: &[u8], patch: &[u8], until_checked: bool) -> Result<(Vec<u8>, bool)> {
     let mut r = Reader::new(patch);
     let h = header(&mut r)?;
     let table = code_table();
@@ -428,9 +488,12 @@ pub fn apply(source: &[u8], patch: &[u8]) -> Result<Vec<u8>> {
             if adler32(&out[start..]) != sum {
                 return err(MISMATCH);
             }
+            if until_checked && win & VCD_SOURCE != 0 {
+                return Ok((out, true));
+            }
         }
     }
-    Ok(out)
+    Ok((out, false))
 }
 
 #[cfg(test)]

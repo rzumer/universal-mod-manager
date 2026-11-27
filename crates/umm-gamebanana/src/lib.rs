@@ -114,6 +114,37 @@ pub struct ModFile {
     pub clean: Option<bool>,
     /// Programs in it, as GameBanana's analysis lists them.
     pub contains_exe: Vec<String>,
+    /// The platform it is for, when its name or description says one other than Windows
+    /// ("v1.2.0 (Mac)", `mymod_linux.zip`).
+    pub platform: Option<&'static str>,
+}
+
+/// The platform a file is for, from words in its name or description: `Mac`, `Linux`,
+/// `Android` or `Switch`; `None` for Windows or when nothing says.
+pub fn platform_of(name: &str, description: &str) -> Option<&'static str> {
+    let text = format!("{name} {description}").to_lowercase();
+    if text.ends_with(".apk") || name.to_lowercase().ends_with(".apk") {
+        return Some("Android");
+    }
+    let words: Vec<&str> = text
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let has = |ws: &[&str]| words.iter().any(|w| ws.contains(w));
+    if has(&["windows", "win", "win64", "pc"]) {
+        return None;
+    }
+    if has(&["mac", "macos", "osx", "macosx"]) {
+        Some("Mac")
+    } else if has(&["linux", "steamdeck", "deck"]) {
+        Some("Linux")
+    } else if has(&["android", "apk"]) {
+        Some("Android")
+    } else if has(&["switch", "nsp"]) {
+        Some("Switch")
+    } else {
+        None
+    }
 }
 
 /// A mod with what its page shows: its description and files.
@@ -279,10 +310,12 @@ fn summary(v: &Value) -> ModSummary {
 }
 
 fn file(v: &Value) -> ModFile {
+    let (name, description) = (s(v, "_sFile"), s(v, "_sDescription"));
     ModFile {
+        platform: platform_of(&name, &description),
         file_id: u(v, "_idRow"),
-        name: s(v, "_sFile"),
-        description: s(v, "_sDescription"),
+        name,
+        description,
         version: Some(s(v, "_sVersion")).filter(|x| !x.is_empty()),
         size: u(v, "_nFilesize"),
         added: u(v, "_tsDateAdded"),
@@ -574,6 +607,7 @@ mod tests {
             md5: String::new(),
             clean: None,
             contains_exe: vec![],
+            platform: None,
         };
         let files = [
             f(3, "fun_v140.zip", 30),
@@ -582,6 +616,16 @@ mod tests {
         ];
         assert_eq!(newer_in_line(&files, &files[2]).map(|x| x.file_id), Some(3));
         assert_eq!(newer_in_line(&files, &files[0]), None);
+    }
+
+    #[test]
+    fn files_for_other_platforms_are_told() {
+        assert_eq!(platform_of("fun_v120_mac.zip", "v1.2.0 (Mac)"), Some("Mac"));
+        assert_eq!(platform_of("fun_linux.zip", ""), Some("Linux"));
+        assert_eq!(platform_of("fun.apk", ""), Some("Android"));
+        assert_eq!(platform_of("fun_v140.zip", "v1.4.0"), None);
+        assert_eq!(platform_of("fun.zip", "Windows and Mac"), None);
+        assert_eq!(platform_of("machine.zip", "Macro pack"), None);
     }
 
     #[test]
