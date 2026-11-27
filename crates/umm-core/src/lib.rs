@@ -3,6 +3,7 @@
 mod bannerlord;
 mod config;
 mod delta;
+mod deltamod;
 mod doctor;
 mod downloads;
 mod factorio;

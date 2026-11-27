@@ -551,12 +551,17 @@ impl Session {
         let game = self.data.game(&def.def.id);
         let mut patched = Vec::new();
         crate::delta::skip_unsupported(root, plan);
+        if crate::delta::is_gamemaker(root) {
+            crate::deltamod::place_data_files(root, plan);
+        }
         for id in profile.enabled_ids() {
             let Ok(meta) = umm_store::load_mod(&game, id) else {
                 continue;
             };
+            // A DELTAMOD package's list of what its files are for.
+            let manifest = crate::deltamod::apply_manifest(plan, &meta.id);
             // Delta patches (`.xdelta`), applied in the profile's order.
-            if let Some(files) = self.add_deltas(def, &meta, root, plan, run)? {
+            if let Some(files) = self.add_deltas(def, &meta, root, plan, run, manifest.as_ref())? {
                 patched.extend(files);
                 continue;
             }

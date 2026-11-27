@@ -303,3 +303,128 @@ fn patches_find_their_data_file_and_clashing_ones_stop_the_deploy() {
         .iter()
         .any(|k| k.file == "fix.csx" && k.reason.contains("UndertaleModTool")));
 }
+
+/// A GameMaker data file whose `GEN8` chunk names the game: its display name at offset 100,
+/// as DELTARUNE's chapters have it.
+fn gm_named(display: &str, content: &[u8]) -> Vec<u8> {
+    let mut gen = vec![0u8; 120];
+    // FORM(8) + GEN8 and its size(8) + the chunk, then the string's length and characters.
+    let ptr = (8 + 8 + 120 + 4) as u32;
+    gen[100..104].copy_from_slice(&ptr.to_le_bytes());
+    let mut body = b"GEN8".to_vec();
+    body.extend((gen.len() as u32).to_le_bytes());
+    body.extend(gen);
+    body.extend((display.len() as u32).to_le_bytes());
+    body.extend(display.as_bytes());
+    body.push(0);
+    body.extend(content);
+    let mut f = b"FORM".to_vec();
+    f.extend((body.len() as u32).to_le_bytes());
+    f.extend(body);
+    f
+}
+
+/// A DELTAMOD package: its modding.xml names each patch's file and where a copied file goes,
+/// its own files stay out of the game folder, and a patch for another game version says the
+/// version the package names. A mod's replacement data file goes to the game's data file of
+/// the same name, wherever the mod has it.
+#[test]
+fn deltamod_packages_follow_their_list_and_data_files_go_by_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("game");
+    let menu = gm_named("DELTARUNE", b"menu");
+    let ch1 = gm_named("DELTARUNE Chapter 1", b"chapter one");
+    let ch2 = gm_named("DELTARUNE Chapter 2", b"chapter two");
+    write(&root.join("DELTARUNE.exe"), b"exe");
+    write(&root.join("data.win"), &menu);
+    write(&root.join("chapter1_windows/data.win"), &ch1);
+    write(&root.join("chapter2_windows/data.win"), &ch2);
+    let s = Session::open(Some(tmp.path().join("data"))).unwrap();
+    write(
+        &s.data().game("dr").def_path(),
+        b"schema = 1\nname = \"DELTARUNE\"\n[detect]\nmarker = \"DELTARUNE.exe\"\n\
+          [[install]]\nmatch = \"**\"\ntarget = \"\"\n",
+    );
+    s.set_install_path("dr", &root).unwrap();
+    let import = |id: &str, files: &[(&str, Vec<u8>)]| {
+        let src = tmp.path().join("src").join(id);
+        for (f, b) in files {
+            write(&src.join(f), b);
+        }
+        s.import(
+            "dr",
+            &src,
+            ImportOptions {
+                id: Some(id.into()),
+                unwrap: true,
+                ..Default::default()
+            },
+            DEFAULT_PROFILE,
+        )
+        .unwrap();
+    };
+    let ch1_fast = [ch1.clone(), b" + 60 fps".to_vec()].concat();
+    import(
+        "fps",
+        &[
+            (
+                "modding.xml",
+                b"<patch type=\"xdelta\" patch=\"./c1.xdelta\" to=\"./chapter1_windows/data.win\" />\n\
+                  <patch type=\"xdelta\" patch=\"./old.xdelta\" to=\"./chapter2_windows/data.win\" />\n\
+                  <patch type=\"override\" patch=\"./song.ogg\" to=\"./mus/song.ogg\" />"
+                    .to_vec(),
+            ),
+            (
+                "meta.toml",
+                b"deltaruneTargetVersion = \"1.05\"\n[metadata]\nname = \"60 FPS\"\n".to_vec(),
+            ),
+            ("icon.png", b"png".to_vec()),
+            ("c1.xdelta", xdelta(&ch1, &ch1_fast, None)),
+            ("old.xdelta", xdelta(b"an older chapter two", b"an older chapter two!", None)),
+            ("song.ogg", b"ogg".to_vec()),
+        ],
+    );
+    let plan = s.plan("dr", DEFAULT_PROFILE).unwrap();
+    let reason = |file: &str| {
+        plan.skipped
+            .iter()
+            .find(|k| k.file == file)
+            .map(|k| k.reason.clone())
+            .unwrap_or_default()
+    };
+    assert!(reason("modding.xml").contains("DELTAMOD"));
+    assert!(reason("meta.toml").contains("DELTAMOD"));
+    assert!(reason("icon.png").contains("DELTAMOD"));
+    assert!(reason("c1.xdelta").contains("chapter1_windows/data.win"));
+    assert!(
+        reason("old.xdelta").contains("version 1.05"),
+        "{}",
+        reason("old.xdelta")
+    );
+    assert!(plan
+        .files
+        .iter()
+        .any(|f| f.target.as_str() == "mus/song.ogg"));
+
+    s.deploy("dr", DEFAULT_PROFILE, &mut Faults::none())
+        .unwrap();
+    assert_eq!(
+        fs::read(root.join("chapter1_windows/data.win")).unwrap(),
+        ch1_fast
+    );
+    assert_eq!(fs::read(root.join("mus/song.ogg")).unwrap(), b"ogg");
+    assert!(!root.join("modding.xml").exists() && !root.join("song.ogg").exists());
+    s.revert("dr", false, &mut Faults::none()).unwrap();
+
+    // A chapter 2 data file at the top of a mod: it goes to chapter 2, not the menu.
+    let ch2_new = gm_named("DELTARUNE Chapter 2", b"chapter two, remade");
+    import("remade", &[("data.win", ch2_new.clone())]);
+    s.deploy("dr", DEFAULT_PROFILE, &mut Faults::none())
+        .unwrap();
+    assert_eq!(
+        fs::read(root.join("chapter2_windows/data.win")).unwrap(),
+        ch2_new
+    );
+    assert_eq!(fs::read(root.join("data.win")).unwrap(), menu);
+    s.revert("dr", false, &mut Faults::none()).unwrap();
+}

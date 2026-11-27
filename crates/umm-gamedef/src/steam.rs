@@ -1111,10 +1111,12 @@ fn build(
         }
         Engine::GameMaker => notes.push(Note::new(
             "gamemaker",
-            "GameMaker: mods replace files in the game folder, data.win included, or patch \
-             data.win with .xdelta files. UMM applies those while mods are deployed, in the \
-             profile's order (each to data.win as the mods before it left it), and the \
-             original comes back afterwards.",
+            "GameMaker: mods replace files in the game folder, data files included (one going \
+             where the game's data file of the same name is, as a DELTARUNE chapter's), or \
+             patch them with .xdelta files, which UMM applies while mods are deployed and takes \
+             back afterwards. UMM finds the file each patch is for by trying it, and follows a \
+             DELTAMOD package's modding.xml. Two mods patching the same file, each made for the \
+             game's own, clash: UMM says so and launches nothing until one is disabled.",
         )),
         Engine::Unknown if setup == LoaderSetup::Generic => notes.push(Note::new(
             "unknown-engine",

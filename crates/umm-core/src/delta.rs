@@ -234,7 +234,7 @@ fn input_of(root: &Path, plan: &Plan, target: &RelPath) -> Option<(PathBuf, Stri
 }
 
 /// Whether the game folder holds a GameMaker data file at its top.
-fn is_gamemaker(root: &Path) -> bool {
+pub(crate) fn is_gamemaker(root: &Path) -> bool {
     GAMEMAKER_DATA
         .iter()
         .any(|n| umm_gamedef::gamemaker::is_data_file(&root.join(n)))
@@ -269,7 +269,8 @@ impl Session {
     /// Whether the patch fits the file at `path` (whose state is `key`): `None` when it
     /// cannot tell. Remembered for the session.
     fn delta_fits(&self, patch: &[u8], patch_hash: &str, path: &Path, key: &str) -> Option<bool> {
-        let id = format!("{patch_hash} {key}");
+        // The file's path too: two files can share their size and time.
+        let id = format!("{patch_hash} {} {key}", path.display());
         if let Some(r) = self
             .delta_fits
             .lock()
@@ -314,7 +315,8 @@ impl Session {
         hash: &str,
         hint: Option<RelPath>,
     ) -> Found {
-        let named = named_targets(root, plan, patch, bytes);
+        let mut named = named_targets(root, plan, patch, bytes);
+        named.extend(hint.clone());
         let mut tried: Vec<RelPath> = hint.into_iter().collect();
         tried.extend(candidates(root, plan, patch, bytes));
         let mut seen = std::collections::HashSet::new();
@@ -379,6 +381,7 @@ impl Session {
         root: &Path,
         plan: &mut Plan,
         run: bool,
+        manifest: Option<&crate::deltamod::Manifest>,
     ) -> Result<Option<Vec<RelPath>>> {
         let patches = self.deltas_in(def, meta);
         if patches.is_empty() {
@@ -422,11 +425,15 @@ impl Session {
                 skip(plan, &patch, "not an xdelta (VCDIFF) patch".into());
                 continue;
             }
-            let hint = old
-                .applied
-                .iter()
-                .find(|a| a.patch == patch.as_str() && a.patch_hash == hash)
-                .and_then(|a| RelPath::parse(&a.target).ok());
+            // The file its package's list names, else the one it was applied to before.
+            let hint = manifest
+                .and_then(|m| m.targets.get(&patch.key()).cloned())
+                .or_else(|| {
+                    old.applied
+                        .iter()
+                        .find(|a| a.patch == patch.as_str() && a.patch_hash == hash)
+                        .and_then(|a| RelPath::parse(&a.target).ok())
+                });
             let target = match self.find_target(
                 &def.def.id,
                 root,
@@ -438,11 +445,7 @@ impl Session {
             ) {
                 Found::Target(t) => t,
                 Found::Clash(t, other) => {
-                    clashes.push(format!(
-                        "{} and {other} both patch {}, each made for the game's own file",
-                        meta.name,
-                        t.as_str()
-                    ));
+                    clashes.push((other.clone(), t.as_str().to_string()));
                     skip(
                         plan,
                         &patch,
@@ -454,11 +457,16 @@ impl Session {
                     continue;
                 }
                 Found::NoFit => {
+                    let made_for = manifest
+                        .and_then(|m| m.game_version.as_deref())
+                        .map(|v| format!(" (the mod says it is for version {v})"))
+                        .unwrap_or_default();
                     skip(
                         plan,
                         &patch,
-                        "fits none of the game's files: made for another version of the game?"
-                            .into(),
+                        format!(
+                            "fits none of the game's files: made for another version of the game?{made_for}"
+                        ),
                     );
                     continue;
                 }
@@ -479,9 +487,32 @@ impl Session {
         }
 
         if run && !clashes.is_empty() {
+            // By the other mod: "A and B both patch x, y and z".
+            let mut others: Vec<(String, Vec<String>)> = Vec::new();
+            for (other, file) in clashes {
+                match others.iter_mut().find(|(o, _)| *o == other) {
+                    Some((_, files)) => files.push(file),
+                    None => others.push((other, vec![file])),
+                }
+            }
+            let list = |files: &[String]| match files {
+                [one] => one.clone(),
+                [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+                [] => String::new(),
+            };
+            let what: Vec<String> = others
+                .iter()
+                .map(|(other, files)| {
+                    format!(
+                        "{} and {other} both patch {}, each made for the game's own files",
+                        meta.name,
+                        list(files)
+                    )
+                })
+                .collect();
             return Err(crate::CoreError::PatchClash(format!(
                 "{}. UMM cannot use them together: disable one of them to launch.",
-                clashes.join("; ")
+                what.join("; ")
             )));
         }
         let mut record = Record::default();
