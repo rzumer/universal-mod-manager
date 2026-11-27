@@ -132,8 +132,8 @@ impl Session {
         self.plan_paradox(&def, &profile, &mut plan)?;
         // Factorio's mod folders, named as the game wants.
         self.plan_factorio(&def, &mut plan)?;
-        // Kenshi's mod folders, named after their `.mod` files.
-        self.plan_kenshi(&def, &mut plan)?;
+        // Kenshi's and XCOM 2's mod folders, named after their mods' files.
+        self.plan_mod_files(&def, &mut plan)?;
         // Bannerlord's module folders, named after their ids.
         self.plan_bannerlord(&def, &mut plan)?;
         // A Larian game's enabled modules.

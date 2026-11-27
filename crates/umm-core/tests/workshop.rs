@@ -396,3 +396,37 @@ fn a_profile_turns_kenshi_workshop_items_on_and_off() {
     s.revert("kenshi", false, &mut Faults::none()).unwrap();
     assert_eq!(fs::read_to_string(&list).unwrap(), original);
 }
+
+/// XCOM 2's Workshop items in a profile: enabled in `XComModOptions.ini` by their mods'
+/// names (from their `.XComMod` files), or taken out of it, as the profile says.
+#[test]
+fn a_profile_turns_xcom_2_workshop_items_on_and_off() {
+    use umm_core::Faults;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = library(tmp.path(), 268500, &|i| {
+        vec![(format!("Item{i}.XComMod"), "[mod]".into())]
+    });
+    let ini = tmp.path().join("docs/XComModOptions.ini");
+    let original = "[Engine.XComModOptions]\r\nActiveMods=\"Item2\"\r\nActiveMods=\"Item3\"\r\n";
+    write(&ini, original);
+    let s = Session::open(Some(tmp.path().join("data"))).unwrap();
+    write(
+        &s.data().game("xcom2").def_path(),
+        &format!(
+            "schema = 1\nname = \"XCOM 2\"\n[detect]\nsteam_app_id = 268500\nmarker = \"Game.exe\"\n\
+             [[install]]\nmatch = \"**\"\ntarget = \"XComGame/Mods/{{mod}}/\"\n\
+             [mod_list]\nlist = \"{}\"\nformat = \"xcom_ini\"\nfolder = \"XComGame/Mods\"\n",
+            ini.display().to_string().replace('\\', "/")
+        ),
+    );
+    s.set_install_path("xcom2", &root).unwrap();
+    profile_with(&s, "xcom2", &[("workshop:1", true), ("workshop:2", false)]);
+    s.deploy("xcom2", umm_core::DEFAULT_PROFILE, &mut Faults::none())
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(&ini).unwrap(),
+        "[Engine.XComModOptions]\r\nActiveMods=\"Item3\"\r\nActiveMods=\"Item1\"\r\n"
+    );
+    s.revert("xcom2", false, &mut Faults::none()).unwrap();
+    assert_eq!(fs::read_to_string(&ini).unwrap(), original);
+}

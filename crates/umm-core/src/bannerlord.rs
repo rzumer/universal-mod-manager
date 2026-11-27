@@ -8,7 +8,7 @@
 //! user selected in the launcher (their own modules, other Workshop items). Each module comes
 //! after the ones it depends on, the game's own first.
 
-use crate::kenshi::rename_folders;
+use crate::modfile::rename_folders;
 use crate::{Result, Session};
 use roxmltree::{Document, Node};
 use std::collections::HashMap;

@@ -336,6 +336,10 @@ pub enum PluginListFormat {
     /// Kenshi: enabled mods in `data/mods.cfg`, one `<Name>.mod` a line, in load order, by
     /// the `.mod` file in each mod's folder. Each mod's folder is named after it.
     KenshiCfg,
+    /// XCOM 2: `ActiveMods="<Name>"` lines in the `[Engine.XComModOptions]` section of the
+    /// user's `XComModOptions.ini`, by the `<Name>.XComMod` file in each mod's folder. Each
+    /// mod's folder is named after it.
+    XcomIni,
 }
 
 impl PluginListFormat {
@@ -347,6 +351,7 @@ impl PluginListFormat {
                 | PluginListFormat::FactorioJson
                 | PluginListFormat::OniJson
                 | PluginListFormat::KenshiCfg
+                | PluginListFormat::XcomIni
         )
     }
 }

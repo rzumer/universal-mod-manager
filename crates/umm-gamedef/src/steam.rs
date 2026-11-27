@@ -114,6 +114,9 @@ pub enum Engine {
     OxygenNotIncluded,
     /// Mount & Blade II: Bannerlord: modules in `Modules/`, loaded as the game is told.
     Bannerlord,
+    /// XCOM 2 (Unreal Engine 3): a folder per mod in `XComGame/Mods/`, enabled in the user's
+    /// `XComModOptions.ini`.
+    Xcom2,
     Unknown,
 }
 
@@ -129,6 +132,7 @@ impl Engine {
             Engine::Divinity => "Divinity Engine (Larian)",
             Engine::OxygenNotIncluded => "Unity (Mono), Klei's mod loader",
             Engine::Bannerlord => "TaleWorlds Engine (Bannerlord)",
+            Engine::Xcom2 => "Unreal Engine 3 (XCOM 2)",
             Engine::Unknown => "Unknown engine",
         }
     }
@@ -436,6 +440,26 @@ pub fn inspect_folder(root: &Path) -> Inspection {
             larian: None,
         };
     }
+    // XCOM 2: War of the Chosen when installed (its own game, in its folder), else the base
+    // game; both started directly, past 2K's launcher.
+    if has_file_ci(root, XCOM2_EXE) {
+        let exe = if has_file_ci(root, XCOM2_WOTC_EXE) {
+            XCOM2_WOTC_EXE
+        } else {
+            XCOM2_EXE
+        };
+        exes.retain(|e| !e.eq_ignore_ascii_case(exe));
+        exes.insert(0, exe.to_string());
+        return Inspection {
+            engine: Engine::Xcom2,
+            exe: exe.to_string(),
+            exes,
+            unreal_project: None,
+            data_folder: None,
+            paradox: None,
+            larian: None,
+        };
+    }
     // Factorio: its exe in `bin/x64/`, its base mod in `data/`.
     if root.join(FACTORIO_EXE).is_file() && root.join("data/base/info.json").is_file() {
         exes.retain(|e| !e.eq_ignore_ascii_case(FACTORIO_EXE));
@@ -522,6 +546,10 @@ fn factorio_portable(root: &Path) -> bool {
 /// Bannerlord's exe, started directly past its launcher
 /// (`TaleWorlds.MountAndBlade.Launcher.exe` beside it).
 pub const BANNERLORD_EXE: &str = "bin/Win64_Shipping_Client/Bannerlord.exe";
+
+/// XCOM 2's exe, and War of the Chosen's, in its folder within the game's.
+pub const XCOM2_EXE: &str = "Binaries/Win64/XCom2.exe";
+pub const XCOM2_WOTC_EXE: &str = "XCom2-WarOfTheChosen/Binaries/Win64/XCom2.exe";
 
 /// Oxygen Not Included's exe, at the top of its folder.
 pub const ONI_EXE: &str = "OxygenNotIncluded.exe";
@@ -621,7 +649,7 @@ const fn other(
 }
 
 use PluginListFormat::{
-    Asterisk, FactorioJson, KenshiCfg, MorrowindIni, OniJson, Plain, RimworldXml,
+    Asterisk, FactorioJson, KenshiCfg, MorrowindIni, OniJson, Plain, RimworldXml, XcomIni,
 };
 
 /// RimWorld's list, in its folder under `AppData\LocalLow` (which has no variable of its own).
@@ -735,8 +763,8 @@ fn add_list_game(draft: &mut Draft, folder: &Path, found: &Inspection) {
         ),
         MorrowindIni => "Morrowind: while mods are deployed, UMM enables their plugins in the [Game Files] section of Morrowind.ini. The game loads plugins in the order of their file dates.".into(),
         KenshiCfg => "Kenshi: each mod goes in its own folder in mods/, named after its .mod file as the game wants, and while mods are deployed, UMM enables them in data/mods.cfg, in load order (your own list comes back afterwards). Steam Workshop items can be turned on or off in a profile too.".into(),
-        // Factorio and Oxygen Not Included are set up in `build`, not as list games.
-        RimworldXml | FactorioJson | OniJson => format!(
+        // Factorio, Oxygen Not Included and XCOM 2 are set up in `build`, not as list games.
+        RimworldXml | FactorioJson | OniJson | XcomIni => format!(
             "RimWorld: each mod goes in its own folder in Mods/, and while mods are deployed, UMM activates them in {}, in load order.",
             plugins.list
         ),
@@ -998,6 +1026,26 @@ fn build(
                 ));
             }
         }
+        Engine::Xcom2 => notes.push(Note::new(
+            "xcom2",
+            format!(
+                "XCOM 2{}: each mod goes in its own folder in {}XComGame/Mods/, named after its \
+                 .XComMod file as the game wants, and while mods are deployed, UMM enables them \
+                 in XComModOptions.ini in Documents\\My Games (your own list comes back \
+                 afterwards). Steam Workshop items can be turned on or off in a profile too. UMM \
+                 starts the game directly, not through 2K's launcher.",
+                if exe.eq_ignore_ascii_case(XCOM2_WOTC_EXE) {
+                    ": War of the Chosen"
+                } else {
+                    ""
+                },
+                if exe.eq_ignore_ascii_case(XCOM2_WOTC_EXE) {
+                    "XCom2-WarOfTheChosen/"
+                } else {
+                    ""
+                },
+            ),
+        )),
         Engine::Bannerlord => notes.push(Note::new(
             "bannerlord",
             "Bannerlord: each mod goes in its own folder in Modules/, named after the module's \
@@ -1052,6 +1100,25 @@ fn build(
             ),
         })
         .map(|(u, m, l)| (u, m, l, FactorioJson)),
+        Engine::Xcom2 => {
+            let wotc = exe.eq_ignore_ascii_case(XCOM2_WOTC_EXE);
+            Some((
+                None,
+                format!(
+                    "{}XComGame/Mods",
+                    if wotc { "XCom2-WarOfTheChosen/" } else { "" }
+                ),
+                format!(
+                    "%DOCUMENTS%/My Games/{}/XComGame/Config/XComModOptions.ini",
+                    if wotc {
+                        "XCOM2 War of the Chosen"
+                    } else {
+                        "XCOM2"
+                    }
+                ),
+                XcomIni,
+            ))
+        }
         Engine::OxygenNotIncluded => Some((
             Some(ONI_USER.to_string()),
             format!("@{USER_FOLDER}/mods/Local"),
@@ -1164,7 +1231,7 @@ fn build(
             // Larian's and Bannerlord's launchers likewise stand before the game.
             steam_relaunch: if (found.paradox.is_some()
                 || found.larian.is_some()
-                || found.engine == Engine::Bannerlord)
+                || matches!(found.engine, Engine::Bannerlord | Engine::Xcom2))
                 && origin.relaunch == SteamRelaunch::ViaSteam
             {
                 SteamRelaunch::AppidFile
@@ -1674,6 +1741,50 @@ mod tests {
             .with_setup(LoaderSetup::Generic, None)
             .unwrap();
         assert_eq!(again.install[0].target, "Modules/{mod}/");
+    }
+
+    #[test]
+    fn xcom_2_mods_go_to_war_of_the_chosen_when_it_is_there() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        touch(&root.join(XCOM2_EXE), 100);
+        touch(&root.join("Binaries/Win64/Launcher/ModLauncherWPF.exe"), 50);
+        let base = inspect_folder(root);
+        assert_eq!((base.engine, base.exe.as_str()), (Engine::Xcom2, XCOM2_EXE));
+        let d = draft_manual(root, "XCOM 2", &base.exe, &base, LoaderSetup::Generic, None).unwrap();
+        let p = d.def.plugins.as_ref().unwrap();
+        assert_eq!(
+            (p.list.as_str(), p.format, p.folder.as_str()),
+            (
+                "%DOCUMENTS%/My Games/XCOM2/XComGame/Config/XComModOptions.ini",
+                PluginListFormat::XcomIni,
+                "XComGame/Mods"
+            )
+        );
+        assert_eq!(d.def.install[0].target, "XComGame/Mods/{mod}/");
+
+        touch(&root.join(XCOM2_WOTC_EXE), 100);
+        let wotc = inspect_folder(root);
+        assert_eq!(wotc.exe, XCOM2_WOTC_EXE);
+        let d = draft_manual(root, "XCOM 2", &wotc.exe, &wotc, LoaderSetup::Generic, None).unwrap();
+        let p = d.def.plugins.as_ref().unwrap();
+        assert_eq!(
+            (p.list.as_str(), p.folder.as_str()),
+            (
+                "%DOCUMENTS%/My Games/XCOM2 War of the Chosen/XComGame/Config/XComModOptions.ini",
+                "XCom2-WarOfTheChosen/XComGame/Mods"
+            )
+        );
+        assert_eq!(
+            d.def.install[0].target,
+            "XCom2-WarOfTheChosen/XComGame/Mods/{mod}/"
+        );
+        assert!(d
+            .notes
+            .iter()
+            .any(|n| n.key == "xcom2" && n.text.contains("War of the Chosen")));
+        let back = GameDef::parse_game(&to_toml(&d), Path::new("game.toml"), "xcom2").unwrap();
+        assert_eq!(back.plugins, d.def.plugins);
     }
 
     #[test]

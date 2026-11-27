@@ -242,7 +242,12 @@ pub fn suggest(files: &[&str], game: &GameIndex, def: &CompiledDef) -> Option<Pl
         Some(umm_gamedef::PluginListFormat::RimworldXml) => Some(rimworld_root(&rels)),
         Some(umm_gamedef::PluginListFormat::FactorioJson) => Some(factorio_root(&rels)),
         Some(umm_gamedef::PluginListFormat::OniJson) => Some(oni_root(&rels)),
-        Some(umm_gamedef::PluginListFormat::KenshiCfg) => Some(kenshi_root(&rels)),
+        Some(
+            f @ (umm_gamedef::PluginListFormat::KenshiCfg | umm_gamedef::PluginListFormat::XcomIni),
+        ) => Some(mod_file_root(
+            &rels,
+            crate::modfile::extension(f).unwrap_or_default(),
+        )),
         _ if def.def.paradox.is_some() => Some(paradox_root(&rels, def)),
         // A Bannerlord module's folder holds its `SubModule.xml`.
         _ if def.def.bannerlord.is_some() => Some(marked_root(&rels, |n| {
@@ -407,11 +412,12 @@ fn oni_root(rels: &[RelPath]) -> Option<Placement> {
     .or_else(|| marked_root(rels, |n| n.to_ascii_lowercase().ends_with(".dll")))
 }
 
-/// A Kenshi mod's folder is the one holding its `.mod` file (the shallowest).
-fn kenshi_root(rels: &[RelPath]) -> Option<Placement> {
+/// A Kenshi or XCOM 2 mod's folder is the one holding its file (`.mod`, `.XComMod`; the
+/// shallowest).
+fn mod_file_root(rels: &[RelPath], ext: &str) -> Option<Placement> {
     marked_root(rels, |n| {
         let n = n.to_ascii_lowercase();
-        n.len() > 4 && n.ends_with(".mod")
+        n.len() > ext.len() && n.ends_with(ext)
     })
 }
 

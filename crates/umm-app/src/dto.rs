@@ -279,7 +279,8 @@ impl From<umm_core::PluginList> for PluginListDto {
                 umm_core::PluginListFormat::RimworldXml
                 | umm_core::PluginListFormat::FactorioJson
                 | umm_core::PluginListFormat::OniJson
-                | umm_core::PluginListFormat::KenshiCfg => "mods",
+                | umm_core::PluginListFormat::KenshiCfg
+                | umm_core::PluginListFormat::XcomIni => "mods",
                 umm_core::PluginListFormat::MorrowindIni => "dated",
                 _ => "plugins",
             },

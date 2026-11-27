@@ -16,7 +16,7 @@ use umm_gamedef::{CompiledDef, PluginListFormat, RelPath, PLUGIN_EXTENSIONS};
 use umm_store::fsutil::{hash_file, write_atomic, IoCtx};
 use umm_store::Profile;
 use PluginListFormat::{
-    Asterisk, FactorioJson, KenshiCfg, MorrowindIni, OniJson, Plain, RimworldXml,
+    Asterisk, FactorioJson, KenshiCfg, MorrowindIni, OniJson, Plain, RimworldXml, XcomIni,
 };
 
 /// The plugin list a deploy writes.
@@ -85,6 +85,54 @@ fn game_file(line: &str) -> Option<&str> {
 }
 
 const GAME_FILES: &str = "Game Files";
+/// XCOM 2's section of enabled mods, and their key.
+const XCOM_SECTION: &str = "Engine.XComModOptions";
+const ACTIVE_MODS: &str = "ActiveMods";
+
+/// An `ActiveMods=` line's value, without its quotes.
+fn active_mod(line: &str) -> Option<&str> {
+    let (k, v) = line.trim().split_once('=')?;
+    k.trim()
+        .eq_ignore_ascii_case(ACTIVE_MODS)
+        .then(|| v.trim().trim_matches('"').trim())
+}
+
+/// An ini file with these lines (`entries`, each ending in `nl`) in its `section`, in place
+/// of the lines `is_entry` says are the list's there; the rest kept as it is. The section is
+/// added at the end when the file has none.
+fn ini_section(
+    original: &str,
+    section: &str,
+    is_entry: impl Fn(&str) -> bool,
+    entries: &str,
+    nl: &str,
+) -> String {
+    let mut out = String::new();
+    let mut in_section = false;
+    let mut written = false;
+    for line in original.split_inclusive('\n') {
+        if let Some(h) = header(line) {
+            in_section = h.eq_ignore_ascii_case(section);
+            out.push_str(line);
+            if in_section && !written {
+                if !line.ends_with('\n') {
+                    out.push_str(nl);
+                }
+                out.push_str(entries);
+                written = true;
+            }
+        } else if !(in_section && is_entry(line)) {
+            out.push_str(line);
+        }
+    }
+    if !written {
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push_str(nl);
+        }
+        out.push_str(&format!("[{section}]{nl}{entries}"));
+    }
+    out
+}
 const ACTIVE: &str = "<activeMods>";
 const ACTIVE_END: &str = "</activeMods>";
 
@@ -129,6 +177,20 @@ fn read_list(text: &str, format: PluginListFormat) -> Vec<PluginEntry> {
                     section = h;
                 } else if section.eq_ignore_ascii_case(GAME_FILES) {
                     if let Some(v) = game_file(line).filter(|v| !v.is_empty()) {
+                        out.push(entry(v, true));
+                    }
+                }
+            }
+            out
+        }
+        XcomIni => {
+            let mut section = "";
+            let mut out = Vec::new();
+            for line in text.lines() {
+                if let Some(h) = header(line) {
+                    section = h;
+                } else if section.eq_ignore_ascii_case(XCOM_SECTION) {
+                    if let Some(v) = active_mod(line).filter(|v| !v.is_empty()) {
                         out.push(entry(v, true));
                     }
                 }
@@ -189,31 +251,26 @@ impl PluginList {
                     .enumerate()
                     .map(|(i, n)| format!("GameFile{i}={n}{nl}"))
                     .collect();
-                let mut out = String::new();
-                let mut in_section = false;
-                let mut written = false;
-                for line in original.split_inclusive('\n') {
-                    if let Some(h) = header(line) {
-                        in_section = h.eq_ignore_ascii_case(GAME_FILES);
-                        out.push_str(line);
-                        if in_section && !written {
-                            if !line.ends_with('\n') {
-                                out.push_str(nl);
-                            }
-                            out.push_str(&entries);
-                            written = true;
-                        }
-                    } else if !(in_section && game_file(line).is_some()) {
-                        out.push_str(line);
-                    }
-                }
-                if !written {
-                    if !out.is_empty() && !out.ends_with('\n') {
-                        out.push_str(nl);
-                    }
-                    out.push_str(&format!("[{GAME_FILES}]{nl}{entries}"));
-                }
-                out
+                ini_section(
+                    original,
+                    GAME_FILES,
+                    |l| game_file(l).is_some(),
+                    &entries,
+                    nl,
+                )
+            }
+            XcomIni => {
+                let entries: String = self
+                    .enabled()
+                    .flat_map(|n| [ACTIVE_MODS, "=\"", n, "\"", nl])
+                    .collect();
+                ini_section(
+                    original,
+                    XCOM_SECTION,
+                    |l| active_mod(l).is_some(),
+                    &entries,
+                    nl,
+                )
             }
             RimworldXml => {
                 let items: String = self
@@ -243,6 +300,15 @@ impl PluginList {
             FactorioJson => crate::factorio::render(original, &self.entries),
             OniJson => crate::oni::render(original, &self.entries),
         }
+    }
+}
+
+/// A mod's entry in a list naming mods by their file: Kenshi's has the file's name, XCOM 2's
+/// the mod's (the file's without `.XComMod`).
+fn entry_name(format: PluginListFormat, file: &str) -> String {
+    match (format, crate::modfile::extension(format)) {
+        (XcomIni, Some(ext)) => crate::modfile::name_of(file, ext).to_string(),
+        _ => file.to_string(),
     }
 }
 
@@ -374,14 +440,16 @@ impl Session {
                     .filter_map(|f| Some((f.owner.as_str(), crate::factorio::mod_name(&f.source)?)))
                     .collect()
             }
-            // Kenshi mods: a folder each, by the `.mod` file in it.
-            KenshiCfg => {
+            // Kenshi and XCOM 2 mods: a folder each, by the file in it (Kenshi: `<Name>.mod`;
+            // XCOM 2: `<Name>`, from `<Name>.XComMod`).
+            KenshiCfg | XcomIni => {
                 let prefix = format!("{}/", folder.as_str());
+                let ext = crate::modfile::extension(cfg.format).unwrap_or_default();
                 files
                     .iter()
                     .filter_map(|f| {
-                        let (_, file) = crate::kenshi::mod_file(f.target.as_str(), &prefix)?;
-                        Some((f.owner.as_str(), file.to_string()))
+                        let (_, file) = crate::modfile::mod_file(f.target.as_str(), &prefix, ext)?;
+                        Some((f.owner.as_str(), entry_name(cfg.format, file)))
                     })
                     .collect()
             }
@@ -397,20 +465,24 @@ impl Session {
                     .collect()
             }
         };
-        // RimWorld's and Kenshi's Workshop items the profile has: on as it says, by their
-        // package ids (Kenshi: their `.mod` files); the others are left as the user's list
-        // has them.
+        // RimWorld's, Kenshi's and XCOM 2's Workshop items the profile has: on as it says, by
+        // their package ids (Kenshi, XCOM 2: their mods' files); the others are left as the
+        // user's list has them.
         let mut off: HashSet<String> = HashSet::new();
         let workshop_ids: Vec<(String, bool)> = profile
             .workshop()
             .map(|(i, on)| (format!("{}{i}", umm_store::WORKSHOP_PREFIX), on))
             .collect();
-        if matches!(cfg.format, RimworldXml | KenshiCfg) && !workshop_ids.is_empty() {
+        if matches!(cfg.format, RimworldXml | KenshiCfg | XcomIni) && !workshop_ids.is_empty() {
             let folders = self.workshop_folders(&def.def);
             for (entry, on) in &workshop_ids {
                 let item = &entry[umm_store::WORKSHOP_PREFIX.len()..];
                 let Some(pid) = folders.get(item).and_then(|f| match cfg.format {
-                    KenshiCfg => crate::kenshi::mod_in(f),
+                    KenshiCfg | XcomIni => crate::modfile::mod_in(
+                        f,
+                        crate::modfile::extension(cfg.format).unwrap_or_default(),
+                    )
+                    .map(|file| entry_name(cfg.format, &file)),
                     _ => package_id(&f.join("About").join("About.xml")),
                 }) else {
                     continue;
@@ -533,7 +605,7 @@ impl Session {
                 t.dedup();
                 t
             }
-            MorrowindIni | RimworldXml | FactorioJson | OniJson | KenshiCfg => Vec::new(),
+            MorrowindIni | RimworldXml | FactorioJson | OniJson | KenshiCfg | XcomIni => Vec::new(),
         };
         plan.external.push(PlannedExternal {
             hash: hash_file(&src).ctx(|| format!("hashing {}", src.display()))?,
