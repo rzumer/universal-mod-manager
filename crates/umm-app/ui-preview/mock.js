@@ -61,6 +61,23 @@ const q = new URLSearchParams(location.search);
 // `?nopick` makes the Unity game unknown to Nexus; `?unrecognised` makes downloads unknown
 // by hash.
 const nexusDomains = { "example-unity-game": null, "example-asi-game": null };
+// GameBanana: the game each UMM game is set to (null: not set), and its mods. `?gbpick`
+// previews a game not found by its name.
+const gbGames = { "example-unity-game": null, "example-asi-game": null };
+const gbMods = [
+  { modId: 428457, name: "Gaster Blaster", author: "BlueSheep3", version: "1.2", category: "Game files", likes: 62, views: 199184, updated: 1678916491, rated: false, obsolete: false, hasFiles: true },
+  { modId: 496958, name: "Red & Yellow", author: "Joe Applebrook", version: "1.4.0", category: "Gameplay", likes: 151, views: 402113, updated: 1786599226, rated: true, obsolete: false, hasFiles: true },
+  { modId: 233745, name: "Old Font Pack", author: "Someone", version: "0.9", category: "Text changes", likes: 4, views: 2210, updated: 1500000000, rated: false, obsolete: true, hasFiles: true },
+];
+const gbFiles = {
+  496958: [
+    { fileId: 1782602, name: "red_and_yellow_v140.zip", description: "v1.4.0", version: null, size: 39_103_150, added: 1786599226, downloads: 1200, clean: true, containsExe: [] },
+    { fileId: 1472284, name: "red_and_yellow_v120_mac.zip", description: "v1.2.0 (Mac)", version: null, size: 68_352_833, added: 1751782767, downloads: 300, clean: true, containsExe: [] },
+    { fileId: 1307994, name: "red_and_yellow_v120.zip", description: "v1.2.0", version: null, size: 38_125_640, added: 1729967498, downloads: 5400, clean: true, containsExe: [] },
+  ],
+};
+const gbFilesOf = (modId) =>
+  gbFiles[modId] || [{ fileId: modId * 10, name: `mod_${modId}.zip`, description: "", version: null, size: 1_408_780, added: 1678916481, downloads: 77916, clean: true, containsExe: ["DeltaPatcher.exe"] }];
 const nexusFiles = [
   { fileId: 4100, name: "Lantern Light", version: "2.0.1", category: "MAIN", size: 1_800_000, date: 300, description: "Everything in one archive.", old: false, group: 1 },
   { fileId: 4101, name: "Warm Colours", version: "2.0.1", category: "OPTIONAL", size: 220_000, date: 290, description: "Orange light instead of white.", old: false, group: 2 },
@@ -973,6 +990,72 @@ More text.` : "",
       return { id: m.id, name: m.name, modId: m.nexusMod, version: m.version, state: newer ? "newer" : "current", newFileId: newer ? 4100 : null, newVersion: newer ? "2.0.1" : null };
     }),
   open_nexus_page: () => null,
+  gb_game: ({ game }) => {
+    const id = gbGames[game] || (game === "example-unity-game" && !q.has("gbpick") ? 5506 : null);
+    return { gameId: id, name: id ? "EXAMPLE UNITY GAME" : null, modCount: id ? 549 : null, guessed: !gbGames[game] && !!id, url: id ? `https://gamebanana.com/games/${id}` : null };
+  },
+  gb_find_games: ({ name }) =>
+    [
+      { gameId: 5506, name: "EXAMPLE UNITY GAME", icon: null, url: "https://gamebanana.com/games/5506" },
+      { gameId: 6713, name: "EXAMPLE UNITY GAME (Switch)", icon: null, url: "https://gamebanana.com/games/6713" },
+      { gameId: 7001, name: "Example ASI Game", icon: null, url: "https://gamebanana.com/games/7001" },
+    ].filter((g) => g.name.toLowerCase().includes(name.toLowerCase().slice(0, 7))),
+  set_gb_game: ({ game, gameId }) => {
+    gbGames[game] = gameId;
+    return handlers.gb_game({ game });
+  },
+  gb_search: ({ game, query }) => {
+    let items = gbMods.filter((m) => m.name.toLowerCase().includes(query.text.toLowerCase()));
+    if (query.installed) items = items.filter((m) => mods[game].some((x) => x.gbMod === m.modId));
+    const by = { downloads: (m) => -m.views, likes: (m) => -m.likes, updated: (m) => -m.updated, newest: (m) => -m.updated, name: (m) => m.name }[query.sort] || ((m) => -m.views);
+    items = [...items].sort((a, b) => (by(a) < by(b) ? -1 : by(a) > by(b) ? 1 : 0));
+    return {
+      total: items.length,
+      complete: true,
+      items: items.map((m) => ({ ...m, thumbnail: null, url: `https://gamebanana.com/mods/${m.modId}`, installed: mods[game].filter((x) => x.gbMod === m.modId).map((x) => x.version) })),
+    };
+  },
+  gb_files: ({ game, modId }) => {
+    const m = gbMods.find((x) => x.modId === modId);
+    const have = mods[game].filter((x) => x.gbMod === modId);
+    return {
+      modId,
+      name: m.name,
+      version: m.version,
+      author: m.author,
+      text: "Adds the mod's feature.\n\nPatch 1.1:\n- sound effects\n- fixes",
+      downloads: 80987,
+      url: `https://gamebanana.com/mods/${modId}`,
+      files: gbFilesOf(modId).map((f) => ({ ...f, installed: have.find((x) => x.gbFile === f.fileId)?.id || null })),
+    };
+  },
+  gb_install: async ({ game, modId, fileId, profile }) => {
+    const m = gbMods.find((x) => x.modId === modId);
+    const f = gbFilesOf(modId).find((x) => x.fileId === fileId);
+    for (const step of ["Looking the mod up on GameBanana", `Downloading ${f.description || f.name}: 12 of 37 MB`, `Downloading ${f.description || f.name}: 37 of 37 MB`, "Checking the download", "Unpacking"]) {
+      emit("gb-progress", { game, message: step });
+      await sleep(500);
+    }
+    const id = m.name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+    const list = mods[game];
+    const existing = list.find((x) => x.id === id);
+    const newest = Math.max(...gbFilesOf(modId).map((x) => x.added)) === f.added;
+    const version = f.version || (newest ? m.version : f.description || null);
+    if (existing) Object.assign(existing, { version, gbFile: fileId });
+    else {
+      list.push({ id, name: m.name, version, files: 3, size: f.size, gbMod: modId, gbFile: fileId, gamebananaUrl: `https://gamebanana.com/mods/${modId}` });
+      profiles[game][profile].mods.push({ id, enabled: true });
+    }
+    const gameSet = !gbGames[game];
+    gbGames[game] ||= 5506;
+    return { id, name: m.name, version, replaced: !!existing, gameSet, placementGuessed: false, installerWaiting: false };
+  },
+  gb_updates: ({ game }) =>
+    mods[game].filter((m) => m.gbMod).map((m) => {
+      const newer = m.gbMod === 496958 && m.gbFile === 1307994;
+      return { id: m.id, name: m.name, modId: m.gbMod, fileId: m.gbFile, version: m.version, state: newer ? "newer" : "current", newFileId: newer ? 1782602 : null, newVersion: newer ? "v1.4.0" : null };
+    }),
+  open_gb_page: () => null,
   open_web_page: () => null,
   take_pending_link: () => {
     const l = new URLSearchParams(location.search).get("link");

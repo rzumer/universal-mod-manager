@@ -20,7 +20,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://gcdn.thunderstore.io https://ccdn.thunderstore.io https://staticdelivery.nexusmods.com https://media.nexusmods.com https://images.steamusercontent.com https://steamuserimages-a.akamaihd.net; connect-src ipc: http://ipc.localhost"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://gcdn.thunderstore.io https://ccdn.thunderstore.io https://staticdelivery.nexusmods.com https://media.nexusmods.com https://images.steamusercontent.com https://steamuserimages-a.akamaihd.net https://images.gamebanana.com; connect-src ipc: http://ipc.localhost"
     }
   },
   "bundle": {

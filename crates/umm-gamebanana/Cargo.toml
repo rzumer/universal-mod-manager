@@ -1,0 +1,12 @@
+[package]
+name = "umm-gamebanana"
+description = "GameBanana: browsing a game's mods, their files and downloads"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+umm-net.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

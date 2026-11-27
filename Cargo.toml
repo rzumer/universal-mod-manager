@@ -32,6 +32,7 @@ umm-launch = { path = "crates/umm-launch" }
 umm-thunderstore = { path = "crates/umm-thunderstore" }
 umm-net = { path = "crates/umm-net" }
 umm-nexus = { path = "crates/umm-nexus" }
+umm-gamebanana = { path = "crates/umm-gamebanana" }
 umm-fomod = { path = "crates/umm-fomod" }
 
 # Dependencies do the heavy lifting (7z/zip decoding, hashing, image decoding): optimised

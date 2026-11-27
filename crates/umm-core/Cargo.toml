@@ -14,6 +14,7 @@ thiserror.workspace = true
 umm-launch.workspace = true
 umm-thunderstore.workspace = true
 umm-nexus.workspace = true
+umm-gamebanana.workspace = true
 umm-fomod.workspace = true
 md-5 = "0.10"
 dirs.workspace = true

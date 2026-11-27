@@ -35,8 +35,13 @@ pub fn is_patcher_exe(path: &str) -> bool {
 }
 
 /// A mod's patcher program as placed (its placement applied, not the install rules), for
-/// showing: `None` when the mod is not a patcher.
+/// showing: `None` when the mod is not a patcher. A mod with delta patches (`.xdelta`) is
+/// not: the patcher program beside them (Delta Patcher) is only there for applying them by
+/// hand, and UMM applies them itself.
 pub fn patcher_of(meta: &ModMeta) -> Option<String> {
+    if meta.files.keys().any(|f| crate::is_delta_patch(f)) {
+        return None;
+    }
     meta.files.keys().find_map(|f| {
         let rel = RelPath::parse(f).ok()?;
         let placed = match &meta.placement {
@@ -213,10 +218,15 @@ impl Session {
 
     /// The mod's patcher program, if it is a patcher.
     fn patcher_in(&self, def: &CompiledDef, meta: &ModMeta) -> Option<String> {
-        self.placed_files(def, meta)
+        let placed: Vec<String> = self
+            .placed_files(def, meta)
             .into_iter()
             .map(|(t, _, _)| t.as_str().to_string())
-            .find(|t| is_patcher_exe(t))
+            .collect();
+        if placed.iter().any(|t| crate::is_delta_patch(t)) {
+            return None;
+        }
+        placed.into_iter().find(|t| is_patcher_exe(t))
     }
 
     /// What the patcher's run depends on: the game files it patched (size and time, as a

@@ -1279,6 +1279,7 @@ fn build(
         launch,
         loader: None,
         nexus: None,
+        gamebanana: None,
         plugins: mod_list.as_ref().map(|(_, mods, list, format)| Plugins {
             list: list.clone(),
             format: *format,

@@ -164,7 +164,7 @@ fn name_key(name: &str) -> String {
         .collect()
 }
 
-fn md5_file(path: &Path) -> Result<String> {
+pub(crate) fn md5_file(path: &Path) -> Result<String> {
     use md5::Digest;
     let mut f = fs::File::open(path).ctx(|| format!("opening {}", path.display()))?;
     let mut h = md5::Md5::new();

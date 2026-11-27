@@ -116,6 +116,8 @@ fn xdelta_mods_patch_data_win_in_profile_order_while_deployed() {
                 xdelta(VANILLA, KINDER, Some("data_kinder.win//data.win/")),
             ),
             ("Kinder/mus_x.ogg", b"kinder music".to_vec()),
+            // For applying the patch by hand: not a patcher for UMM to run.
+            ("Kinder/DeltaPatcher.exe", b"exe".to_vec()),
         ],
     );
     // One patch per game version, naming no file: data.win, as a GameMaker game's. Made
@@ -145,8 +147,10 @@ fn xdelta_mods_patch_data_win_in_profile_order_while_deployed() {
         .iter()
         .all(|f| !f.target.as_str().ends_with(".xdelta")));
 
+    assert!(s.patcher_status(GAME, "kinder").unwrap().is_none());
     s.deploy(GAME, DEFAULT_PROFILE, &mut Faults::none())
         .unwrap();
+    assert!(!root.join("DeltaPatcher.exe").exists());
     assert_eq!(fs::read(root.join("data.win")).unwrap(), BOTH);
     assert_eq!(fs::read(root.join("mus_x.ogg")).unwrap(), b"kinder music");
     assert!(!root.join("kinder.xdelta").exists());

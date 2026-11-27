@@ -1315,6 +1315,7 @@ impl Session {
                     loader: loader.is_some(),
                 }),
                 nexus: None,
+                gamebanana: None,
                 replace: true,
                 keep_replaced: true,
                 package_files: layout::package_files(zip)?,

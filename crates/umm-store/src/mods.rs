@@ -32,6 +32,9 @@ pub struct ModMeta {
     /// Set for files installed from Nexus Mods.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nexus: Option<NexusMeta>,
+    /// Set for files installed from GameBanana.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gamebanana: Option<GameBananaMeta>,
     /// Where the files go, for a mod not laid out like the game folder. Applies before the
     /// install rules.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -98,6 +101,27 @@ pub struct NexusMeta {
     pub category: Option<String>,
 }
 
+/// Where a mod from GameBanana came from: one file of one mod there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GameBananaMeta {
+    /// The game's number on GameBanana.
+    pub game_id: u64,
+    pub mod_id: u64,
+    pub file_id: u64,
+    /// The archive's name there (`mymod_v2.zip`).
+    pub file_name: String,
+    /// When the file was added there (Unix time), to tell newer uploads by.
+    #[serde(default)]
+    pub file_added: u64,
+    /// The mod's version when the file was installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// The file's MD5 checksum (lower-case hex), as GameBanana gave it and the download
+    /// matched.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub md5: String,
+}
+
 /// A mod's FOMOD installer, as it was run.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FomodMeta {
@@ -147,6 +171,7 @@ pub struct ImportOptions {
     pub layout: Layout,
     pub thunderstore: Option<ThunderstoreMeta>,
     pub nexus: Option<NexusMeta>,
+    pub gamebanana: Option<GameBananaMeta>,
     /// Replace an existing mod with the same id (an update). The old one is removed only once
     /// the new one is fully stored.
     pub replace: bool,
@@ -329,6 +354,7 @@ fn stage_mod(
         layout: opts.layout,
         thunderstore: opts.thunderstore.clone(),
         nexus: opts.nexus.clone(),
+        gamebanana: opts.gamebanana.clone(),
         placement: None,
         fomod: None,
         files,

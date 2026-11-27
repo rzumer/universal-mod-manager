@@ -40,6 +40,13 @@ pub fn is_delta_patch(path: &str) -> bool {
         .any(|e| p.len() > e.len() && p.ends_with(e))
 }
 
+/// Whether a file is a program for applying delta patches by hand (`DeltaPatcher.exe`,
+/// `xdelta3.exe`, `xdeltaUI.exe`), shipped beside the patches.
+fn is_patch_tool(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path).to_lowercase();
+    name.ends_with(".exe") && (name.contains("xdelta") || name.contains("deltapatcher"))
+}
+
 /// What UMM keeps of a mod's applied patches.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct Record {
@@ -198,6 +205,23 @@ impl Session {
                 reason,
             })
         };
+        // The tools mods ship for applying their patches by hand (Delta Patcher, xdelta3)
+        // have nothing to do in the game folder.
+        let tools: Vec<RelPath> = plan
+            .files
+            .iter()
+            .filter(|f| f.owner == meta.id && is_patch_tool(f.target.as_str()))
+            .map(|f| f.target.clone())
+            .collect();
+        plan.files
+            .retain(|f| !(f.owner == meta.id && is_patch_tool(f.target.as_str())));
+        for t in tools {
+            skip(
+                plan,
+                &t,
+                "a tool for applying the mod's patch by hand; UMM applies it itself".into(),
+            );
+        }
 
         // Each patch by the file it patches.
         let mut by_target: BTreeMap<String, (RelPath, Vec<Patch>)> = BTreeMap::new();

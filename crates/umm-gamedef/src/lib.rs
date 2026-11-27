@@ -49,6 +49,9 @@ pub struct GameDef {
     /// The game on Nexus Mods, when UMM installs its mods from there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nexus: Option<Nexus>,
+    /// The game on GameBanana, when UMM installs its mods from there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gamebanana: Option<GameBanana>,
     /// The game's list of enabled plugins or mods, which UMM writes while mods are deployed
     /// (Bethesda games' `plugins.txt`, RimWorld's `ModsConfig.xml`): `[mod_list]` in the file.
     #[serde(default, rename = "mod_list", skip_serializing_if = "Option::is_none")]
@@ -271,6 +274,14 @@ pub struct Thunderstore {
 pub struct Nexus {
     /// The game's name in Nexus URLs, as in `nexusmods.com/<domain>/mods/`.
     pub domain: String,
+}
+
+/// The game on GameBanana.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GameBanana {
+    /// The game's number on GameBanana, as in `gamebanana.com/games/<game>`.
+    pub game: u64,
 }
 
 /// A game that only loads the plugins or mods a list file names (Bethesda games, RimWorld,

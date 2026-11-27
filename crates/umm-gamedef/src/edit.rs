@@ -64,6 +64,29 @@ pub fn set_nexus_domain(
     Ok(doc.to_string())
 }
 
+/// Sets `[gamebanana] game`, or removes the section with `None`.
+pub fn set_gamebanana_game(
+    text: &str,
+    origin: &Path,
+    game: Option<u64>,
+) -> Result<String, GameDefError> {
+    let mut doc = parse(text, origin)?;
+    match game {
+        Some(g) => {
+            let t = doc
+                .entry("gamebanana")
+                .or_insert(toml_edit::table())
+                .as_table_mut()
+                .ok_or_else(|| GameDefError::Unsupported("[gamebanana] is not a table".into()))?;
+            t.insert("game", value(g as i64));
+        }
+        None => {
+            doc.remove("gamebanana");
+        }
+    }
+    Ok(doc.to_string())
+}
+
 /// The sections a mod loader setup decides.
 const SETUP_KEYS: &[&str] = &["loader", "thunderstore", "install", "writable"];
 
@@ -164,6 +187,21 @@ mod tests {
 
         let bad = format!("{TEXT}\n[nexus]\ndomain = \"../x\"\n");
         assert!(GameDef::parse_game(&bad, p, "trip").is_err());
+    }
+
+    #[test]
+    fn sets_the_gamebanana_game() {
+        let p = Path::new("game.toml");
+        let t = set_gamebanana_game(TEXT, p, Some(5506)).unwrap();
+        assert!(t.contains("# the real name"));
+        let def = GameDef::parse_game(&t, p, "trip").unwrap();
+        assert_eq!(def.gamebanana.unwrap().game, 5506);
+        let back = set_gamebanana_game(&t, p, None).unwrap();
+        assert!(!back.contains("[gamebanana]"));
+        assert!(GameDef::parse_game(&back, p, "trip")
+            .unwrap()
+            .gamebanana
+            .is_none());
     }
 
     #[test]

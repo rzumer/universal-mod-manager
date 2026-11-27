@@ -7,6 +7,7 @@ mod doctor;
 mod downloads;
 mod factorio;
 mod fomod;
+mod gamebanana;
 mod godotml;
 mod icons;
 mod larian;
@@ -35,6 +36,10 @@ pub use delta::is_delta_patch;
 pub use doctor::{Finding, Level};
 pub use downloads::{downloads_dir, DownloadWatch};
 pub use fomod::{FomodGroupView, FomodOptionView, FomodStepView, FomodView};
+pub use gamebanana::{
+    GbGame, GbGameInfo, GbInstallReport, GbItem, GbModFiles, GbPage, GbSearch, GbSort, GbUpdate,
+    GbUpdateState,
+};
 pub use godotml::{
     setup_cache as godotml_setup_cache, SetupRunner, SETUP_ARGS as GODOTML_SETUP_ARGS,
     SETUP_OWNER as GODOTML_SETUP_OWNER,
@@ -68,6 +73,7 @@ pub use umm_deploy::{
 pub use umm_fomod::{
     Choice as FomodChoice, GroupKind as FomodGroupKind, PluginType as FomodOptionKind,
 };
+pub use umm_gamebanana::{GameBananaError, ModDetails as GbModDetails, ModFile as GbModFile};
 pub use umm_gamedef::PluginListFormat;
 pub use umm_gamedef::{CompiledDef, GameDef, GameDefError};
 pub use umm_launch::catch_interrupts;
@@ -122,6 +128,8 @@ pub enum CoreError {
     Thunderstore(#[from] TsError),
     #[error(transparent)]
     Nexus(#[from] NexusError),
+    #[error(transparent)]
+    GameBanana(#[from] umm_gamebanana::GameBananaError),
     /// A downloaded archive Nexus does not know by its hash (re-packed, or not from there).
     #[error("Nexus Mods does not recognise this file, so UMM cannot tell which download it is")]
     NexusUnrecognised,

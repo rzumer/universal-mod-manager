@@ -7,6 +7,7 @@ mod commands;
 mod config;
 mod dto;
 mod fomod;
+mod gamebanana;
 mod nexus;
 mod patcher;
 mod steam;
@@ -93,6 +94,14 @@ macro_rules! umm_handlers {
             crate::nexus::nexus_collection,
             crate::nexus::nexus_collection_link,
             crate::nexus::open_nexus_page,
+            crate::gamebanana::gb_game,
+            crate::gamebanana::gb_find_games,
+            crate::gamebanana::set_gb_game,
+            crate::gamebanana::gb_search,
+            crate::gamebanana::gb_files,
+            crate::gamebanana::gb_install,
+            crate::gamebanana::gb_updates,
+            crate::gamebanana::open_gb_page,
             crate::nexus::open_web_page,
             crate::fomod::fomod_view,
             crate::config::config_files,

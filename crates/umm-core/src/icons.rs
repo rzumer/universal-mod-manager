@@ -256,7 +256,8 @@ impl Session {
 
     /// The mod's icon as a `data:` URL: the one its Thunderstore package came with (or the one
     /// Thunderstore lists, for a package installed before UMM kept them), or its picture on
-    /// Nexus Mods, fetched the first time and kept. `None` for a mod without one.
+    /// Nexus Mods or GameBanana, fetched the first time and kept. `None` for a mod without
+    /// one.
     pub fn mod_icon(&self, game_id: &str, mod_id: &str) -> Result<Option<String>> {
         let game = self.data.game(game_id);
         let dir = game.mod_package_dir(mod_id);
@@ -287,6 +288,11 @@ impl Session {
                 return Ok(None);
             };
             info.thumbnail_url
+        } else if let Some(gb) = &meta.gamebanana {
+            let Ok(d) = self.gamebanana().mod_details(gb.mod_id) else {
+                return Ok(None);
+            };
+            d.summary.thumbnail_url
         } else {
             return Ok(None);
         };

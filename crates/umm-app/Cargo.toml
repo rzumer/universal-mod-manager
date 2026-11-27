@@ -16,6 +16,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 umm-core.workspace = true
 umm-nexus.workspace = true
+umm-gamebanana.workspace = true
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"

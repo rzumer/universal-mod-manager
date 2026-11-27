@@ -1,3 +1,4 @@
+mod gamebanana;
 mod nexus;
 
 use anyhow::{bail, Context, Result};
@@ -384,6 +385,9 @@ enum Cmd {
     /// Mods from Nexus Mods: sign in, install from links, updates
     #[command(subcommand)]
     Nexus(nexus::NexusCmd),
+    /// Mods from GameBanana: search, install, updates
+    #[command(subcommand, alias = "gb")]
+    Gamebanana(gamebanana::GbCmd),
     /// List a Steam game's subscribed and downloaded Workshop items
     Workshop {
         game: String,
@@ -694,6 +698,7 @@ fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Ts(cmd) => ts(&s, cmd)?,
         Cmd::Nexus(cmd) => nexus::run(&s, cmd)?,
+        Cmd::Gamebanana(cmd) => gamebanana::run(&s, cmd)?,
         Cmd::Workshop {
             game,
             browse,

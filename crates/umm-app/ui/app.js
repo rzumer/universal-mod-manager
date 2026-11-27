@@ -125,6 +125,17 @@ const S = {
     optional: false,
     walk: null,
   },
+  // GameBanana tab: the game's GameBanana game, the query and page shown, installed mods'
+  // updates, and an install in progress ({ message }).
+  gb: {
+    game: null,
+    picker: null,
+    query: { text: "", sort: "downloads", page: 1, installed: false },
+    page: null,
+    updates: null,
+    busy: null,
+    stale: false,
+  },
 };
 
 /// Shows a message for long enough to read it: longer for longer text and for errors, longer
@@ -282,6 +293,7 @@ async function loadGame() {
   if (S.tab === "config") loadConfigs();
   if (S.tab === "actions") loadActions();
   if (S.tab === "nexus" && S.nexus.game?.game !== S.gameId) loadNexus(true);
+  if (S.tab === "gamebanana" && S.gb.game?.game !== S.gameId) loadGb(true);
   // Workshop items show in the Mods tab too.
   if (d.game.steam && S.workshop.game !== S.gameId) loadWorkshop(false);
   if (d.game.steam && d.game.workshopAvailable == null && S.workshopAvailable[S.gameId] == null && !workshopChecking.has(S.gameId)) checkWorkshopAvailable(S.gameId);
@@ -337,6 +349,7 @@ async function refreshAll() {
   // tabs' "installed" and "update" marks are out of date until they load again.
   S.ts.stale = true;
   S.nexus.stale = true;
+  S.gb.stale = true;
   // A launch may have run a patcher again (after a game update): checked again, showing the
   // last state meanwhile.
   S.patchersGen++;
@@ -628,6 +641,7 @@ function tabs() {
     ["mods", "Mods"],
     ...(S.details?.game.thunderstore ? [["thunderstore", "Thunderstore"]] : []),
     ["nexus", "Nexus Mods"],
+    ["gamebanana", "GameBanana"],
     ...(workshopShown(S.details?.game) ? [["workshop", "Steam Workshop"]] : []),
     ["files", "Files"],
     ["config", "Configs"],
@@ -653,6 +667,7 @@ function tabs() {
             if (id === "actions") loadActions();
             if (id === "thunderstore" && (!S.ts.page || S.ts.game !== S.gameId || S.ts.stale)) loadTs(true);
             if (id === "nexus" && (!S.nexus.page || S.nexus.game?.game !== S.gameId || S.nexus.stale)) loadNexus(true);
+            if (id === "gamebanana" && (!S.gb.page || S.gb.game?.game !== S.gameId || S.gb.stale)) loadGb(true);
             if (id === "workshop" && S.workshop.game !== S.gameId) loadWorkshop(false);
             // What is installed may have changed in another tab.
             else if (id === "nexus" && S.nexus.view === "collections") refreshCollections();
@@ -791,7 +806,7 @@ function modsTab(d) {
               ? `Steam Workshop · ${wi.id} · no longer subscribed in Steam — remove it from the profile`
               : `Steam Workshop · ${wi.id}${wi.folder ? (wi.size ? ` · ${fmtBytes(wi.size)}` : "") : S.workshop.list?.gameDownloads ? " · the game downloads it when it starts" : " · not downloaded by Steam yet"}`
             : m
-              ? `${m.thunderstore ? "Thunderstore · " : m.nexusUrl ? "Nexus Mods · " : ""}${e.id} · ${m.files} file${m.files === 1 ? "" : "s"} · ${fmtBytes(m.size)}`
+              ? `${m.thunderstore ? "Thunderstore · " : m.nexusUrl ? "Nexus Mods · " : m.gamebananaUrl ? "GameBanana · " : ""}${e.id} · ${m.files} file${m.files === 1 ? "" : "s"} · ${fmtBytes(m.size)}`
               : "No longer installed — remove it from the profile or import it again",
           m?.thunderstore && e.version
             ? h(
@@ -830,6 +845,8 @@ function modsTab(d) {
             : h("button", { class: "icon-btn", title: "Choose where its files go in the game folder", "aria-label": `Where ${m.name} installs`, disabled: playing, onclick: () => placementDialog(m) }, icon("sliders"))),
         m?.nexusUrl &&
           h("button", { class: "icon-btn", title: "Open its page on Nexus Mods", "aria-label": "Open on Nexus Mods", onclick: () => attempt(() => api.openNexusPage(m.nexusUrl)) }, "↗"),
+        m?.gamebananaUrl &&
+          h("button", { class: "icon-btn", title: "Open its page on GameBanana", "aria-label": "Open on GameBanana", onclick: () => attempt(() => api.openGbPage(m.gamebananaUrl)) }, "↗"),
         m?.thunderstore &&
           h("button", { class: "icon-btn", title: "Open its page on Thunderstore", "aria-label": "Open on Thunderstore", onclick: () => attempt(() => api.openPackagePage(S.gameId, m.thunderstore)) }, "↗"),
         wi &&
@@ -3425,6 +3442,267 @@ async function nexusGet(domain, modId, fileId, label, { quiet = false } = {}) {
   }
 }
 
+// ----- GameBanana tab -----
+
+/// Loads the GameBanana list from the first page. `reset` also looks the game up again (and
+/// its updates); `append` (Show more) adds the next page instead.
+async function loadGb(reset, append = false) {
+  const game = S.gameId;
+  const G = S.gb;
+  if (reset || G.game?.game !== game) {
+    G.game = null;
+    G.page = null;
+    G.updates = null;
+    G.picker = null;
+    renderMain();
+    const g = await attempt(() => api.gbGame(game));
+    if (S.gameId !== game) return;
+    G.game = g ? { ...g, game } : { gameId: null, game, error: true };
+    if (!G.game.gameId) {
+      renderMain();
+      if (!g) return;
+      return gbFindGames(S.details.game.name);
+    }
+    attempt(() => api.gbUpdates(game)).then((u) => {
+      if (S.gameId === game && u) {
+        G.updates = u;
+        if (S.tab === "gamebanana") renderMain();
+      }
+    });
+  }
+  if (!append) {
+    G.query.page = 1;
+    G.page = null;
+    renderMain();
+  }
+  const q = { ...G.query };
+  G.stale = false;
+  const p = await attempt(() => api.gbSearch(game, q));
+  if (S.gameId !== game) return;
+  G.page = storePage(G.page, p, append);
+  if (S.tab === "gamebanana") renderMain();
+}
+
+async function gbFindGames(name) {
+  const game = S.gameId;
+  S.gb.picker = { name, results: null };
+  renderMain();
+  const r = await attempt(() => api.gbFindGames(name));
+  if (S.gameId === game && S.gb.picker) {
+    S.gb.picker.results = r || [];
+    renderMain();
+  }
+}
+
+async function gbUseGame(gameId) {
+  const g = await attempt(() => api.setGbGame(S.gameId, gameId), "GameBanana game saved");
+  if (g) loadGb(true);
+}
+
+function gbPicker(g) {
+  const P = S.gb.picker || { name: g.name, results: null };
+  const field = h("input", { type: "search", value: P.name, placeholder: "Game name", "aria-label": "Game name on GameBanana" });
+  field.addEventListener("keydown", (e) => e.key === "Enter" && gbFindGames(field.value));
+  return h(
+    "section",
+    { class: "panel" },
+    h("h2", {}, "Which game is this on GameBanana?"),
+    h("p", { class: "muted" }, `UMM did not find “${g.name}” on GameBanana by its name. Search for it and pick it; UMM saves the choice in this game’s game.toml.`),
+    h("div", { class: "ts-toolbar" }, field, h("button", { onclick: () => gbFindGames(field.value) }, "Search")),
+    P.results === null
+      ? h("div", { class: "loading" }, h("span", { class: "spinner" }), "Searching…")
+      : P.results.length
+        ? h(
+            "ul",
+            { class: "nexus-games" },
+            P.results.map((r) =>
+              h(
+                "li",
+                {},
+                h(
+                  "span",
+                  {},
+                  h("strong", {}, r.name),
+                  " ",
+                  h("button", { class: "link small", onclick: () => attempt(() => api.openGbPage(r.url)) }, `gamebanana.com/games/${r.gameId}`, icon("external")),
+                ),
+                h("button", { class: "small", onclick: () => gbUseGame(r.gameId) }, "Use this game"),
+              ),
+            ),
+          )
+        : h("p", { class: "muted" }, "No games found by that name."),
+  );
+}
+
+const fmtDate = (unix) => (unix ? new Date(unix * 1000).toISOString().slice(0, 10) : "");
+
+function gbTab(d) {
+  const g = d.game;
+  const G = S.gb;
+  if (!G.game || G.game.game !== g.id) return h("section", { class: "panel" }, h("div", { class: "loading" }, h("span", { class: "spinner" }), "Looking for this game on GameBanana…"));
+  if (G.game.error)
+    return h("section", { class: "panel" }, h("p", { class: "muted" }, "GameBanana could not be reached.", " ", h("button", { class: "link", onclick: () => loadGb(true) }, "Try again")));
+  if (!G.game.gameId) return gbPicker(g);
+
+  const playing = S.session.phase !== "idle" && S.session.game === g.id;
+  const locked = playing || g.deployed || !!G.busy;
+  const q = G.query;
+  const p = G.page;
+  const updatesByMod = {};
+  for (const u of G.updates || []) if (u.state === "newer") (updatesByMod[u.modId] ||= []).push(u);
+  const pending = (G.updates || []).filter((u) => u.state === "newer");
+  const set = (key) => (v) => {
+    q[key] = v;
+    loadGb(false);
+  };
+  // Text search has only two orders: by popularity, or best match.
+  const searching = q.text.trim() !== "" && !q.installed;
+
+  const header = [
+    h("span", { class: "muted small" }, `GameBanana game: ${G.game.name || G.game.gameId}`),
+    h("button", { class: "link", onclick: () => attempt(() => api.openGbPage(G.game.url)) }, "Open on gamebanana.com", icon("external")),
+    h(
+      "button",
+      {
+        class: "link",
+        onclick: () => {
+          const name = G.game.name || g.name;
+          G.game = { gameId: null, game: g.id };
+          gbFindGames(name);
+        },
+      },
+      "Change…",
+    ),
+  ];
+
+  const banners = storeBanners(G, g, playing);
+  if (pending.length)
+    banners.push(
+      storeBanner(
+        `${plural(pending.length, "update")}: ${pending.map((u) => `${u.name} ${u.version || ""} → ${u.newVersion}`).join(", ")}`,
+        pending.length === 1 && h("button", { class: "small", disabled: locked, onclick: () => gbGet(pending[0].modId, pending[0].newFileId) }, "Update"),
+      ),
+    );
+
+  const row = (it) => {
+    const up = updatesByMod[it.modId];
+    return storeRow({
+      image: it.thumbnail,
+      imageClass: "nexus-thumb",
+      name: it.name,
+      site: "gamebanana.com",
+      onOpen: () => attempt(() => api.openGbPage(it.url)),
+      by: it.author,
+      version: it.version,
+      chips: [
+        it.obsolete && h("span", { class: "chip warn" }, "Obsolete"),
+        it.rated && h("span", { class: "chip", title: "Its author gave it content ratings (mature themes, violence, …)" }, "Rated"),
+      ].filter(Boolean),
+      text: it.category,
+      meta: [`${fmtCount(it.likes)} likes`, `${fmtCount(it.views)} views`, it.updated && `updated ${fmtDate(it.updated)}`],
+      dim: it.obsolete,
+      action: up
+        ? h("button", { class: "small", disabled: locked, onclick: () => gbGet(it.modId, up[0].newFileId) }, `Update to ${up[0].newVersion}`)
+        : it.installed.length
+          ? h("div", { class: "row" }, h("span", { class: "chip ok" }, `Installed ${it.installed.join(", ")}`), h("button", { class: "ghost small", disabled: locked, onclick: () => gbFilesDialog(it) }, "Files…"))
+          : h("button", { class: "primary small", disabled: locked || !it.hasFiles, onclick: () => gbFilesDialog(it) }, "Install…"),
+    });
+  };
+
+  return storeTab({
+    header,
+    toolbar: [
+      storeSearch("Search mods", q, () => loadGb(false)),
+      storeSelect(
+        "Sort",
+        searching
+          ? [
+              ["downloads", "Most popular"],
+              ["name", "Best match"],
+            ]
+          : [
+              ["downloads", "Most downloaded"],
+              ["likes", "Most liked"],
+              ["updated", "Recently updated"],
+              ["newest", "Newest"],
+              ["name", "Name"],
+            ],
+        searching && !["downloads", "likes"].includes(q.sort) ? "name" : q.sort,
+        set("sort"),
+      ),
+      storeCheck("Installed", q.installed, set("installed")),
+      h("button", { class: "ghost small", onclick: () => loadGb(true), title: "Load the list and updates again" }, "Refresh"),
+    ],
+    banners,
+    count: p && !p.error && `${plural(p.total, "mod")} · downloads straight from gamebanana.com · into the profile “${S.profileName}”`,
+    list: storeList(p, { loading: "Loading mods…", noun: "mod", retry: () => loadGb(false), row }),
+    more:
+      p &&
+      !p.error &&
+      storeMore({ ...p, total: p.complete ? p.items.length : p.items.length + 1 }, () => {
+        q.page += 1;
+        loadGb(false, true);
+      }),
+  });
+}
+
+/// A mod's files, to pick one and install it.
+async function gbFilesDialog(it) {
+  const game = S.gameId;
+  const f = await attempt(() => api.gbFiles(game, it.modId));
+  if (!f) return;
+  const first = f.files.find((x) => !x.installed) || f.files[0];
+  const row = (x) =>
+    h(
+      "label",
+      { class: "nexus-file" },
+      h("input", { type: "radio", name: "gb-file", value: String(x.fileId), checked: x === first }),
+      h(
+        "span",
+        {},
+        h("strong", {}, x.description || x.name),
+        " ",
+        h("span", { class: "muted small" }, [x.description && x.name, x.version, fmtBytes(x.size), fmtDate(x.added), `${fmtCount(x.downloads)} downloads`, x.installed ? "installed" : null].filter(Boolean).join(" · ")),
+        x.clean === false && h("span", { class: "nexus-file-desc chip warn" }, "GameBanana’s virus scan flagged this file"),
+        x.containsExe.length > 0 && h("span", { class: "nexus-file-desc muted small" }, `Contains programs: ${x.containsExe.join(", ")}`),
+      ),
+    );
+  const files = h("div", { class: "nexus-files" }, f.files.map(row));
+  const body = [
+    f.text && h("details", {}, h("summary", { class: "muted small" }, "Description"), h("p", { class: "gb-text small" }, f.text)),
+    f.files.length ? files : h("p", { class: "muted" }, "This mod has no files."),
+    f.files.length > 0 && h("p", { class: "muted small" }, "UMM downloads the file from gamebanana.com, checks it against GameBanana’s checksum, and installs it."),
+    h("p", {}, h("button", { class: "link small", onclick: () => attempt(() => api.openGbPage(f.url)) }, "Open its page on gamebanana.com", icon("external"))),
+  ].filter(Boolean);
+  const v = await modal({
+    title: f.name,
+    body,
+    actions: [
+      { label: "Cancel", value: null, class: "ghost" },
+      f.files.length > 0 && { label: "Install", value: "go", class: "primary", focus: true },
+    ].filter(Boolean),
+  });
+  if (v !== "go") return;
+  // The modal is gone; its radio buttons are still in hand.
+  const picked = files.querySelector("input:checked");
+  if (!picked) return;
+  return gbGet(f.modId, Number(picked.value));
+}
+
+/// Downloads and installs one file of a mod, with its progress at the top of the tab.
+async function gbGet(modId, fileId) {
+  const game = S.gameId;
+  const r = await storeRun(S.gb, "Installing…", () => api.gbInstall(game, modId, fileId, S.profileName));
+  await refreshAll();
+  // Updates are checked again: the installed file may have been one.
+  if (S.tab === "gamebanana" && S.gameId === game) loadGb(true);
+  if (!r) return null;
+  const v = r.version ? ` ${r.version}` : "";
+  toast(r.replaced ? `Updated ${r.name} to${v || " its newest file"}` : `Installed ${r.name}${v}`, "ok");
+  await afterInstall({ id: r.id, name: r.name, installer: r.installerWaiting ? "waiting" : null, placement: { guessed: r.placementGuessed } }, !r.replaced);
+  return r;
+}
+
 async function loadLoaderChoice() {
   const game = S.gameId;
   const c = await attempt(() => api.loaderChoice(game));
@@ -3515,6 +3793,8 @@ function renderMain() {
         ? tsTab(d)
         : S.tab === "nexus"
           ? nexusTab(d)
+        : S.tab === "gamebanana"
+          ? gbTab(d)
         : S.tab === "workshop"
           ? workshopTab(d)
         : S.tab === "files"
@@ -4410,6 +4690,7 @@ async function main() {
   api.listen("install-link", (url) => handleInstallLink(url));
   api.listen("ts-progress", (e) => storeProgress(S.ts, e));
   api.listen("nexus-progress", (e) => storeProgress(S.nexus, e));
+  api.listen("gb-progress", (e) => storeProgress(S.gb, e));
   api.listen("workshop-action", (e) => workshopAnswer(e));
   api.listen("steam-window-page", () => steamWindowPage());
   // Steam's record of a game's Workshop items changed (an item subscribed to, downloaded or

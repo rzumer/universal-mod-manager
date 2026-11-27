@@ -81,6 +81,8 @@ pub struct ModDto {
     pub thunderstore: Option<String>,
     /// The mod's page, for files installed from Nexus Mods.
     pub nexus_url: Option<String>,
+    /// The mod's page, for files installed from GameBanana.
+    pub gamebanana_url: Option<String>,
     /// Where its files go can be changed (not a package laid out for the game).
     pub placeable: bool,
     pub placement: Option<PlacementDto>,
@@ -194,6 +196,10 @@ impl From<ModMeta> for ModDto {
                 .nexus
                 .as_ref()
                 .map(|n| umm_nexus::mod_url(&n.domain, n.mod_id)),
+            gamebanana_url: m
+                .gamebanana
+                .as_ref()
+                .map(|g| umm_gamebanana::mod_url(g.mod_id)),
             files: m.files.len(),
             size: m.files.values().map(|f| f.size).sum(),
             id: m.id,
