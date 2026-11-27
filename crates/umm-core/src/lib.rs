@@ -8,6 +8,7 @@ mod doctor;
 mod downloads;
 mod factorio;
 mod fomod;
+mod g3mtool;
 mod gamebanana;
 mod godotml;
 mod icons;
@@ -554,7 +555,7 @@ impl Session {
         let mut plan = build_plan(&game, &def, &profile, root.as_deref())?;
         plan.folders = self.resolve_folders(&def)?;
         if let Some(r) = &root {
-            self.add_patches(&def, &profile, r, &mut plan, false)?;
+            self.add_patches(&def, &profile, r, &mut plan, false, &mut |_| {})?;
             self.add_weidu(&def, &profile, r, &mut plan, false)?;
         }
         Ok(plan)
@@ -562,7 +563,7 @@ impl Session {
 
     /// Places the profile's mods in the game folder. Pair with [`Session::revert`].
     pub fn deploy(&self, id: &str, profile: &str, faults: &mut Faults) -> Result<Journal> {
-        Ok(self.deploy_profile(id, profile, faults)?.0)
+        Ok(self.deploy_profile(id, profile, faults, &mut |_| {})?.0)
     }
 
     /// True if one of the game's processes is running.

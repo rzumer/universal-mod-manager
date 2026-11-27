@@ -14,7 +14,10 @@
 //! it. The files tried, in order: the one it was applied to before, the one its header names
 //! or named like it, then every GameMaker data file of the game (DELTARUNE has one per
 //! chapter). A patch made for the game's own file, when another mod already replaced or
-//! patched that file, clashes with it: deploying stops until one of them is disabled.
+//! patched that file, clashes with it. When that file is a GameMaker data file, the two
+//! mods' changes are merged resource by resource with G3MTool (see [`crate::g3mtool`]), the
+//! later mod in the profile winning where both change the same thing; when the merge fails,
+//! or for any other file, deploying stops until one of them is disabled.
 
 use crate::patcher::patch_dir;
 use crate::{vcdiff, Result, Session};
@@ -374,6 +377,7 @@ impl Session {
     /// patches themselves left out. Patches are applied when `run` (a deploy) and their
     /// results not kept yet; otherwise (a preview) they are left out with the reason.
     /// `None` when the mod has no delta patches; else the game files patched.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn add_deltas(
         &self,
         def: &CompiledDef,
@@ -382,6 +386,7 @@ impl Session {
         plan: &mut Plan,
         run: bool,
         manifest: Option<&crate::deltamod::Manifest>,
+        progress: &mut dyn FnMut(&str),
     ) -> Result<Option<Vec<RelPath>>> {
         let patches = self.deltas_in(def, meta);
         if patches.is_empty() {
@@ -419,6 +424,8 @@ impl Session {
         // Each patch by the file it patches.
         let mut by_target: BTreeMap<String, (RelPath, Vec<Patch>)> = BTreeMap::new();
         let mut clashes = Vec::new();
+        // Files whose patch clashes with another mod's version: merged, by that mod's name.
+        let mut merges: std::collections::HashMap<String, String> = Default::default();
         for (patch, stored, hash) in patches {
             let bytes = fs::read(&stored).ctx(|| format!("reading {}", stored.display()))?;
             if !vcdiff::is_vcdiff(&bytes) {
@@ -444,6 +451,13 @@ impl Session {
                 hint,
             ) {
                 Found::Target(t) => t,
+                Found::Clash(t, other)
+                    if game_file(root, &t)
+                        .is_some_and(|(p, _)| umm_gamedef::gamemaker::is_data_file(&p)) =>
+                {
+                    merges.insert(t.key(), other);
+                    t
+                }
                 Found::Clash(t, other) => {
                     clashes.push((other.clone(), t.as_str().to_string()));
                     skip(
@@ -518,6 +532,7 @@ impl Session {
         let mut record = Record::default();
         let mut patched = Vec::new();
         for (target, list) in by_target.into_values() {
+            let merging = merges.get(&target.key()).cloned();
             let Some((input, key)) = input_of(root, plan, &target) else {
                 for (p, _, _) in &list {
                     skip(
@@ -529,6 +544,15 @@ impl Session {
                 continue;
             };
             let out = target.to_path(&dir.join(OUT));
+            // A merge depends on the game's own file too.
+            let original = match &merging {
+                Some(_) => game_file(root, &target),
+                None => None,
+            };
+            let key = match &original {
+                Some((_, own)) => format!("merge {own} {key}"),
+                None => key,
+            };
             let kept = old.applied.iter().find(|a| {
                 a.target == target.as_str()
                     && a.input == key
@@ -541,15 +565,65 @@ impl Session {
                 Some(a) => a.clone(),
                 None if !run => {
                     for (p, _, _) in &list {
-                        skip(
-                            plan,
-                            p,
-                            format!("applied to {} at the next deploy", target.as_str()),
-                        );
+                        let what = match &merging {
+                            Some(other) => format!(
+                                "merged with {other}'s changes to {} at the next deploy (with G3MTool, which UMM downloads the first time)",
+                                target.as_str()
+                            ),
+                            None => format!("applied to {} at the next deploy", target.as_str()),
+                        };
+                        skip(plan, p, what);
                     }
                     continue;
                 }
+                None if merging.is_some() => {
+                    let other = merging.clone().unwrap_or_default();
+                    let Some((own, _)) = &original else {
+                        continue;
+                    };
+                    let mut failure = None;
+                    let mut done = None;
+                    progress(&format!(
+                        "Merging {}'s and {other}'s changes to {}",
+                        meta.name,
+                        target.as_str()
+                    ));
+                    for (p, stored, h) in &list {
+                        match self.g3m_merge(own, &[input.clone(), stored.clone()], &out, progress)
+                        {
+                            Ok(_) => {
+                                done = Some(Applied {
+                                    target: target.as_str().to_string(),
+                                    patch: p.as_str().to_string(),
+                                    patch_hash: h.clone(),
+                                    input: key.clone(),
+                                    hash: hash_file(&out)
+                                        .ctx(|| format!("hashing {}", out.display()))?,
+                                    size: fs::metadata(&out).map(|m| m.len()).unwrap_or(0),
+                                });
+                                break;
+                            }
+                            Err(e) => failure = Some(e),
+                        }
+                    }
+                    match done {
+                        Some(a) => a,
+                        None => {
+                            return Err(crate::CoreError::PatchClash(format!(
+                                "UMM could not merge the changes {} and {other} make to {}: {}. Disable one of them to launch.",
+                                meta.name,
+                                target.as_str(),
+                                failure.map(|e| e.to_string()).unwrap_or_default()
+                            )))
+                        }
+                    }
+                }
                 None => {
+                    progress(&format!(
+                        "Applying {}'s patch to {}",
+                        meta.name,
+                        target.as_str()
+                    ));
                     let source = fs::read(&input).ctx(|| format!("reading {}", input.display()))?;
                     let mut errors = Vec::new();
                     let mut done = None;

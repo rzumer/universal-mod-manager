@@ -547,6 +547,7 @@ impl Session {
         root: &Path,
         plan: &mut Plan,
         run: bool,
+        progress: &mut dyn FnMut(&str),
     ) -> Result<Vec<RelPath>> {
         let game = self.data.game(&def.def.id);
         let mut patched = Vec::new();
@@ -561,7 +562,9 @@ impl Session {
             // A DELTAMOD package's list of what its files are for.
             let manifest = crate::deltamod::apply_manifest(plan, &meta.id);
             // Delta patches (`.xdelta`), applied in the profile's order.
-            if let Some(files) = self.add_deltas(def, &meta, root, plan, run, manifest.as_ref())? {
+            if let Some(files) =
+                self.add_deltas(def, &meta, root, plan, run, manifest.as_ref(), progress)?
+            {
                 patched.extend(files);
                 continue;
             }

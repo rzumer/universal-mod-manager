@@ -11,10 +11,10 @@ pub mod versions;
 
 pub use fsutil::{IoCtx, IoError};
 pub use mods::{
-    archive_kind, import_mod, list_mods, load_mod, name_archive, remove_mod, set_fomod,
-    set_placement, slugify, sniff_archive, verify_mod, ArchiveKind, FileIssue, FileRecord,
-    FomodChoice, FomodFile, FomodMeta, GameBananaMeta, ImportOptions, Layout, ModMeta, NexusMeta,
-    ThunderstoreMeta, MOD_META_FILE,
+    archive_kind, extract_zip, import_mod, list_mods, load_mod, name_archive, remove_mod,
+    set_fomod, set_placement, slugify, sniff_archive, verify_mod, ArchiveKind, FileIssue,
+    FileRecord, FomodChoice, FomodFile, FomodMeta, GameBananaMeta, ImportOptions, Layout, ModMeta,
+    NexusMeta, ThunderstoreMeta, MOD_META_FILE,
 };
 pub use placement::{LeftOut, Placement};
 pub use profile::{

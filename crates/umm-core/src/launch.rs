@@ -27,6 +27,9 @@ use umm_store::Profile;
 pub enum LaunchEvent {
     /// A deployment left over from a crash was reverted before launching.
     Recovered(RevertReport),
+    /// What the deploy is doing before files are placed: applying or merging mods' patches,
+    /// downloading a tool for it.
+    Preparing(String),
     /// These game files were replaced by a patcher's versions for the session.
     Patched {
         files: Vec<String>,
@@ -110,6 +113,7 @@ impl Session {
         id: &str,
         profile_name: &str,
         faults: &mut Faults,
+        progress: &mut dyn FnMut(&str),
     ) -> Result<(Journal, Option<SyncReport>, Option<Injection>)> {
         let def = self.def(id)?;
         let game = self.data.game(id);
@@ -125,7 +129,7 @@ impl Session {
         // Folders outside the game folder that mods go to (a Paradox game's user folder).
         plan.folders = self.resolve_folders(&def)?;
         // Patchers' results replace the game's files (a patcher out of date runs first).
-        self.add_patches(&def, &profile, &root, &mut plan, true)?;
+        self.add_patches(&def, &profile, &root, &mut plan, true, progress)?;
         // WeiDU mods' installed result (installed again first, when out of date).
         self.add_weidu(&def, &profile, &root, &mut plan, true)?;
         // A Paradox game's descriptors and list of enabled mods.
@@ -370,7 +374,9 @@ impl Session {
         }
 
         let (journal, runtime, injection) =
-            self.deploy_profile(id, profile_name, &mut Faults::none())?;
+            self.deploy_profile(id, profile_name, &mut Faults::none(), &mut |m| {
+                on_event(LaunchEvent::Preparing(m.to_string()))
+            })?;
         let game_files = journal
             .ops
             .iter()

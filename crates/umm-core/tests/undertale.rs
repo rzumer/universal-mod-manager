@@ -202,8 +202,9 @@ fn gm(content: &[u8]) -> Vec<u8> {
 }
 
 /// A game with a data file per chapter (as DELTARUNE): a patch naming no file goes to the
-/// one it was made from, found by trying it. Two mods' patches for the same file, both made
-/// for the game's own, clash: the preview says so, and nothing deploys until one is off.
+/// one it was made from, found by trying it. Two mods' patches for the same data file, both
+/// made for the game's own, are to be merged (with G3MTool): when that fails, nothing
+/// deploys until one is off. For a file that is not a data file, they clash outright.
 #[test]
 fn patches_find_their_data_file_and_clashing_ones_stop_the_deploy() {
     let tmp = tempfile::tempdir().unwrap();
@@ -215,7 +216,12 @@ fn patches_find_their_data_file_and_clashing_ones_stop_the_deploy() {
     write(&root.join("data.win"), &menu);
     write(&root.join("chapter1_windows/data.win"), &ch1);
     write(&root.join("chapter2_windows/data.win"), &ch2);
-    let s = Session::open(Some(tmp.path().join("data"))).unwrap();
+    // No network: G3MTool cannot be downloaded, so merging fails.
+    let s = Session::open_with(
+        Some(tmp.path().join("data")),
+        std::sync::Arc::new(umm_thunderstore::http::FakeHttp::default()),
+    )
+    .unwrap();
     write(
         &s.data().game("dr").def_path(),
         b"schema = 1\nname = \"DELTARUNE\"\n[detect]\nmarker = \"DELTARUNE.exe\"\n\
@@ -264,7 +270,7 @@ fn patches_find_their_data_file_and_clashing_ones_stop_the_deploy() {
     assert!(
         plan.skipped
             .iter()
-            .any(|k| k.owner == "easy" && k.reason.contains("clashes with hard")),
+            .any(|k| k.owner == "easy" && k.reason.contains("merged with hard's changes")),
         "{:?}",
         plan.skipped
     );
@@ -272,8 +278,7 @@ fn patches_find_their_data_file_and_clashing_ones_stop_the_deploy() {
         .deploy("dr", DEFAULT_PROFILE, &mut Faults::none())
         .unwrap_err();
     assert!(
-        e.to_string()
-            .contains("both patch chapter2_windows/data.win"),
+        e.to_string().contains("could not merge") && e.to_string().contains("Disable one of them"),
         "{e}"
     );
     // Nothing was deployed.
@@ -293,6 +298,42 @@ fn patches_find_their_data_file_and_clashing_ones_stop_the_deploy() {
         ch2_easy
     );
     s.revert("dr", false, &mut Faults::none()).unwrap();
+
+    // Two mods patching a file that is not a GameMaker data file: they clash outright.
+    write(&root.join("extras.dat"), b"original extras");
+    p.mods.iter_mut().for_each(|m| m.enabled = false);
+    s.save_profile("dr", &p).unwrap();
+    import(
+        "x1",
+        &[(
+            "extras.xdelta",
+            xdelta(
+                b"original extras",
+                b"original extras + one",
+                Some("x//extras.dat/"),
+            ),
+        )],
+    );
+    import(
+        "x2",
+        &[(
+            "extras.xdelta",
+            xdelta(
+                b"original extras",
+                b"original extras + two",
+                Some("x//extras.dat/"),
+            ),
+        )],
+    );
+    let e = s
+        .deploy("dr", DEFAULT_PROFILE, &mut Faults::none())
+        .unwrap_err();
+    assert!(e.to_string().contains("both patch extras.dat"), "{e}");
+    let mut p = s.profile("dr", DEFAULT_PROFILE).unwrap();
+    p.mods
+        .iter_mut()
+        .for_each(|m| m.enabled = !m.id.starts_with('x'));
+    s.save_profile("dr", &p).unwrap();
 
     // An UndertaleModTool script: left out, and said why.
     import("scripted", &[("fix.csx", b"script".to_vec())]);

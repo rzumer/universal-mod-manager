@@ -4605,6 +4605,9 @@ function onSession(e) {
     case "patched":
       logLine(`Swapped in the patched ${e.files.join(", ")}`);
       break;
+    case "preparing":
+      logLine(e.message);
+      break;
     case "started":
       S.session.phase = "running";
       logLine(`Started the game (process ${e.pid})`);

@@ -535,7 +535,8 @@ fn extract_rar(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-fn extract_zip(src: &Path, dst: &Path) -> Result<()> {
+/// Unpacks a zip archive into `dst`, refusing entries that would leave it.
+pub fn extract_zip(src: &Path, dst: &Path) -> Result<()> {
     let f = File::open(src).ctx(|| format!("opening {}", src.display()))?;
     let mut zip = zip::ZipArchive::new(f)?;
     fs::create_dir_all(dst).ctx(|| format!("creating {}", dst.display()))?;

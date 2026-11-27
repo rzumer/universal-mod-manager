@@ -440,6 +440,11 @@ pub enum SessionEvent {
         game: String,
         files: Vec<String>,
     },
+    /// What the deploy is doing before files are placed (applying or merging patches).
+    Preparing {
+        game: String,
+        message: String,
+    },
     ExtenderLoader {
         game: String,
         loader: String,
@@ -489,6 +494,7 @@ impl SessionEvent {
             },
             LaunchEvent::Started { pid } => SessionEvent::Started { game, pid },
             LaunchEvent::Patched { files } => SessionEvent::Patched { game, files },
+            LaunchEvent::Preparing(message) => SessionEvent::Preparing { game, message },
             LaunchEvent::ExtenderLoader {
                 loader,
                 started_steam,

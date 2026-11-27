@@ -204,6 +204,7 @@ fn launch(s: &Session, game: &str, profile: &str) -> Result<()> {
             println!("reverted a deployment left over from an earlier session");
             print_report(&r);
         }
+        LaunchEvent::Preparing(m) => eprintln!("{m}"),
         LaunchEvent::Deployed {
             game_files,
             runtime,
