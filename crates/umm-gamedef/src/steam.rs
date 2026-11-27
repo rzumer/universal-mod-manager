@@ -41,6 +41,20 @@ fn is_tool(app_id: u32, name: &str) -> bool {
 }
 
 /// Every installed game in every Steam library on this machine, sorted by name.
+/// Terraria's and tModLoader's Steam apps.
+pub const TERRARIA_APP: u32 = 105600;
+pub const TMODLOADER_APP: u32 = 1281930;
+
+/// The installed app UMM sets `app` up as instead, when the game's mods need another app of
+/// its own on Steam: tModLoader for Terraria. The game keeps its name, so its mod sites know
+/// it.
+pub fn stand_in<'a>(app: &SteamApp, installed: &'a [SteamApp]) -> Option<&'a SteamApp> {
+    if app.app_id != TERRARIA_APP {
+        return None;
+    }
+    installed.iter().find(|a| a.app_id == TMODLOADER_APP)
+}
+
 pub fn installed_games() -> Vec<SteamApp> {
     installed_games_in(&steam_libraries())
 }
@@ -120,6 +134,9 @@ pub enum Engine {
     /// GameMaker: the game's code and assets in one data file (`data.win`), which mods
     /// replace or patch (`.xdelta`).
     GameMaker,
+    /// tModLoader, Terraria's mod loader (a game of its own on Steam): `.tmod` files in a
+    /// mods folder, enabled in `enabled.json` there.
+    TModLoader,
     Unknown,
 }
 
@@ -137,6 +154,7 @@ impl Engine {
             Engine::Bannerlord => "TaleWorlds Engine (Bannerlord)",
             Engine::Xcom2 => "Unreal Engine 3 (XCOM 2)",
             Engine::GameMaker => "GameMaker",
+            Engine::TModLoader => "tModLoader (Terraria, XNA/FNA)",
             Engine::Unknown => "Unknown engine",
         }
     }
@@ -478,6 +496,18 @@ pub fn inspect_folder(root: &Path) -> Inspection {
             larian: None,
         };
     }
+    // tModLoader: its launch script beside its assembly (it runs on its own .NET).
+    if has_file_ci(root, TML_EXE) && has_file_ci(root, "tModLoader.dll") {
+        return Inspection {
+            engine: Engine::TModLoader,
+            exe: TML_EXE.to_string(),
+            exes: std::iter::once(TML_EXE.to_string()).chain(exes).collect(),
+            unreal_project: None,
+            data_folder: None,
+            paradox: None,
+            larian: None,
+        };
+    }
     // Bethesda: a data folder at the top holding a master plugin (`Fallout3.esm`).
     if let Some(data) = bethesda_data_folder(root) {
         return Inspection {
@@ -550,6 +580,16 @@ pub fn inspect_folder(root: &Path) -> Inspection {
 
 /// A GameMaker game's data file (Windows builds').
 pub const GAMEMAKER_DATA: &str = "data.win";
+
+/// tModLoader's launch script, which starts it on the .NET it installs beside it, passing
+/// its arguments on.
+pub const TML_EXE: &str = "start-tModLoader.bat";
+/// tModLoader's save folder (players, worlds, configs and its mods folder), and its list of
+/// enabled mods in that folder.
+const TML_USER: &str = "%DOCUMENTS%/My Games/Terraria/tModLoader";
+const TML_ENABLED: &str = "enabled.json";
+/// Terraria's exe: the game without tModLoader, which has no mods but resource packs.
+const TERRARIA_EXE: &str = "Terraria.exe";
 
 /// Factorio's exe, relative to its folder.
 pub const FACTORIO_EXE: &str = "bin/x64/factorio.exe";
@@ -677,7 +717,8 @@ const fn other(
 }
 
 use PluginListFormat::{
-    Asterisk, FactorioJson, KenshiCfg, MorrowindIni, OniJson, Plain, RimworldXml, XcomIni,
+    Asterisk, FactorioJson, KenshiCfg, MorrowindIni, OniJson, Plain, RimworldXml, TmodloaderJson,
+    XcomIni,
 };
 
 /// RimWorld's list, in its folder under `AppData\LocalLow` (which has no variable of its own).
@@ -791,8 +832,9 @@ fn add_list_game(draft: &mut Draft, folder: &Path, found: &Inspection) {
         ),
         MorrowindIni => "Morrowind: while mods are deployed, UMM enables their plugins in the [Game Files] section of Morrowind.ini. The game loads plugins in the order of their file dates.".into(),
         KenshiCfg => "Kenshi: each mod goes in its own folder in mods/, named after its .mod file as the game wants, and while mods are deployed, UMM enables them in data/mods.cfg, in load order (your own list comes back afterwards). Steam Workshop items can be turned on or off in a profile too.".into(),
-        // Factorio, Oxygen Not Included and XCOM 2 are set up in `build`, not as list games.
-        RimworldXml | FactorioJson | OniJson | XcomIni => format!(
+        // Factorio, Oxygen Not Included, XCOM 2 and tModLoader are set up in `build`, not as
+        // list games.
+        RimworldXml | FactorioJson | OniJson | XcomIni | TmodloaderJson => format!(
             "RimWorld: each mod goes in its own folder in Mods/, and while mods are deployed, UMM activates them in {}, in load order.",
             plugins.list
         ),
@@ -1122,6 +1164,22 @@ fn build(
              winning where both change the same thing; if that fails, UMM says why and launches \
              nothing until one is disabled.",
         )),
+        Engine::TModLoader => notes.push(Note::new(
+            "tmodloader",
+            "tModLoader: .tmod mods go to its Mods folder in Documents\\My Games\\Terraria\\\
+             tModLoader, named after the mod in each as it wants, and are enabled in its \
+             enabled.json there while mods are deployed (your own list comes back afterwards). \
+             Resource packs (folders or .zip files with a pack.json) go to its ResourcePacks \
+             folder beside it and are turned on in its config.json while deployed, the rest of \
+             your settings left as they are. Steam Workshop items can be turned on or off in a \
+             profile too. UMM starts tModLoader directly, not through Steam.",
+        )),
+        Engine::Unknown if exe.eq_ignore_ascii_case(TERRARIA_EXE) => notes.push(Note::new(
+            "terraria",
+            "Terraria loads no mods by itself: they need tModLoader, a free game of its own on \
+             Steam. Install it there, then remove Terraria from UMM and add it again: UMM sets \
+             it up with tModLoader.",
+        )),
         Engine::Unknown if setup == LoaderSetup::Generic => notes.push(Note::new(
             "unknown-engine",
             "Engine not recognised: mod files keep their paths relative to the game folder.",
@@ -1160,6 +1218,12 @@ fn build(
                 XcomIni,
             ))
         }
+        Engine::TModLoader => Some((
+            Some(TML_USER.to_string()),
+            format!("@{USER_FOLDER}/Mods"),
+            format!("{TML_USER}/Mods/{TML_ENABLED}"),
+            TmodloaderJson,
+        )),
         Engine::OxygenNotIncluded => Some((
             Some(ONI_USER.to_string()),
             format!("@{USER_FOLDER}/mods/Local"),
@@ -1169,6 +1233,10 @@ fn build(
         _ => None,
     };
     match (found.paradox, found.larian, &mod_list) {
+        // Its .tmod files in its mods folder.
+        (None, None, Some((_, mods, _, TmodloaderJson))) => {
+            install.extend(crate::setup::tmodloader_rules(mods))
+        }
         // A folder per module.
         _ if found.engine == Engine::Bannerlord => {
             install.extend(crate::setup::mod_folder_rules("Modules"))
@@ -1269,10 +1337,15 @@ fn build(
                 .unwrap_or_default(),
             // A Paradox game started through Steam runs Paradox's launcher, which writes the
             // list of enabled mods from its playset: started directly instead, Steam running.
-            // Larian's and Bannerlord's launchers likewise stand before the game.
+            // Larian's and Bannerlord's launchers likewise stand before the game. tModLoader
+            // runs as `dotnet.exe` under its script: started directly, UMM follows it as the
+            // script's child, not by a name other programs share.
             steam_relaunch: if (found.paradox.is_some()
                 || found.larian.is_some()
-                || matches!(found.engine, Engine::Bannerlord | Engine::Xcom2))
+                || matches!(
+                    found.engine,
+                    Engine::Bannerlord | Engine::Xcom2 | Engine::TModLoader
+                ))
                 && origin.relaunch == SteamRelaunch::ViaSteam
             {
                 SteamRelaunch::AppidFile
@@ -1480,6 +1553,79 @@ mod tests {
             .with_setup(LoaderSetup::Generic, None)
             .unwrap();
         assert_eq!(again.install[0].target, "@user/mod/{mod}/");
+    }
+
+    #[test]
+    fn tmodloader_mods_go_to_its_mods_folder_and_terraria_points_to_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("tModLoader");
+        touch(&root.join(TML_EXE), 10);
+        touch(&root.join("tModLoader.dll"), 100);
+        touch(&root.join("LaunchUtils/busybox64.exe"), 50);
+        let found = inspect_folder(&root);
+        assert_eq!(
+            (found.engine, found.exe.as_str()),
+            (Engine::TModLoader, TML_EXE)
+        );
+        let d = draft_manual(
+            &root,
+            "tModLoader",
+            &found.exe,
+            &found,
+            LoaderSetup::Generic,
+            None,
+        )
+        .unwrap();
+        assert!(d.notes.iter().any(|n| n.key == "tmodloader"));
+        assert_eq!(
+            d.def.folders.get(USER_FOLDER).map(String::as_str),
+            Some(TML_USER)
+        );
+        let p = d.def.plugins.as_ref().unwrap();
+        assert_eq!(
+            (p.list.as_str(), p.format, p.folder.as_str()),
+            (
+                "%DOCUMENTS%/My Games/Terraria/tModLoader/Mods/enabled.json",
+                PluginListFormat::TmodloaderJson,
+                "@user/Mods"
+            )
+        );
+        let back = GameDef::parse_game(&to_toml(&d), Path::new("game.toml"), "tml").unwrap();
+        // Set up again (the loader changed back to generic), the rules are the same.
+        let again = back.with_setup(LoaderSetup::Thunderstore, None).err();
+        assert!(again.is_some());
+        assert_eq!(back.install.len(), 2);
+        let c = back.compile().unwrap();
+        let map = |p: &str| {
+            c.map_mod_file("m", &crate::RelPath::parse(p).unwrap())
+                .unwrap()
+                .map(|t| t.to_string())
+        };
+        assert_eq!(
+            map("Wrap/Calamity.tmod").as_deref(),
+            Some("@user/Mods/Wrap/Calamity.tmod")
+        );
+        // Anything else to the mod's folder among the packs, where UMM keeps only packs.
+        assert_eq!(
+            map("README.md").as_deref(),
+            Some("@user/ResourcePacks/m/README.md")
+        );
+
+        let terraria = tmp.path().join("Terraria");
+        touch(&terraria.join("Terraria.exe"), 100);
+        touch(&terraria.join("dotNetFx40_Full_setup.exe"), 10);
+        let found = inspect_folder(&terraria);
+        let d = draft_manual(
+            &terraria,
+            "Terraria",
+            &found.exe,
+            &found,
+            LoaderSetup::Generic,
+            None,
+        )
+        .unwrap();
+        assert!(d.notes.iter().any(|n| n.key == "terraria"));
+        assert!(d.def.plugins.is_none());
     }
 
     #[test]

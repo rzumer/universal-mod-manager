@@ -13,6 +13,10 @@ pub enum ListFormat {
     /// A node of nodes in a Larian `.lsx` file (Baldur's Gate 3's `modsettings.lsx`): entries
     /// are the nodes' XML, the same entry when their `UUID` is.
     Lsx,
+    /// An array of objects under a key of a JSON file's top-level object (Terraria's
+    /// `ResourcePacks` in `config.json`): entries are the objects, the same entry when their
+    /// `FileName` is.
+    Json,
 }
 
 impl ListFormat {
@@ -24,7 +28,7 @@ impl ListFormat {
     pub fn decode(self, bytes: &[u8]) -> String {
         match self {
             ListFormat::Block => crate::block::decode(bytes),
-            ListFormat::Lsx => String::from_utf8_lossy(bytes).into_owned(),
+            ListFormat::Lsx | ListFormat::Json => String::from_utf8_lossy(bytes).into_owned(),
         }
     }
 
@@ -32,7 +36,7 @@ impl ListFormat {
     pub fn encode(self, text: &str) -> Vec<u8> {
         match self {
             ListFormat::Block => crate::block::encode(text),
-            ListFormat::Lsx => text.as_bytes().to_vec(),
+            ListFormat::Lsx | ListFormat::Json => text.as_bytes().to_vec(),
         }
     }
 
@@ -41,6 +45,7 @@ impl ListFormat {
         match self {
             ListFormat::Block => crate::block::get(text, key),
             ListFormat::Lsx => crate::lsx::get(text, key),
+            ListFormat::Json => crate::json::get(text, key),
         }
     }
 
@@ -50,6 +55,7 @@ impl ListFormat {
         match self {
             ListFormat::Block => Some(crate::block::set(text, key, entries)),
             ListFormat::Lsx => crate::lsx::set(text, key, entries.unwrap_or_default()),
+            ListFormat::Json => crate::json::set(text, key, entries),
         }
     }
 
@@ -58,6 +64,7 @@ impl ListFormat {
         match self {
             ListFormat::Block => entry.to_string(),
             ListFormat::Lsx => crate::lsx::id(entry),
+            ListFormat::Json => crate::json::id(entry),
         }
     }
 }

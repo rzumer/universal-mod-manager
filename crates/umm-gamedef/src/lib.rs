@@ -352,6 +352,23 @@ pub enum PluginListFormat {
     /// user's `XComModOptions.ini`, by the `<Name>.XComMod` file in each mod's folder. Each
     /// mod's folder is named after it.
     XcomIni,
+    /// tModLoader: `enabled.json` in its mods folder, a JSON array of the enabled mods'
+    /// names, by the name inside each `.tmod` file there. Each file is named after it.
+    TmodloaderJson,
+}
+
+/// A tModLoader mod's file extension.
+pub const TML_EXT: &str = ".tmod";
+/// A Terraria resource pack's description, at the top of its folder (or `.zip`).
+pub const TML_PACK: &str = "pack.json";
+
+/// The resource packs folder beside tModLoader's mods folder (`mods`), ending in `/`: both are
+/// in its save folder.
+pub fn tml_packs_prefix(mods: &str) -> String {
+    match mods.trim_matches('/').rsplit_once('/') {
+        Some((parent, _)) => format!("{parent}/ResourcePacks/"),
+        None => "ResourcePacks/".into(),
+    }
 }
 
 impl PluginListFormat {

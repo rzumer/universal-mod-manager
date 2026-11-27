@@ -123,6 +123,21 @@ pub fn mod_folder_rules(folder: &str) -> Vec<InstallRule> {
     )]
 }
 
+/// Install rules for tModLoader: each `.tmod` to its mods folder (`folder`), wherever it is
+/// in the mod (UMM then puts it at the top, named after the mod, as the game wants), and
+/// everything else to a folder of the mod's own among the resource packs beside it (UMM
+/// keeps only the packs in it, each folder holding a `pack.json`).
+pub fn tmodloader_rules(folder: &str) -> Vec<InstallRule> {
+    let folder = folder.trim_matches('/');
+    vec![
+        rule(&format!("**/*{}", crate::TML_EXT), &format!("{folder}/")),
+        rule(
+            "**",
+            &format!("{}{{mod}}/", crate::tml_packs_prefix(folder)),
+        ),
+    ]
+}
+
 /// Install rules for BepInEx mods that are not already laid out for the game.
 pub fn bepinex_rules() -> Vec<InstallRule> {
     vec![
@@ -346,6 +361,11 @@ impl GameDef {
                     ),
                     (Some(p), _, _) => paradox_rules(&p.folder),
                     (None, Some(l), _) => larian_rules(&l.folder, l.format),
+                    (None, None, Some(p))
+                        if p.format == crate::PluginListFormat::TmodloaderJson =>
+                    {
+                        tmodloader_rules(&p.folder)
+                    }
                     (None, None, Some(p)) if p.format.lists_mod_folders() => {
                         mod_folder_rules(&p.folder)
                     }

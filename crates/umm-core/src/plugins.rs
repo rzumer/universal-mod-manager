@@ -16,7 +16,8 @@ use umm_gamedef::{CompiledDef, PluginListFormat, RelPath, PLUGIN_EXTENSIONS};
 use umm_store::fsutil::{hash_file, write_atomic, IoCtx};
 use umm_store::Profile;
 use PluginListFormat::{
-    Asterisk, FactorioJson, KenshiCfg, MorrowindIni, OniJson, Plain, RimworldXml, XcomIni,
+    Asterisk, FactorioJson, KenshiCfg, MorrowindIni, OniJson, Plain, RimworldXml, TmodloaderJson,
+    XcomIni,
 };
 
 /// The plugin list a deploy writes.
@@ -202,6 +203,7 @@ fn read_list(text: &str, format: PluginListFormat) -> Vec<PluginEntry> {
             .unwrap_or_default(),
         FactorioJson => crate::factorio::read(text),
         OniJson => crate::oni::read(text),
+        TmodloaderJson => crate::tmodloader::read(text),
     }
 }
 
@@ -299,6 +301,7 @@ impl PluginList {
             }
             FactorioJson => crate::factorio::render(original, &self.entries),
             OniJson => crate::oni::render(original, &self.entries),
+            TmodloaderJson => crate::tmodloader::render(&self.entries),
         }
     }
 }
@@ -453,6 +456,20 @@ impl Session {
                     })
                     .collect()
             }
+            // tModLoader mods: a `.tmod` each, named after the mod in it.
+            TmodloaderJson => {
+                let prefix = format!("{}/", folder.as_str());
+                files
+                    .iter()
+                    .filter_map(|f| {
+                        let file = crate::tmodloader::tmod_in(f.target.as_str(), &prefix)?;
+                        Some((
+                            f.owner.as_str(),
+                            crate::tmodloader::mod_name(&f.source, file),
+                        ))
+                    })
+                    .collect()
+            }
             // Oxygen Not Included mods: a folder each, known by its name.
             OniJson => {
                 let prefix = format!("{}/", folder.as_str());
@@ -465,15 +482,19 @@ impl Session {
                     .collect()
             }
         };
-        // RimWorld's, Kenshi's and XCOM 2's Workshop items the profile has: on as it says, by
-        // their package ids (Kenshi, XCOM 2: their mods' files); the others are left as the
-        // user's list has them.
+        // RimWorld's, Kenshi's, XCOM 2's and tModLoader's Workshop items the profile has: on
+        // as it says, by their package ids (Kenshi, XCOM 2, tModLoader: their mods' files);
+        // the others are left as the user's list has them.
         let mut off: HashSet<String> = HashSet::new();
         let workshop_ids: Vec<(String, bool)> = profile
             .workshop()
             .map(|(i, on)| (format!("{}{i}", umm_store::WORKSHOP_PREFIX), on))
             .collect();
-        if matches!(cfg.format, RimworldXml | KenshiCfg | XcomIni) && !workshop_ids.is_empty() {
+        if matches!(
+            cfg.format,
+            RimworldXml | KenshiCfg | XcomIni | TmodloaderJson
+        ) && !workshop_ids.is_empty()
+        {
             let folders = self.workshop_folders(&def.def);
             for (entry, on) in &workshop_ids {
                 let item = &entry[umm_store::WORKSHOP_PREFIX.len()..];
@@ -483,6 +504,7 @@ impl Session {
                         crate::modfile::extension(cfg.format).unwrap_or_default(),
                     )
                     .map(|file| entry_name(cfg.format, &file)),
+                    TmodloaderJson => crate::tmodloader::workshop_mod(f),
                     _ => package_id(&f.join("About").join("About.xml")),
                 }) else {
                     continue;
@@ -605,6 +627,8 @@ impl Session {
                 t.dedup();
                 t
             }
+            // tModLoader rewrites its list on every start, in an order of its own.
+            TmodloaderJson => crate::tmodloader::tolerated(&list.entries),
             MorrowindIni | RimworldXml | FactorioJson | OniJson | KenshiCfg | XcomIni => Vec::new(),
         };
         plan.external.push(PlannedExternal {

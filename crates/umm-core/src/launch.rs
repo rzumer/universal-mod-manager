@@ -142,6 +142,8 @@ impl Session {
         self.plan_bannerlord(&def, &mut plan)?;
         // A Larian game's enabled modules.
         self.plan_larian(&def, &profile, &mut plan)?;
+        // tModLoader's mod files, named as it wants.
+        self.plan_tmodloader(&def, &mut plan)?;
         let rl = def.def.runtime_loader();
         // The Godot Mod Loader's own files go to the game folder when UMM sets it up.
         let mut godotml_in_game = false;

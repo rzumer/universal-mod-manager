@@ -11,6 +11,7 @@ pub mod block;
 mod faults;
 mod ini;
 mod journal;
+pub mod json;
 mod list;
 mod lock;
 pub mod lsx;

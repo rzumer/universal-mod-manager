@@ -283,3 +283,69 @@ fn a_game_can_be_added_manually_from_its_folder() {
     assert!(s.add_manual_game(&root, "X", "Missing.exe", None).is_err());
     assert!(s.add_manual_game(&root, "X", "../evil.exe", None).is_err());
 }
+
+fn manifest(lib: &Path, app_id: u32, name: &str, dir: &str) -> PathBuf {
+    fs::create_dir_all(lib.join("steamapps")).unwrap();
+    fs::write(
+        lib.join(format!("steamapps/appmanifest_{app_id}.acf")),
+        format!("\"AppState\" {{ \"appid\" \"{app_id}\" \"name\" \"{name}\" \"installdir\" \"{dir}\" }}"),
+    )
+    .unwrap();
+    lib.join("steamapps/common").join(dir)
+}
+
+#[test]
+fn terraria_is_set_up_as_tmodloader_when_it_is_installed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = tmp.path().join("lib");
+    let terraria = manifest(&lib, 105600, "Terraria", "Terraria");
+    touch(&terraria.join("Terraria.exe"));
+    let s = session(&tmp.path().join("data"), false);
+
+    // Without tModLoader: Terraria as it is, saying what it needs.
+    let apps = installed_games_in(std::slice::from_ref(&lib));
+    let d = s
+        .add_steam_app_among(app(&apps, 105600), &apps, None)
+        .unwrap();
+    assert!(d.notes.iter().any(|n| n.key == "terraria"));
+    assert!(d.def.plugins.is_none());
+    fs::remove_dir_all(s.data().game("terraria").root()).unwrap();
+
+    // With it: tModLoader's setup, under Terraria's name.
+    let tml = manifest(&lib, 1281930, "tModLoader", "tModLoader");
+    touch(&tml.join("start-tModLoader.bat"));
+    touch(&tml.join("tModLoader.dll"));
+    let apps = installed_games_in(std::slice::from_ref(&lib));
+    let list = s.steam_list(apps.clone());
+    let row = |id: u32| list.games.iter().find(|g| g.app.app_id == id).unwrap();
+    assert_eq!(row(105600).engine, Engine::TModLoader);
+    assert_eq!(row(105600).app.name, "Terraria");
+
+    let d = s
+        .add_steam_app_among(app(&apps, 105600), &apps, None)
+        .unwrap();
+    assert_eq!(
+        (d.def.id.as_str(), d.def.name.as_str()),
+        ("terraria", "Terraria")
+    );
+    assert_eq!(d.engine, Engine::TModLoader);
+    assert_eq!(d.def.detect.steam_app_id, Some(1281930));
+    assert_eq!(d.def.detect.steam_dir.as_deref(), Some("tModLoader"));
+    assert_eq!(d.def.launch.as_ref().unwrap().exe, "start-tModLoader.bat");
+    assert!(d.notes.iter().any(|n| n.key == "tmodloader"));
+
+    // Either row is now covered by it, and neither can be added again.
+    let list = s.steam_list(apps.clone());
+    let row = |id: u32| list.games.iter().find(|g| g.app.app_id == id).unwrap();
+    assert_eq!(row(105600).defined_as.as_deref(), Some("terraria"));
+    assert_eq!(row(1281930).defined_as.as_deref(), Some("terraria"));
+    for id in [105600, 1281930] {
+        let err = s
+            .add_steam_app_among(app(&apps, id), &apps, None)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("already set up as `terraria`"),
+            "{err}"
+        );
+    }
+}

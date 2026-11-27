@@ -646,7 +646,8 @@ pub fn workshop_control(def: &GameDef) -> WorkshopControl {
                 PluginListFormat::RimworldXml
                 | PluginListFormat::OniJson
                 | PluginListFormat::KenshiCfg
-                | PluginListFormat::XcomIni,
+                | PluginListFormat::XcomIni
+                | PluginListFormat::TmodloaderJson,
             ),
         ) => WorkshopControl::Profile,
         _ => WorkshopControl::Steam,

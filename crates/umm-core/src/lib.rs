@@ -28,6 +28,7 @@ mod runtime;
 mod setup;
 mod share;
 mod steam;
+mod tmodloader;
 mod ts;
 pub mod vcdiff;
 mod weidu;

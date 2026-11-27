@@ -1,7 +1,7 @@
 //! Adding games from the local Steam libraries.
 
 use crate::{CoreError, Result, Session};
-use umm_gamedef::steam::{draft_from, inspect, installed_games, to_toml, Inspection};
+use umm_gamedef::steam::{draft_from, inspect, installed_games, stand_in, to_toml, Inspection};
 pub use umm_gamedef::steam::{Draft, Engine, Note, SteamApp};
 use umm_gamedef::{Community, LoaderSetup, BEPINEX_KIND};
 use umm_thunderstore::ecosystem::SteamMatch;
@@ -121,14 +121,20 @@ impl Session {
         };
         let (defs, _) = self.defs();
         let games = apps
-            .into_iter()
+            .iter()
             .map(|app| {
+                // Terraria is set up as tModLoader when it is installed, and either one's
+                // definition covers both.
+                let stand = stand_in(app, &apps);
+                let ids = [Some(app.app_id), stand.map(|s| s.app_id)];
                 let defined_as = defs
                     .iter()
-                    .find(|d| d.detect.steam_app_id == Some(app.app_id))
+                    .find(|d| {
+                        d.detect.steam_app_id.is_some() && ids.contains(&d.detect.steam_app_id)
+                    })
                     .map(|d| d.id.clone());
-                let found = inspect(&app);
-                candidate(app, &found, eco.as_deref(), defined_as)
+                let found = inspect(stand.unwrap_or(app));
+                candidate(app.clone(), &found, eco.as_deref(), defined_as)
             })
             .collect();
         SteamList {
@@ -149,10 +155,33 @@ impl Session {
     /// Writes a drafted game definition to `games/<id>/game.toml`. Never overwrites a file, and
     /// refuses an app that a definition already covers.
     pub fn add_steam_app(&self, app: &SteamApp, setup: Option<LoaderSetup>) -> Result<Draft> {
+        let installed = match app.app_id {
+            umm_gamedef::steam::TERRARIA_APP => installed_games(),
+            _ => Vec::new(),
+        };
+        self.add_steam_app_among(app, &installed, setup)
+    }
+
+    /// [`Self::add_steam_app`], with the other installed apps (`installed`): Terraria is set up
+    /// as tModLoader when it is one of them, under Terraria's name.
+    pub fn add_steam_app_among(
+        &self,
+        app: &SteamApp,
+        installed: &[SteamApp],
+        setup: Option<LoaderSetup>,
+    ) -> Result<Draft> {
+        let stand = stand_in(app, installed);
+        let ids = [Some(app.app_id), stand.map(|s| s.app_id)];
+        // Drafted from the stand-in's folder, under the game's name.
+        let as_app = stand.map(|s| SteamApp {
+            name: app.name.clone(),
+            ..s.clone()
+        });
+        let app = as_app.as_ref().unwrap_or(app);
         let (defs, _) = self.defs();
         if let Some(d) = defs
             .iter()
-            .find(|d| d.detect.steam_app_id == Some(app.app_id))
+            .find(|d| d.detect.steam_app_id.is_some() && ids.contains(&d.detect.steam_app_id))
         {
             return Err(CoreError::Invalid(format!(
                 "{} is already set up as `{}`",
