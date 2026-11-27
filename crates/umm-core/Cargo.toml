@@ -24,6 +24,8 @@ walkdir.workspace = true
 globset.workspace = true
 base64 = "0.22"
 lz4_flex = "0.14.2"
+# xdelta3 patches' LZMA secondary compression (already in the tree through 7z support).
+lzma-rust2 = { version = "0.16", default-features = false, features = ["std"] }
 flate2 = "1"
 ruzstd = "0.7"
 roxmltree = "0.20"

@@ -4373,6 +4373,7 @@ dependencies = [
  "flate2",
  "globset",
  "lz4_flex",
+ "lzma-rust2",
  "md-5",
  "roxmltree",
  "ruzstd",

@@ -3,9 +3,15 @@
 //!
 //! Besides the standard format, it reads xdelta3's extensions: its application header (the
 //! files' names) and a checksum of each window's output, which tells a patch applied to a
-//! source it was not made from. xdelta3's secondary compression (off unless asked for) and
-//! custom code tables are not read: such patches are refused, with the reason.
+//! source it was not made from, and its secondary compression of the patch's sections: LZMA
+//! (the default of xdelta3 3.1 when built with liblzma), DJW and FGK. Custom code tables are
+//! not read: such patches are refused, with the reason.
 
+mod djw;
+mod fgk;
+mod lzma;
+
+use std::borrow::Cow;
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -259,6 +265,46 @@ pub fn adler32(data: &[u8]) -> u32 {
     (b << 16) | a
 }
 
+/// The secondary decoders: LZMA's, one per kind of section, last from window to window.
+#[derive(Default)]
+struct Secondary {
+    lzma: [lzma::Section; 3],
+    fgk: [Option<Box<fgk::Fgk>>; 3],
+}
+
+impl Secondary {
+    /// A compressed section (its decompressed size, then the compressed bytes) decoded with
+    /// the patch's compressor; `kind` 0 for data, 1 for instructions, 2 for addresses.
+    fn decode(&mut self, id: Option<u8>, kind: usize, section: &[u8]) -> Result<Vec<u8>> {
+        let mut r = Reader::new(section);
+        let size = r.size()?;
+        let rest = &section[r.i..];
+        match id {
+            Some(1) => djw::decode(rest, size),
+            Some(2) => self.lzma[kind].decode(rest, size),
+            Some(16) => self.fgk(kind).decode(rest, size),
+            Some(n) => err(format!(
+                "the patch uses xdelta3's {} secondary compression, which UMM cannot read",
+                secondary_name(n)
+            )),
+            None => err("the patch is damaged (a compressed section, but no compressor)"),
+        }
+    }
+
+    fn fgk(&mut self, kind: usize) -> &mut fgk::Fgk {
+        self.fgk[kind].get_or_insert_with(|| Box::new(fgk::Fgk::new()))
+    }
+
+    /// A section left uncompressed: FGK's encoder had still run it through its tree when it
+    /// was large enough to try.
+    fn uncompressed(&mut self, id: Option<u8>, kind: usize, section: &[u8]) -> Result<()> {
+        if id == Some(16) && section.len() >= fgk::MIN_INPUT {
+            self.fgk(kind).replay(section)?;
+        }
+        Ok(())
+    }
+}
+
 const MISMATCH: &str = "the patch does not fit this file: it was made from another version of it";
 
 /// Applies a patch to the source it was made from, returning the target.
@@ -266,6 +312,7 @@ pub fn apply(source: &[u8], patch: &[u8]) -> Result<Vec<u8>> {
     let mut r = Reader::new(patch);
     let h = header(&mut r)?;
     let table = code_table();
+    let mut secondary = Secondary::default();
     let mut out: Vec<u8> = Vec::new();
     while !r.done() {
         let win = r.byte()?;
@@ -307,15 +354,22 @@ pub fn apply(source: &[u8], patch: &[u8]) -> Result<Vec<u8>> {
         } else {
             None
         };
-        let mut data = Reader::new(r.take(data_len)?);
-        let mut insts = Reader::new(r.take(inst_len)?);
-        let mut addrs = Reader::new(r.take(addr_len)?);
-        if delta & 0x07 != 0 {
-            return err(format!(
-                "the patch uses xdelta3's {} secondary compression, which UMM cannot read yet",
-                h.secondary.map_or("unknown".into(), secondary_name)
-            ));
+        let mut sections = [
+            Cow::Borrowed(r.take(data_len)?),
+            Cow::Borrowed(r.take(inst_len)?),
+            Cow::Borrowed(r.take(addr_len)?),
+        ];
+        for (kind, section) in sections.iter_mut().enumerate() {
+            if delta & (1 << kind) != 0 {
+                *section = Cow::Owned(secondary.decode(h.secondary, kind, section)?);
+            } else {
+                secondary.uncompressed(h.secondary, kind, section)?;
+            }
         }
+        let [data, insts, addrs] = &sections;
+        let mut data = Reader::new(data);
+        let mut insts = Reader::new(insts);
+        let mut addrs = Reader::new(addrs);
 
         let start = out.len();
         out.reserve(target_len);
@@ -487,15 +541,15 @@ mod tests {
     }
 
     #[test]
-    fn secondary_compression_is_reported() {
+    fn an_unknown_compressor_is_reported() {
         let mut p = patch(None, None, b"ab", b"ab", &[3], &[]);
-        // Header: decompress flag with LZMA, and the window's sections marked compressed.
+        // Header: decompress flag with compressor 7, and the window's data marked compressed.
         p[4] = VCD_DECOMPRESS;
-        p.insert(5, 2);
+        p.insert(5, 7);
         let delta_at = p.len() - (2 + 1) - 4 - 3 - 1;
         p[delta_at] = 0x01;
         let e = apply(b"", &p).unwrap_err();
-        assert!(e.0.contains("LZMA"), "{e}");
+        assert!(e.0.contains("number 7"), "{e}");
     }
 
     #[test]
