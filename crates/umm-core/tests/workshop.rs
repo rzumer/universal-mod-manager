@@ -365,3 +365,34 @@ fn health_checks_a_profiles_workshop_items_against_steam() {
         ["profile `Default` lists Workshop item 9, which is not subscribed to in Steam"]
     );
 }
+
+/// Kenshi's Workshop items in a profile: enabled in `data/mods.cfg` by their `.mod` files, or
+/// taken out of it, as the profile says; the user's list comes back afterwards.
+#[test]
+fn a_profile_turns_kenshi_workshop_items_on_and_off() {
+    use umm_core::Faults;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = library(tmp.path(), 233860, &|i| {
+        vec![(format!("Item {i}.mod"), "mod".into())]
+    });
+    let list = root.join("data/mods.cfg");
+    let original = "Item 2.mod\r\nItem 3.mod\r\n";
+    write(&list, original);
+    let s = Session::open(Some(tmp.path().join("data"))).unwrap();
+    write(
+        &s.data().game("kenshi").def_path(),
+        "schema = 1\nname = \"Kenshi\"\n[detect]\nsteam_app_id = 233860\nmarker = \"Game.exe\"\n\
+         [[install]]\nmatch = \"**\"\ntarget = \"mods/{mod}/\"\n\
+         [mod_list]\nlist = \"data/mods.cfg\"\nformat = \"kenshi_cfg\"\nfolder = \"mods\"\n",
+    );
+    s.set_install_path("kenshi", &root).unwrap();
+    profile_with(&s, "kenshi", &[("workshop:1", true), ("workshop:2", false)]);
+    s.deploy("kenshi", umm_core::DEFAULT_PROFILE, &mut Faults::none())
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(&list).unwrap(),
+        "Item 3.mod\r\nItem 1.mod\r\n"
+    );
+    s.revert("kenshi", false, &mut Faults::none()).unwrap();
+    assert_eq!(fs::read_to_string(&list).unwrap(), original);
+}

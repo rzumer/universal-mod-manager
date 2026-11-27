@@ -316,6 +316,9 @@ pub enum PluginListFormat {
     /// Oxygen Not Included: the `mods` array of `mods.json`, each mod by its folder in
     /// `mods/Local`, enabled for each game version (`enabledForDlc`).
     OniJson,
+    /// Kenshi: enabled mods in `data/mods.cfg`, one `<Name>.mod` a line, in load order, by
+    /// the `.mod` file in each mod's folder. Each mod's folder is named after it.
+    KenshiCfg,
 }
 
 impl PluginListFormat {
@@ -326,6 +329,7 @@ impl PluginListFormat {
             PluginListFormat::RimworldXml
                 | PluginListFormat::FactorioJson
                 | PluginListFormat::OniJson
+                | PluginListFormat::KenshiCfg
         )
     }
 }

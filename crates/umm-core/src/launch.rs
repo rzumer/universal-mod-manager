@@ -132,6 +132,8 @@ impl Session {
         self.plan_paradox(&def, &profile, &mut plan)?;
         // Factorio's mod folders, named as the game wants.
         self.plan_factorio(&def, &mut plan)?;
+        // Kenshi's mod folders, named after their `.mod` files.
+        self.plan_kenshi(&def, &mut plan)?;
         // A Larian game's enabled modules.
         self.plan_larian(&def, &profile, &mut plan)?;
         let rl = def.def.runtime_loader();

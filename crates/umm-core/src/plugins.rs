@@ -15,7 +15,9 @@ use umm_deploy::{Plan, PlannedExternal, PlannedFile, Skipped};
 use umm_gamedef::{CompiledDef, PluginListFormat, RelPath, PLUGIN_EXTENSIONS};
 use umm_store::fsutil::{hash_file, write_atomic, IoCtx};
 use umm_store::Profile;
-use PluginListFormat::{Asterisk, FactorioJson, MorrowindIni, OniJson, Plain, RimworldXml};
+use PluginListFormat::{
+    Asterisk, FactorioJson, KenshiCfg, MorrowindIni, OniJson, Plain, RimworldXml,
+};
 
 /// The plugin list a deploy writes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,7 +111,7 @@ fn read_list(text: &str, format: PluginListFormat) -> Vec<PluginEntry> {
         owner: None,
     };
     match format {
-        Asterisk | Plain => text
+        Asterisk | Plain | KenshiCfg => text
             .lines()
             .map(str::trim)
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
@@ -160,7 +162,7 @@ impl PluginList {
     pub fn render(&self, original: &str) -> String {
         let nl = eol(original);
         match self.format {
-            Asterisk | Plain => {
+            Asterisk | Plain | KenshiCfg => {
                 let mut out = String::new();
                 for c in original
                     .lines()
@@ -173,7 +175,7 @@ impl PluginList {
                 for e in &self.entries {
                     match self.format {
                         Asterisk if e.enabled => out.push('*'),
-                        Plain if !e.enabled => continue,
+                        Plain | KenshiCfg if !e.enabled => continue,
                         _ => {}
                     }
                     out.push_str(&e.name);
@@ -372,6 +374,17 @@ impl Session {
                     .filter_map(|f| Some((f.owner.as_str(), crate::factorio::mod_name(&f.source)?)))
                     .collect()
             }
+            // Kenshi mods: a folder each, by the `.mod` file in it.
+            KenshiCfg => {
+                let prefix = format!("{}/", folder.as_str());
+                files
+                    .iter()
+                    .filter_map(|f| {
+                        let (_, file) = crate::kenshi::mod_file(f.target.as_str(), &prefix)?;
+                        Some((f.owner.as_str(), file.to_string()))
+                    })
+                    .collect()
+            }
             // Oxygen Not Included mods: a folder each, known by its name.
             OniJson => {
                 let prefix = format!("{}/", folder.as_str());
@@ -384,27 +397,28 @@ impl Session {
                     .collect()
             }
         };
-        // RimWorld's Workshop items the profile has: on as it says, by their package ids;
-        // the others are left as the user's list has them.
+        // RimWorld's and Kenshi's Workshop items the profile has: on as it says, by their
+        // package ids (Kenshi: their `.mod` files); the others are left as the user's list
+        // has them.
         let mut off: HashSet<String> = HashSet::new();
         let workshop_ids: Vec<(String, bool)> = profile
             .workshop()
             .map(|(i, on)| (format!("{}{i}", umm_store::WORKSHOP_PREFIX), on))
             .collect();
-        if cfg.format == RimworldXml && !workshop_ids.is_empty() {
+        if matches!(cfg.format, RimworldXml | KenshiCfg) && !workshop_ids.is_empty() {
             let folders = self.workshop_folders(&def.def);
             for (entry, on) in &workshop_ids {
                 let item = &entry[umm_store::WORKSHOP_PREFIX.len()..];
-                let Some(pid) = folders
-                    .get(item)
-                    .and_then(|f| package_id(&f.join("About").join("About.xml")))
-                else {
+                let Some(pid) = folders.get(item).and_then(|f| match cfg.format {
+                    KenshiCfg => crate::kenshi::mod_in(f),
+                    _ => package_id(&f.join("About").join("About.xml")),
+                }) else {
                     continue;
                 };
                 if *on {
                     ours.push((entry.as_str(), pid));
                 } else {
-                    off.insert(pid);
+                    off.insert(pid.to_lowercase());
                 }
             }
         }
@@ -519,7 +533,7 @@ impl Session {
                 t.dedup();
                 t
             }
-            MorrowindIni | RimworldXml | FactorioJson | OniJson => Vec::new(),
+            MorrowindIni | RimworldXml | FactorioJson | OniJson | KenshiCfg => Vec::new(),
         };
         plan.external.push(PlannedExternal {
             hash: hash_file(&src).ctx(|| format!("hashing {}", src.display()))?,

@@ -599,7 +599,9 @@ const fn other(
     }
 }
 
-use PluginListFormat::{Asterisk, FactorioJson, MorrowindIni, OniJson, Plain, RimworldXml};
+use PluginListFormat::{
+    Asterisk, FactorioJson, KenshiCfg, MorrowindIni, OniJson, Plain, RimworldXml,
+};
 
 /// RimWorld's list, in its folder under `AppData\LocalLow` (which has no variable of its own).
 const RIMWORLD_LIST: &str =
@@ -673,6 +675,19 @@ pub const LIST_GAMES: &[ListGame] = &[
         "Mods",
         RimworldXml,
     ),
+    // Steam's and GOG's builds.
+    other(
+        "kenshi_x64.exe",
+        ListAt::Game("data/mods.cfg"),
+        "mods",
+        KenshiCfg,
+    ),
+    other(
+        "kenshi_GOG_x64.exe",
+        ListAt::Game("data/mods.cfg"),
+        "mods",
+        KenshiCfg,
+    ),
 ];
 
 /// The game keeping a list whose exe is at the top of a game folder (`exes`, relative paths,
@@ -698,6 +713,7 @@ fn add_list_game(draft: &mut Draft, folder: &Path, found: &Inspection) {
             plugins.list
         ),
         MorrowindIni => "Morrowind: while mods are deployed, UMM enables their plugins in the [Game Files] section of Morrowind.ini. The game loads plugins in the order of their file dates.".into(),
+        KenshiCfg => "Kenshi: each mod goes in its own folder in mods/, named after its .mod file as the game wants, and while mods are deployed, UMM enables them in data/mods.cfg, in load order (your own list comes back afterwards). Steam Workshop items can be turned on or off in a profile too.".into(),
         // Factorio and Oxygen Not Included are set up in `build`, not as list games.
         RimworldXml | FactorioJson | OniJson => format!(
             "RimWorld: each mod goes in its own folder in Mods/, and while mods are deployed, UMM activates them in {}, in load order.",
@@ -705,7 +721,9 @@ fn add_list_game(draft: &mut Draft, folder: &Path, found: &Inspection) {
         ),
     };
     draft.notes.push(Note::new("plugins", note));
-    if g.format == RimworldXml && draft.setup == LoaderSetup::Generic {
+    // The list says what the game is, whatever its engine.
+    draft.notes.retain(|n| n.key != "unknown-engine");
+    if matches!(g.format, RimworldXml | KenshiCfg) && draft.setup == LoaderSetup::Generic {
         for r in &mut draft.def.install {
             if r.pattern == "**" && r.target.is_empty() {
                 r.target = format!("{}/{{mod}}/", g.folder);
@@ -1545,6 +1563,43 @@ mod tests {
         );
         let back = GameDef::parse_game(&to_toml(&d), Path::new("game.toml"), "oni").unwrap();
         assert_eq!(back.plugins, d.def.plugins);
+    }
+
+    #[test]
+    fn kenshi_mods_get_a_folder_each_and_are_listed_in_its_mods_cfg() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        touch(&root.join("kenshi_x64.exe"), 100);
+        touch(&root.join("data/gamedata.base"), 10);
+        let found = inspect_folder(root);
+        let d = draft_manual(
+            root,
+            "Kenshi",
+            &found.exe,
+            &found,
+            LoaderSetup::Generic,
+            None,
+        )
+        .unwrap();
+        let p = d.def.plugins.as_ref().unwrap();
+        assert_eq!(
+            (p.list.as_str(), p.format, p.folder.as_str()),
+            ("data/mods.cfg", PluginListFormat::KenshiCfg, "mods")
+        );
+        assert!(d
+            .notes
+            .iter()
+            .any(|n| n.key == "plugins" && n.text.starts_with("Kenshi")));
+        assert!(!d.notes.iter().any(|n| n.key == "unknown-engine"));
+        assert_eq!(d.def.install[0].target, "mods/{mod}/");
+        let back = GameDef::parse_game(&to_toml(&d), Path::new("game.toml"), "kenshi").unwrap();
+        assert_eq!(back.plugins, d.def.plugins);
+        let again = back
+            .with_setup(LoaderSetup::Bepinex, None)
+            .unwrap()
+            .with_setup(LoaderSetup::Generic, None)
+            .unwrap();
+        assert_eq!(again.install[0].target, "mods/{mod}/");
     }
 
     #[test]

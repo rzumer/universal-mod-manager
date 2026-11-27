@@ -242,6 +242,7 @@ pub fn suggest(files: &[&str], game: &GameIndex, def: &CompiledDef) -> Option<Pl
         Some(umm_gamedef::PluginListFormat::RimworldXml) => Some(rimworld_root(&rels)),
         Some(umm_gamedef::PluginListFormat::FactorioJson) => Some(factorio_root(&rels)),
         Some(umm_gamedef::PluginListFormat::OniJson) => Some(oni_root(&rels)),
+        Some(umm_gamedef::PluginListFormat::KenshiCfg) => Some(kenshi_root(&rels)),
         _ if def.def.paradox.is_some() => Some(paradox_root(&rels, def)),
         _ => None,
     };
@@ -400,6 +401,14 @@ fn oni_root(rels: &[RelPath]) -> Option<Placement> {
         n.eq_ignore_ascii_case("mod_info.yaml") || n.eq_ignore_ascii_case("mod.yaml")
     })
     .or_else(|| marked_root(rels, |n| n.to_ascii_lowercase().ends_with(".dll")))
+}
+
+/// A Kenshi mod's folder is the one holding its `.mod` file (the shallowest).
+fn kenshi_root(rels: &[RelPath]) -> Option<Placement> {
+    marked_root(rels, |n| {
+        let n = n.to_ascii_lowercase();
+        n.len() > 4 && n.ends_with(".mod")
+    })
 }
 
 /// The shallowest folder holding a file whose name `marks` it; a guess when another as

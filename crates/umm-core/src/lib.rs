@@ -7,6 +7,7 @@ mod factorio;
 mod fomod;
 mod godotml;
 mod icons;
+mod kenshi;
 mod larian;
 mod launch;
 mod link;
