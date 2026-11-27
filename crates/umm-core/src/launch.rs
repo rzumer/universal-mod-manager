@@ -134,6 +134,8 @@ impl Session {
         self.plan_factorio(&def, &mut plan)?;
         // Kenshi's mod folders, named after their `.mod` files.
         self.plan_kenshi(&def, &mut plan)?;
+        // Bannerlord's module folders, named after their ids.
+        self.plan_bannerlord(&def, &mut plan)?;
         // A Larian game's enabled modules.
         self.plan_larian(&def, &profile, &mut plan)?;
         let rl = def.def.runtime_loader();
@@ -424,6 +426,8 @@ impl Session {
             find_steam_exe(),
         )?;
         spec.args.extend(self.paradox_mod_args(&def, &profile));
+        spec.args
+            .extend(self.bannerlord_args(&def, &profile, &journal));
 
         let outcome = umm_launch::run(&spec, stop, &mut |e| {
             on_event(match e {

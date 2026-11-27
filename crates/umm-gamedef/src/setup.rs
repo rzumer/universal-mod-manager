@@ -338,6 +338,12 @@ impl GameDef {
             LoaderSetup::Generic => (
                 None,
                 match (&self.paradox, &self.larian, &self.plugins) {
+                    _ if self.bannerlord.is_some() => mod_folder_rules(
+                        &self
+                            .bannerlord
+                            .as_ref()
+                            .map_or("Modules".into(), |b| b.folder.clone()),
+                    ),
                     (Some(p), _, _) => paradox_rules(&p.folder),
                     (None, Some(l), _) => larian_rules(&l.folder, l.format),
                     (None, None, Some(p)) if p.format.lists_mod_folders() => {

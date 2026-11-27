@@ -634,6 +634,10 @@ pub enum WorkshopControl {
 
 /// How far UMM controls the game's Workshop items.
 pub fn workshop_control(def: &GameDef) -> WorkshopControl {
+    // Bannerlord loads the modules it is started with.
+    if def.bannerlord.is_some() {
+        return WorkshopControl::Profile;
+    }
     match (&def.paradox, def.plugins.as_ref().map(|p| p.format)) {
         (Some(_), _) => WorkshopControl::Profile,
         (

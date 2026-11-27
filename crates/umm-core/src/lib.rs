@@ -1,5 +1,6 @@
 //! `Session`: the one API the CLI and the Tauri app both call.
 
+mod bannerlord;
 mod config;
 mod doctor;
 mod downloads;

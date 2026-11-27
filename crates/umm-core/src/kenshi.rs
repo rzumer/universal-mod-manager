@@ -53,52 +53,65 @@ impl Session {
             return Ok(());
         };
         let prefix = format!("{}/", cfg.folder.trim_matches('/'));
-        // (owner, folder) → the mod's name; name → owner.
         let mut names: HashMap<(String, String), String> = HashMap::new();
-        let mut owners: HashMap<String, String> = HashMap::new();
         for f in &plan.files {
-            let Some((dir, file)) = mod_file(f.target.as_str(), &prefix) else {
-                continue;
-            };
-            let key = (f.owner.clone(), dir.to_lowercase());
-            if names.contains_key(&key) {
-                continue;
-            }
-            let name = file[..file.len() - 4].to_string();
-            if let Some(other) = owners.insert(name.to_lowercase(), f.owner.clone()) {
-                if other != f.owner {
-                    return Err(CoreError::Invalid(format!(
-                        "mods `{other}` and `{}` are both the Kenshi mod `{name}`: disable one",
-                        f.owner
-                    )));
-                }
-            }
-            names.insert(key, name);
-        }
-        for f in &mut plan.files {
-            let t = f.target.as_str();
-            let Some(rest) = t
-                .get(..prefix.len())
-                .filter(|p| p.eq_ignore_ascii_case(&prefix))
-                .map(|_| &t[prefix.len()..])
-            else {
-                continue;
-            };
-            let (dir, inner) = rest.split_once('/').unwrap_or((rest, ""));
-            let Some(name) = names.get(&(f.owner.clone(), dir.to_lowercase())) else {
-                continue;
-            };
-            if dir != name {
-                let renamed = match inner {
-                    "" => format!("{}{name}", &t[..prefix.len()]),
-                    _ => format!("{}{name}/{inner}", &t[..prefix.len()]),
-                };
-                f.target = RelPath::parse(&renamed)?;
+            if let Some((dir, file)) = mod_file(f.target.as_str(), &prefix) {
+                names
+                    .entry((f.owner.clone(), dir.to_lowercase()))
+                    .or_insert_with(|| file[..file.len() - 4].to_string());
             }
         }
-        plan.files.sort_by_key(|f| f.target.key());
-        Ok(())
+        rename_folders(plan, &prefix, &names, "Kenshi mod")
     }
+}
+
+/// Renames mods' folders in a folder of mods (`prefix`, ending in `/`): each `(owner,
+/// folder)` in `names` (the folder lower-case) to its name there. Refused when two mods would
+/// have the same folder (`what` says what they are to the game).
+pub(crate) fn rename_folders(
+    plan: &mut Plan,
+    prefix: &str,
+    names: &HashMap<(String, String), String>,
+    what: &str,
+) -> Result<()> {
+    let mut owners: HashMap<String, &str> = HashMap::new();
+    for ((owner, _), name) in names {
+        if let Some(other) = owners.insert(name.to_lowercase(), owner) {
+            if other != owner {
+                let (a, b) = if other < owner.as_str() {
+                    (other, owner.as_str())
+                } else {
+                    (owner.as_str(), other)
+                };
+                return Err(CoreError::Invalid(format!(
+                    "mods `{a}` and `{b}` are both the {what} `{name}`: disable one"
+                )));
+            }
+        }
+    }
+    for f in &mut plan.files {
+        let t = f.target.as_str();
+        let Some(rest) = t
+            .get(..prefix.len())
+            .filter(|p| p.eq_ignore_ascii_case(prefix))
+            .map(|_| &t[prefix.len()..])
+        else {
+            continue;
+        };
+        let (dir, inner) = rest.split_once('/').unwrap_or((rest, ""));
+        let Some(name) = names.get(&(f.owner.clone(), dir.to_lowercase())) else {
+            continue;
+        };
+        if dir != name {
+            let renamed = match inner {
+                "" => format!("{}{name}", &t[..prefix.len()]),
+                _ => format!("{}{name}/{inner}", &t[..prefix.len()]),
+            };
+            f.target = RelPath::parse(&renamed)?;
+        }
+    }
+    plan.files.sort_by_key(|f| f.target.key());
+    Ok(())
 }
 
 #[cfg(test)]

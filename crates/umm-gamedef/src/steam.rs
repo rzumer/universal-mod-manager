@@ -112,6 +112,8 @@ pub enum Engine {
     /// Oxygen Not Included: a Unity game with Klei's own mod loader, a folder per mod in
     /// Documents, enabled in `mods.json`.
     OxygenNotIncluded,
+    /// Mount & Blade II: Bannerlord: modules in `Modules/`, loaded as the game is told.
+    Bannerlord,
     Unknown,
 }
 
@@ -126,6 +128,7 @@ impl Engine {
             Engine::Factorio => "Factorio (Wube)",
             Engine::Divinity => "Divinity Engine (Larian)",
             Engine::OxygenNotIncluded => "Unity (Mono), Klei's mod loader",
+            Engine::Bannerlord => "TaleWorlds Engine (Bannerlord)",
             Engine::Unknown => "Unknown engine",
         }
     }
@@ -419,6 +422,20 @@ pub fn inspect_folder(root: &Path) -> Inspection {
             larian: Some(g),
         };
     }
+    // Bannerlord: its exe in `bin/Win64_Shipping_Client/`, its own modules in `Modules/`.
+    if has_file_ci(root, BANNERLORD_EXE) && has_file_ci(root, "Modules/Native/SubModule.xml") {
+        exes.retain(|e| !e.eq_ignore_ascii_case(BANNERLORD_EXE));
+        exes.insert(0, BANNERLORD_EXE.to_string());
+        return Inspection {
+            engine: Engine::Bannerlord,
+            exe: BANNERLORD_EXE.to_string(),
+            exes,
+            unreal_project: None,
+            data_folder: None,
+            paradox: None,
+            larian: None,
+        };
+    }
     // Factorio: its exe in `bin/x64/`, its base mod in `data/`.
     if root.join(FACTORIO_EXE).is_file() && root.join("data/base/info.json").is_file() {
         exes.retain(|e| !e.eq_ignore_ascii_case(FACTORIO_EXE));
@@ -501,6 +518,10 @@ fn factorio_portable(root: &Path) -> bool {
         })
     })
 }
+
+/// Bannerlord's exe, started directly past its launcher
+/// (`TaleWorlds.MountAndBlade.Launcher.exe` beside it).
+pub const BANNERLORD_EXE: &str = "bin/Win64_Shipping_Client/Bannerlord.exe";
 
 /// Oxygen Not Included's exe, at the top of its folder.
 pub const ONI_EXE: &str = "OxygenNotIncluded.exe";
@@ -977,6 +998,13 @@ fn build(
                 ));
             }
         }
+        Engine::Bannerlord => notes.push(Note::new(
+            "bannerlord",
+            "Bannerlord: each mod goes in its own folder in Modules/, named after the module's \
+             id as the game wants. UMM starts the game past its launcher with the modules to \
+             load: the game's own, your profile's (Steam Workshop items included), and those \
+             you selected in the launcher, each after the ones it depends on.",
+        )),
         Engine::Factorio => notes.push(Note::new(
             "factorio",
             "Factorio: each mod goes in its own folder in the game's mods folder, named after \
@@ -1033,6 +1061,10 @@ fn build(
         _ => None,
     };
     match (found.paradox, found.larian, &mod_list) {
+        // A folder per module.
+        _ if found.engine == Engine::Bannerlord => {
+            install.extend(crate::setup::mod_folder_rules("Modules"))
+        }
         // Mods go in the user folder's `mod/`, not the game folder.
         (Some(_), _, _) => install.extend(crate::setup::paradox_rules(USER_FOLDER)),
         // Paks in the user folder's `Mods/`.
@@ -1129,8 +1161,10 @@ fn build(
                 .unwrap_or_default(),
             // A Paradox game started through Steam runs Paradox's launcher, which writes the
             // list of enabled mods from its playset: started directly instead, Steam running.
-            // Larian's launcher likewise stands before the game.
-            steam_relaunch: if (found.paradox.is_some() || found.larian.is_some())
+            // Larian's and Bannerlord's launchers likewise stand before the game.
+            steam_relaunch: if (found.paradox.is_some()
+                || found.larian.is_some()
+                || found.engine == Engine::Bannerlord)
                 && origin.relaunch == SteamRelaunch::ViaSteam
             {
                 SteamRelaunch::AppidFile
@@ -1175,6 +1209,9 @@ fn build(
         paradox: found.paradox.map(|g| crate::Paradox {
             folder: USER_FOLDER.into(),
             list: g.list,
+        }),
+        bannerlord: (found.engine == Engine::Bannerlord).then(|| crate::Bannerlord {
+            folder: "Modules".into(),
         }),
         larian: found.larian.map(|g| crate::Larian {
             folder: USER_FOLDER.into(),
@@ -1600,6 +1637,43 @@ mod tests {
             .with_setup(LoaderSetup::Generic, None)
             .unwrap();
         assert_eq!(again.install[0].target, "mods/{mod}/");
+    }
+
+    #[test]
+    fn bannerlord_modules_get_a_folder_each() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        touch(&root.join(BANNERLORD_EXE), 100);
+        touch(
+            &root.join("bin/Win64_Shipping_Client/TaleWorlds.MountAndBlade.Launcher.exe"),
+            50,
+        );
+        touch(&root.join("Modules/Native/SubModule.xml"), 10);
+        let found = inspect_folder(root);
+        assert_eq!(
+            (found.engine, found.exe.as_str()),
+            (Engine::Bannerlord, BANNERLORD_EXE)
+        );
+        let d = draft_manual(
+            root,
+            "Bannerlord",
+            &found.exe,
+            &found,
+            LoaderSetup::Generic,
+            None,
+        )
+        .unwrap();
+        assert_eq!(d.def.bannerlord.as_ref().unwrap().folder, "Modules");
+        assert_eq!(d.def.install[0].target, "Modules/{mod}/");
+        assert!(d.notes.iter().any(|n| n.key == "bannerlord"));
+        let back = GameDef::parse_game(&to_toml(&d), Path::new("game.toml"), "mb2").unwrap();
+        assert_eq!(back.bannerlord, d.def.bannerlord);
+        let again = back
+            .with_setup(LoaderSetup::Bepinex, None)
+            .unwrap()
+            .with_setup(LoaderSetup::Generic, None)
+            .unwrap();
+        assert_eq!(again.install[0].target, "Modules/{mod}/");
     }
 
     #[test]

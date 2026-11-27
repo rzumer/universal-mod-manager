@@ -81,6 +81,23 @@ pub struct GameDef {
     /// user folder's `Mods/`, enabled in its player profiles' `modsettings.lsx`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub larian: Option<Larian>,
+    /// Mount & Blade II: Bannerlord: mods are modules, each a folder named after its id in
+    /// the game folder's `Modules/`, loaded when the game is started with them named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bannerlord: Option<Bannerlord>,
+}
+
+/// Bannerlord's mod setup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Bannerlord {
+    /// The game folder's folder of modules.
+    #[serde(default = "default_modules_folder")]
+    pub folder: String,
+}
+
+fn default_modules_folder() -> String {
+    "Modules".into()
 }
 
 /// A Larian game's mod setup.

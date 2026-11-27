@@ -244,6 +244,10 @@ pub fn suggest(files: &[&str], game: &GameIndex, def: &CompiledDef) -> Option<Pl
         Some(umm_gamedef::PluginListFormat::OniJson) => Some(oni_root(&rels)),
         Some(umm_gamedef::PluginListFormat::KenshiCfg) => Some(kenshi_root(&rels)),
         _ if def.def.paradox.is_some() => Some(paradox_root(&rels, def)),
+        // A Bannerlord module's folder holds its `SubModule.xml`.
+        _ if def.def.bannerlord.is_some() => Some(marked_root(&rels, |n| {
+            n.eq_ignore_ascii_case(crate::bannerlord::SUBMODULE)
+        })),
         _ => None,
     };
     if let Some(p) = own_folder {
