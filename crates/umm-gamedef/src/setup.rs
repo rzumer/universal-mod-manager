@@ -90,14 +90,21 @@ pub fn paradox_rules(folder: &str) -> Vec<InstallRule> {
 /// `folder` in the definition's folders), where the game finds them only at its top, and the
 /// game folder's own folders (`bin/` for the Script Extender) where they are. Other files
 /// (`info.json`, readmes) are left out.
-pub fn larian_rules(folder: &str) -> Vec<InstallRule> {
-    vec![
+pub fn larian_rules(folder: &str, format: crate::LarianFormat) -> Vec<InstallRule> {
+    let (bin, data) = (format.bin(), format.data());
+    let mut rules = vec![
         rule("*.pak", &format!("@{folder}/Mods/")),
-        rule("bin/**", "bin/"),
-        rule("Data/**", "Data/"),
-        // The Script Extender's loader.
-        rule("DWrite.dll", "bin/"),
-    ]
+        rule(&format!("{bin}/**"), &format!("{bin}/")),
+        rule(&format!("{data}/**"), &format!("{data}/")),
+    ];
+    if format == crate::LarianFormat::Dos2 {
+        // Laid out from `DefEd/`, as many are.
+        rules.push(rule("bin/**", &format!("{bin}/")));
+        rules.push(rule("Data/**", &format!("{data}/")));
+    }
+    // The Script Extender's loader.
+    rules.push(rule(format.extender(), &format!("{bin}/")));
+    rules
 }
 
 /// The data folder of a definition's Bethesda plugin list (not a list of mod folders).
@@ -332,7 +339,7 @@ impl GameDef {
                 None,
                 match (&self.paradox, &self.larian, &self.plugins) {
                     (Some(p), _, _) => paradox_rules(&p.folder),
-                    (None, Some(l), _) => larian_rules(&l.folder),
+                    (None, Some(l), _) => larian_rules(&l.folder, l.format),
                     (None, None, Some(p)) if p.format.lists_mod_folders() => {
                         mod_folder_rules(&p.folder)
                     }

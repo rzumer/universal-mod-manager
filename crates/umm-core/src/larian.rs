@@ -1,10 +1,14 @@
-//! Larian games (Baldur's Gate 3): mods are `.pak` packages in the game's user folder's
-//! `Mods/` (`%LOCALAPPDATA%\Larian Studios\Baldur's Gate 3\Mods`), not the game folder. A
-//! package with a module of its own (`Mods/<Folder>/meta.lsx` inside it) loads only when
-//! `PlayerProfiles/Public/modsettings.lsx` lists that module; one without (an override of the
-//! game's files) loads as it is.
+//! Larian games (Baldur's Gate 3, Divinity: Original Sin 2): mods are `.pak` packages in the
+//! game's user folder's `Mods/` (`%LOCALAPPDATA%\Larian Studios\Baldur's Gate 3\Mods`), not
+//! the game folder. A package with a module of its own (`Mods/<Folder>/meta.lsx` inside it)
+//! loads only when the game's `modsettings.lsx` lists that module; one without (an override
+//! of the game's files) loads as it is.
 //!
-//! While mods are deployed, UMM adds each enabled mod's modules to that list, after the
+//! Baldur's Gate 3 has one list, `PlayerProfiles/Public/modsettings.lsx`'s `Mods`. Divinity:
+//! Original Sin 2 has one per player profile (`PlayerProfiles/<profile>/modsettings.lsx`),
+//! each with the modules in load order (`ModOrder`) as well as their descriptions (`Mods`).
+//!
+//! While mods are deployed, UMM adds each enabled mod's modules to those lists, after the
 //! game's own and the user's, and takes them out again afterwards: the rest of the file is
 //! the game's, which it rewrites as it likes.
 
@@ -13,21 +17,30 @@ use roxmltree::Document;
 use std::fs;
 use umm_deploy::lsx::attribute;
 use umm_deploy::{ListFormat, Plan, PlannedList};
-use umm_gamedef::CompiledDef;
+use umm_gamedef::{CompiledDef, LarianFormat};
 use umm_store::Profile;
 
 /// The game's list of enabled modules, in its user folder.
 pub const MODSETTINGS: &str = "PlayerProfiles/Public/modsettings.lsx";
+/// Divinity: Original Sin 2's player profiles, each with its `modsettings.lsx`.
+const PROFILES: &str = "PlayerProfiles";
 /// The list's node in it.
 const MODS: &str = "Mods";
+/// Divinity: Original Sin 2's load order, the other list there.
+const MOD_ORDER: &str = "ModOrder";
+/// `Version` for 1.0.0.0 in Divinity: Original Sin 2, for a module that gives none.
+const VERSION_1_DOS2: &str = "268435456";
 /// `Version64` for 1.0.0.0, for a module that gives none.
 const VERSION_1: &str = "36028797018963968";
 /// The game's own modules (GustavX, GustavDev, Gustav), which a mod's package may hold a copy
 /// of to change, but which are not the mod's to list.
+/// Divinity: Original Sin 2's are Divinity Origins and Shared.
 const BASE_MODULES: &[&str] = &[
     "cb555efe-2d9e-131f-8195-a89329d218ea",
     "28ac9ce2-2aba-8cda-b3b5-6e922f71b6b8",
     "991c9c7a-fb80-40cb-8f0d-b92d4e80e9b1",
+    "1301db3d-1f54-4e98-9be5-5094030916e4",
+    "2bd9bdbe-22ae-4aa2-9c93-205880fc6564",
 ];
 
 /// A module, as its `meta.lsx` describes it.
@@ -38,6 +51,8 @@ pub struct Module {
     pub name: String,
     pub md5: String,
     pub version64: String,
+    /// Its `Version` (Divinity: Original Sin 2's), when it gives one.
+    pub version: Option<String>,
     pub publish_handle: String,
 }
 
@@ -65,6 +80,7 @@ pub fn module_info(xml: &str) -> Option<Module> {
             .or_else(|| get("Version"))
             .unwrap_or(VERSION_1)
             .to_string(),
+        version: get("Version").map(str::to_string),
         publish_handle: get("PublishHandle").unwrap_or("0").to_string(),
         uuid,
         folder,
@@ -97,6 +113,48 @@ pub fn short_desc(m: &Module) -> String {
     )
 }
 
+/// The module's entries in a Divinity: Original Sin 2 `modsettings.lsx`, as the game writes
+/// them: in `ModOrder`, and in `Mods`. Attribute types are numbers there (22: `FixedString`,
+/// 23: `LSString`, 30: `LSWString`, 4: `int32`).
+pub fn dos2_entries(m: &Module) -> (String, String) {
+    let a = |id: &str, ty: u8, v: &str| {
+        format!(
+            "<attribute id=\"{id}\" value=\"{}\" type=\"{ty}\" />",
+            escape(v)
+        )
+    };
+    (
+        format!("<node id=\"Module\">{}</node>", a("UUID", 22, &m.uuid)),
+        format!(
+            "<node id=\"ModuleShortDesc\">{}{}{}{}{}</node>",
+            a("Folder", 30, &m.folder),
+            a("MD5", 23, &m.md5),
+            a("Name", 22, &m.name),
+            a("UUID", 22, &m.uuid),
+            a("Version", 4, m.version.as_deref().unwrap_or(VERSION_1_DOS2)),
+        ),
+    )
+}
+
+/// The `modsettings.lsx` files UMM adds modules to, in the user folder: Baldur's Gate 3's
+/// one, or each Divinity: Original Sin 2 player profile's.
+fn modsettings_files(user: &std::path::Path, format: LarianFormat) -> Vec<std::path::PathBuf> {
+    match format {
+        LarianFormat::Bg3 => vec![user.join(MODSETTINGS)],
+        LarianFormat::Dos2 => {
+            let mut files: Vec<_> = fs::read_dir(user.join(PROFILES))
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|e| e.path().join("modsettings.lsx"))
+                .filter(|f| f.is_file())
+                .collect();
+            files.sort();
+            files
+        }
+    }
+}
+
 impl Session {
     /// For a Larian game: the enabled mods' modules, read from their packages in the user
     /// folder's `Mods/`, added to the game's list of enabled modules.
@@ -113,7 +171,7 @@ impl Session {
             return Ok(());
         };
         let prefix = format!("@{}/mods/", l.folder).to_ascii_lowercase();
-        let mut entries = Vec::new();
+        let mut modules = Vec::new();
         let mut seen: Vec<String> = Vec::new();
         for id in profile.enabled_ids() {
             for f in plan.files.iter().filter(|f| f.owner == id) {
@@ -137,41 +195,60 @@ impl Session {
                     continue;
                 }
                 seen.push(uuid);
-                entries.push(short_desc(&m));
+                modules.push(m);
             }
         }
-        if entries.is_empty() {
+        if modules.is_empty() {
             return Ok(());
         }
-        let path = user.join(MODSETTINGS);
-        let text = match fs::read(&path) {
-            Ok(b) => String::from_utf8_lossy(&b).into_owned(),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(CoreError::Invalid(format!(
-                    "{} has not written {} yet: start the game once, then deploy again",
-                    def.def.name,
-                    path.display()
-                )))
-            }
-            Err(e) => {
-                return Err(CoreError::Invalid(format!(
-                    "reading {}: {e}",
-                    path.display()
-                )))
-            }
-        };
-        if ListFormat::Lsx.get(&text, MODS).is_none() {
+        let files = modsettings_files(&user, l.format);
+        if files.is_empty() {
             return Err(CoreError::Invalid(format!(
-                "{} has no list of mods (<node id=\"Mods\">) to add to",
-                path.display()
+                "{} has not written its player profiles' modsettings.lsx in {} yet: start the \
+                 game once, then deploy again",
+                def.def.name,
+                user.join(PROFILES).display()
             )));
         }
-        plan.lists.push(PlannedList {
-            path,
-            key: MODS.into(),
-            entries,
-            format: ListFormat::Lsx,
-        });
+        let lists: Vec<(&str, Vec<String>)> = match l.format {
+            LarianFormat::Bg3 => vec![(MODS, modules.iter().map(short_desc).collect())],
+            LarianFormat::Dos2 => {
+                let (order, mods) = modules.iter().map(dos2_entries).unzip();
+                vec![(MOD_ORDER, order), (MODS, mods)]
+            }
+        };
+        for path in files {
+            let text = match fs::read(&path) {
+                Ok(b) => String::from_utf8_lossy(&b).into_owned(),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(CoreError::Invalid(format!(
+                        "{} has not written {} yet: start the game once, then deploy again",
+                        def.def.name,
+                        path.display()
+                    )))
+                }
+                Err(e) => {
+                    return Err(CoreError::Invalid(format!(
+                        "reading {}: {e}",
+                        path.display()
+                    )))
+                }
+            };
+            for (key, entries) in &lists {
+                if ListFormat::Lsx.get(&text, key).is_none() {
+                    return Err(CoreError::Invalid(format!(
+                        "{} has no list of mods (<node id=\"{key}\">) to add to",
+                        path.display()
+                    )));
+                }
+                plan.lists.push(PlannedList {
+                    path: path.clone(),
+                    key: (*key).into(),
+                    entries: entries.clone(),
+                    format: ListFormat::Lsx,
+                });
+            }
+        }
         Ok(())
     }
 }

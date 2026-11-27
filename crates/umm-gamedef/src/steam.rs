@@ -316,19 +316,30 @@ pub fn paradox_game(root: &Path) -> Option<&'static ParadoxGame> {
     PARADOX_GAMES.iter().find(|g| has_file_ci(root, g.exe))
 }
 
-/// A Larian game: its exe (relative to the game folder) and its user folder, with variables.
+/// A Larian game: its exe (relative to the game folder), its user folder, with variables, and
+/// how it lists its modules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LarianGame {
     pub exe: &'static str,
     pub user: &'static str,
+    pub format: crate::LarianFormat,
 }
 
 /// Larian games whose mods go in their user folder.
-pub const LARIAN_GAMES: &[LarianGame] = &[LarianGame {
-    // Started directly, past Larian's launcher (`Launcher/LariLauncher.exe`).
-    exe: "bin/bg3.exe",
-    user: "%LOCALAPPDATA%/Larian Studios/Baldur's Gate 3",
-}];
+pub const LARIAN_GAMES: &[LarianGame] = &[
+    LarianGame {
+        // Started directly, past Larian's launcher (`Launcher/LariLauncher.exe`).
+        exe: "bin/bg3.exe",
+        user: "%LOCALAPPDATA%/Larian Studios/Baldur's Gate 3",
+        format: crate::LarianFormat::Bg3,
+    },
+    LarianGame {
+        // Definitive Edition, started directly, past its launcher.
+        exe: "DefEd/bin/EoCApp.exe",
+        user: "%DOCUMENTS%/Larian Studios/Divinity Original Sin 2 Definitive Edition",
+        format: crate::LarianFormat::Dos2,
+    },
+];
 
 /// The Larian game installed in `root`, by its exe.
 pub fn larian_game(root: &Path) -> Option<&'static LarianGame> {
@@ -956,14 +967,23 @@ fn build(
              portal.",
         )),
         Engine::Divinity => {
-            if found.larian.is_some() {
+            if let Some(g) = found.larian {
                 notes.push(Note::new(
                     "larian",
-                    "Larian game: .pak mods go to the game's Mods folder in AppData\\Local\\Larian Studios, \
-                     and are enabled in modsettings.lsx while mods are deployed (your own mods there \
-                     stay). The game must have been started once, so that it has written that file. \
-                     Script Extender and bin/ or Data/ files go to the game folder. UMM starts the game \
-                     directly, not through Larian's launcher.",
+                    format!(
+                        "Larian game: .pak mods go to the Mods folder in {}, and are enabled in \
+                         {} while mods are deployed (your own mods there stay). The game must \
+                         have been started once, so that it has written that file. Script \
+                         Extender and {}/ or {}/ files go to the game folder. UMM starts the \
+                         game directly, not through Larian's launcher.",
+                        g.user.replace('/', "\\"),
+                        match g.format {
+                            crate::LarianFormat::Bg3 => "modsettings.lsx",
+                            crate::LarianFormat::Dos2 => "each player profile's modsettings.lsx",
+                        },
+                        g.format.bin(),
+                        g.format.data(),
+                    ),
                 ));
             }
         }
@@ -998,7 +1018,7 @@ fn build(
         // Mods go in the user folder's `mod/`, not the game folder.
         (Some(_), _, _) => install.extend(crate::setup::paradox_rules(USER_FOLDER)),
         // Paks in the user folder's `Mods/`.
-        (None, Some(_), _) => install.extend(crate::setup::larian_rules(USER_FOLDER)),
+        (None, Some(g), _) => install.extend(crate::setup::larian_rules(USER_FOLDER, g.format)),
         (None, None, Some((_, mods, _, _))) => install.extend(crate::setup::mod_folder_rules(mods)),
         (None, None, None) => install.push(rule("**", "")),
     }
@@ -1138,8 +1158,9 @@ fn build(
             folder: USER_FOLDER.into(),
             list: g.list,
         }),
-        larian: found.larian.map(|_| crate::Larian {
+        larian: found.larian.map(|g| crate::Larian {
             folder: USER_FOLDER.into(),
+            format: g.format,
         }),
     };
     let def = generic.with_setup(setup, community)?;
@@ -1377,6 +1398,59 @@ mod tests {
             ("mods/mod-list.json", "mods")
         );
         assert_eq!(d.def.install[0].target, "mods/{mod}/");
+    }
+
+    #[test]
+    fn divinity_original_sin_2_mods_go_to_its_user_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        touch(&root.join("DefEd/bin/EoCApp.exe"), 100);
+        touch(&root.join("DefEd/Data/Arena.pak"), 10);
+        let found = inspect_folder(root);
+        assert_eq!(
+            (found.engine, found.exe.as_str()),
+            (Engine::Divinity, "DefEd/bin/EoCApp.exe")
+        );
+        let d = draft_manual(root, "DOS2", &found.exe, &found, LoaderSetup::Generic, None).unwrap();
+        assert_eq!(
+            d.def.folders.get(USER_FOLDER).map(String::as_str),
+            Some("%DOCUMENTS%/Larian Studios/Divinity Original Sin 2 Definitive Edition")
+        );
+        let l = d.def.larian.as_ref().unwrap();
+        assert_eq!(
+            (l.folder.as_str(), l.format),
+            (USER_FOLDER, crate::LarianFormat::Dos2)
+        );
+        assert!(d
+            .notes
+            .iter()
+            .any(|n| n.key == "larian" && n.text.contains("each player profile")));
+        let c = d.def.compile().unwrap();
+        let map = |p: &str| {
+            c.map_mod_file("m", &crate::RelPath::parse(p).unwrap())
+                .unwrap()
+                .map(|t| t.to_string())
+        };
+        assert_eq!(map("Armory.pak").as_deref(), Some("@user/Mods/Armory.pak"));
+        assert_eq!(map("DXGI.dll").as_deref(), Some("DefEd/bin/DXGI.dll"));
+        assert_eq!(
+            map("bin/OsiExtenderEoCApp.dll").as_deref(),
+            Some("DefEd/bin/OsiExtenderEoCApp.dll")
+        );
+        assert_eq!(map("DefEd/Data/x.pak").as_deref(), Some("DefEd/Data/x.pak"));
+        let text = to_toml(&d);
+        assert!(text.contains("format = \"dos2\""), "{text}");
+        let back = GameDef::parse_game(&text, Path::new("game.toml"), "dos2").unwrap();
+        assert_eq!(back.larian, d.def.larian);
+        let again = back
+            .with_setup(LoaderSetup::Bepinex, None)
+            .unwrap()
+            .with_setup(LoaderSetup::Generic, None)
+            .unwrap();
+        let targets = |rules: &[crate::InstallRule]| {
+            rules.iter().map(|r| r.target.clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(targets(&again.install), targets(&d.def.install));
     }
 
     #[test]

@@ -77,8 +77,8 @@ pub struct GameDef {
     /// (Crusader Kings II: `settings.txt`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paradox: Option<Paradox>,
-    /// A Larian game (Baldur's Gate 3): mods are `.pak` files in its user folder's `Mods/`,
-    /// enabled in `PlayerProfiles/Public/modsettings.lsx`.
+    /// A Larian game (Baldur's Gate 3, Divinity: Original Sin 2): mods are `.pak` files in its
+    /// user folder's `Mods/`, enabled in its player profiles' `modsettings.lsx`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub larian: Option<Larian>,
 }
@@ -90,6 +90,51 @@ pub struct Larian {
     /// The [`GameDef::folders`] entry of the game's user folder (holding `Mods/` and
     /// `PlayerProfiles/`).
     pub folder: String,
+    /// Which game's way of listing modules (`bg3`, the default, or `dos2`).
+    #[serde(default, skip_serializing_if = "LarianFormat::is_bg3")]
+    pub format: LarianFormat,
+}
+
+/// How a Larian game lists its enabled modules, and where its files are.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LarianFormat {
+    /// Baldur's Gate 3: `PlayerProfiles/Public/modsettings.lsx`, its `Mods` node.
+    #[default]
+    Bg3,
+    /// Divinity: Original Sin 2 Definitive Edition: each player profile's
+    /// `modsettings.lsx`, its `ModOrder` and `Mods` nodes; the game in `DefEd/`.
+    Dos2,
+}
+
+impl LarianFormat {
+    pub fn is_bg3(&self) -> bool {
+        *self == LarianFormat::Bg3
+    }
+
+    /// The game folder's folder holding the exe, where the Script Extender goes.
+    pub fn bin(self) -> &'static str {
+        match self {
+            LarianFormat::Bg3 => "bin",
+            LarianFormat::Dos2 => "DefEd/bin",
+        }
+    }
+
+    /// The game folder's data folder.
+    pub fn data(self) -> &'static str {
+        match self {
+            LarianFormat::Bg3 => "Data",
+            LarianFormat::Dos2 => "DefEd/Data",
+        }
+    }
+
+    /// The Script Extender's loader, beside the exe.
+    pub fn extender(self) -> &'static str {
+        match self {
+            LarianFormat::Bg3 => "DWrite.dll",
+            LarianFormat::Dos2 => "DXGI.dll",
+        }
+    }
 }
 
 /// A Paradox game's mod setup.

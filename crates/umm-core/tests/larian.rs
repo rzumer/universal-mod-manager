@@ -187,3 +187,83 @@ fn a_larian_game_must_have_written_its_modsettings() {
     assert!(err.contains("start the game once"), "{err}");
     assert!(!user.join("Mods").exists());
 }
+
+/// Divinity: Original Sin 2's list, as the game writes it: the load order and the modules'
+/// descriptions, with numbered attribute types.
+fn dos2_modsettings(order: &str, mods: &str) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\r\n<save>\r\n    <header version=\"2\" time=\"1600000000\" />\r\n    <version major=\"3\" minor=\"6\" revision=\"9\" build=\"0\" />\r\n    <region id=\"ModuleSettings\">\r\n        <node id=\"root\">\r\n            <children>\r\n                <node id=\"ModOrder\">\r\n                    <children>\r\n{order}                    </children>\r\n                </node>\r\n                <node id=\"Mods\">\r\n                    <children>\r\n{mods}                    </children>\r\n                </node>\r\n            </children>\r\n        </node>\r\n    </region>\r\n</save>\r\n"
+    )
+}
+
+const ORIGINS_ORDER: &str = "                        <node id=\"Module\">\r\n                            <attribute id=\"UUID\" value=\"1301db3d-1f54-4e98-9be5-5094030916e4\" type=\"22\" />\r\n                        </node>\r\n";
+const ORIGINS: &str = "                        <node id=\"ModuleShortDesc\">\r\n                            <attribute id=\"Folder\" value=\"DivinityOrigins_1301db3d-1f54-4e98-9be5-5094030916e4\" type=\"30\" />\r\n                            <attribute id=\"MD5\" value=\"\" type=\"23\" />\r\n                            <attribute id=\"Name\" value=\"Divinity: Original Sin 2\" type=\"22\" />\r\n                            <attribute id=\"UUID\" value=\"1301db3d-1f54-4e98-9be5-5094030916e4\" type=\"22\" />\r\n                            <attribute id=\"Version\" value=\"372645092\" type=\"4\" />\r\n                        </node>\r\n";
+
+/// Divinity: Original Sin 2: each player profile's list gets the module, in its load order
+/// and its descriptions; both come back as they were.
+#[test]
+fn divinity_original_sin_2_modules_are_enabled_in_each_profile() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("game");
+    write(&root.join("DefEd/bin/EoCApp.exe"), b"exe");
+    let user = tmp
+        .path()
+        .join("docs/Larian Studios/Divinity Original Sin 2 Definitive Edition");
+    let original = dos2_modsettings(ORIGINS_ORDER, ORIGINS);
+    let profiles =
+        ["Me", "Other"].map(|p| user.join(format!("PlayerProfiles/{p}/modsettings.lsx")));
+    for p in &profiles {
+        write(p, original.as_bytes());
+    }
+    let s = Session::open(Some(tmp.path().join("data"))).unwrap();
+    write(
+        &s.data().game("dos2").def_path(),
+        format!(
+            "schema = 1\nname = \"DOS2\"\n[[install]]\nmatch = \"*.pak\"\ntarget = \"@user/Mods/\"\n\
+             [folders]\nuser = \"{}\"\n[larian]\nfolder = \"user\"\nformat = \"dos2\"\n",
+            user.display().to_string().replace('\\', "/")
+        )
+        .as_bytes(),
+    );
+    s.set_install_path("dos2", &root).unwrap();
+    let src = tmp.path().join("src/armory");
+    let m = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<save><region id=\"Config\"><node id=\"root\"><children>\
+             <node id=\"ModuleInfo\">\
+             <attribute id=\"Folder\" value=\"Armory_1a2b\" type=\"30\" />\
+             <attribute id=\"Name\" value=\"Armory\" type=\"22\" />\
+             <attribute id=\"UUID\" value=\"1a2b3c4d-0000-0000-0000-000000000001\" type=\"22\" />\
+             <attribute id=\"Version\" value=\"268435457\" type=\"4\" />\
+             </node></children></node></region></save>";
+    write(
+        &src.join("Armory.pak"),
+        &pak(&[("Mods/Armory_1a2b/meta.lsx", m.as_bytes())]),
+    );
+    s.import(
+        "dos2",
+        &src,
+        ImportOptions {
+            id: Some("armory".into()),
+            unwrap: true,
+            ..Default::default()
+        },
+        DEFAULT_PROFILE,
+    )
+    .unwrap();
+
+    s.deploy("dos2", DEFAULT_PROFILE, &mut Faults::none())
+        .unwrap();
+    assert!(user.join("Mods/Armory.pak").is_file());
+    let order = format!("{ORIGINS_ORDER}                        <node id=\"Module\"><attribute id=\"UUID\" value=\"{UUID}\" type=\"22\" /></node>\r\n");
+    let mods = format!("{ORIGINS}                        <node id=\"ModuleShortDesc\"><attribute id=\"Folder\" value=\"Armory_1a2b\" type=\"30\" /><attribute id=\"MD5\" value=\"\" type=\"23\" /><attribute id=\"Name\" value=\"Armory\" type=\"22\" /><attribute id=\"UUID\" value=\"{UUID}\" type=\"22\" /><attribute id=\"Version\" value=\"268435457\" type=\"4\" /></node>\r\n");
+    for p in &profiles {
+        assert_eq!(
+            fs::read_to_string(p).unwrap(),
+            dos2_modsettings(&order, &mods)
+        );
+    }
+    s.revert("dos2", false, &mut Faults::none()).unwrap();
+    assert!(!user.join("Mods/Armory.pak").exists());
+    for p in &profiles {
+        assert_eq!(fs::read_to_string(p).unwrap(), original);
+    }
+}
