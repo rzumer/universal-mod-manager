@@ -11,6 +11,18 @@ fn write(p: &Path, bytes: &[u8]) {
     fs::write(p, bytes).unwrap();
 }
 
+/// `data` as an LZ4 block of literals only, which is valid LZ4.
+fn lz4_literals(data: &[u8]) -> Vec<u8> {
+    let n = data.len();
+    let mut out = vec![(n.min(15) as u8) << 4];
+    if n >= 15 {
+        out.extend(std::iter::repeat_n(255, (n - 15) / 255));
+        out.push(((n - 15) % 255) as u8);
+    }
+    out.extend_from_slice(data);
+    out
+}
+
 /// A version 18 package of these files, each LZ4-compressed as the game's are.
 fn pak(files: &[(&str, &[u8])]) -> Vec<u8> {
     let mut out = b"LSPK".to_vec();
@@ -18,7 +30,7 @@ fn pak(files: &[(&str, &[u8])]) -> Vec<u8> {
     out.extend_from_slice(&[0; 32]);
     let mut list = Vec::new();
     for (name, content) in files {
-        let packed = lz4_flex::block::compress(content);
+        let packed = lz4_literals(content);
         let offset = out.len() as u32;
         out.extend_from_slice(&packed);
         let mut e = vec![0u8; 272];
@@ -30,7 +42,7 @@ fn pak(files: &[(&str, &[u8])]) -> Vec<u8> {
         list.extend_from_slice(&e);
     }
     let list_offset = out.len() as u64;
-    let packed = lz4_flex::block::compress(&list);
+    let packed = lz4_literals(&list);
     out.extend_from_slice(&(files.len() as u32).to_le_bytes());
     out.extend_from_slice(&(packed.len() as u32).to_le_bytes());
     out.extend_from_slice(&packed);

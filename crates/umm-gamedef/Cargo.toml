@@ -10,12 +10,12 @@ rust-version.workspace = true
 dirs.workspace = true
 serde.workspace = true
 toml.workspace = true
-toml_edit = "0.22"
+toml_edit = "0.25"
 thiserror.workspace = true
 globset.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-winreg.workspace = true
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Registry"] }
 
 [dev-dependencies]
 tempfile.workspace = true

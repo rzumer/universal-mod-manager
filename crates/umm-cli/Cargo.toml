@@ -14,4 +14,3 @@ path = "src/main.rs"
 umm-core.workspace = true
 umm-sources.workspace = true
 clap.workspace = true
-anyhow.workspace = true

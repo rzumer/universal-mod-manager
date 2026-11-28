@@ -4,7 +4,6 @@
 //! Each is returned as a `data:` URL, and kept in UMM's data folder once found.
 
 use crate::{Result, Session};
-use base64::Engine;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -29,10 +28,7 @@ const KINDS: &[(&str, &str)] = &[
 const MAX_ICON: u64 = 2 << 20;
 
 fn data_url(bytes: &[u8], mime: &str) -> String {
-    format!(
-        "data:{mime};base64,{}",
-        base64::engine::general_purpose::STANDARD.encode(bytes)
-    )
+    format!("data:{mime};base64,{}", umm_sources::base64::encode(bytes))
 }
 
 /// The first `<stem>.<kind>` file in `dir`, as a `data:` URL.

@@ -5,6 +5,8 @@ pub mod appinfo;
 pub mod detect;
 pub mod edit;
 pub mod gamemaker;
+#[cfg(windows)]
+pub mod registry;
 pub mod relpath;
 pub mod setup;
 pub mod steam;

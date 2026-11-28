@@ -71,31 +71,37 @@ pub trait SchemeRegistry: Send + Sync {
 pub struct WindowsRegistry;
 
 #[cfg(windows)]
+use umm_gamedef::registry::{self, Hive};
+
+#[cfg(windows)]
 impl SchemeRegistry for WindowsRegistry {
     fn command(&self, scheme: &str) -> Option<String> {
-        use winreg::{enums::HKEY_CURRENT_USER, RegKey};
-        RegKey::predef(HKEY_CURRENT_USER)
-            .open_subkey(format!(r"Software\Classes\{scheme}\shell\open\command"))
-            .ok()?
-            .get_value::<String, _>("")
-            .ok()
+        registry::read_string(
+            Hive::CurrentUser,
+            &format!(r"Software\Classes\{scheme}\shell\open\command"),
+            "",
+        )
     }
 
     fn register(&self, scheme: &str, command: &str) -> std::io::Result<()> {
-        use winreg::{enums::HKEY_CURRENT_USER, RegKey};
-        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let (root, _) = hkcu.create_subkey(format!(r"Software\Classes\{scheme}"))?;
-        root.set_value("", &format!("URL:{scheme} Protocol"))?;
-        root.set_value("URL Protocol", &"")?;
-        let (cmd, _) = root.create_subkey(r"shell\open\command")?;
-        cmd.set_value("", &command.to_string())
+        let root = format!(r"Software\Classes\{scheme}");
+        registry::write_string(
+            Hive::CurrentUser,
+            &root,
+            "",
+            &format!("URL:{scheme} Protocol"),
+        )?;
+        registry::write_string(Hive::CurrentUser, &root, "URL Protocol", "")?;
+        registry::write_string(
+            Hive::CurrentUser,
+            &format!(r"{root}\shell\open\command"),
+            "",
+            command,
+        )
     }
 
     fn unregister(&self, scheme: &str) -> std::io::Result<()> {
-        use winreg::{enums::HKEY_CURRENT_USER, RegKey};
-        match RegKey::predef(HKEY_CURRENT_USER)
-            .delete_subkey_all(format!(r"Software\Classes\{scheme}"))
-        {
+        match registry::delete_tree(Hive::CurrentUser, &format!(r"Software\Classes\{scheme}")) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             r => r,
         }

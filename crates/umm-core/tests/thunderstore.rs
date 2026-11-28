@@ -487,11 +487,7 @@ fn profiles_export_and_import_like_r2modman() {
     );
 
     // Through a code: the export comes back from Thunderstore as base64.
-    use base64::Engine as _;
-    let body = format!(
-        "#r2modman\n{}",
-        base64::engine::general_purpose::STANDARD.encode(&e.r2z)
-    );
+    let body = format!("#r2modman\n{}", umm_sources::base64::encode(&e.r2z));
     http.responses.lock().unwrap().insert(
         "https://thunderstore.io/api/experimental/legacyprofile/get/abc-123/".into(),
         body.into_bytes(),

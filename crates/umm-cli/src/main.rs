@@ -1,7 +1,8 @@
+mod error;
 mod gamebanana;
 mod nexus;
 
-use anyhow::{bail, Context, Result};
+use crate::error::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use umm_core::{
@@ -626,7 +627,7 @@ enum ProfileCmd {
 fn main() {
     let cli = Cli::parse();
     if let Err(e) = run(cli) {
-        eprintln!("error: {e:#}");
+        eprintln!("error: {e}");
         std::process::exit(1);
     }
 }

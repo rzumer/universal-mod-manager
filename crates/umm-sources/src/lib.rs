@@ -6,11 +6,13 @@
 //! - [`gamebanana`]: GameBanana's public API.
 //! - [`workshop`]: the Steam Workshop: Steam's records on this machine, its public item
 //!   details and its browse page.
+//! - [`base64`]: for profile codes and the `data:` URLs pictures are shown with.
 //! - [`net`]: the only place that talks to the network, behind a trait so tests never do.
 //!
 //! None of them needs an account. They share one error type, [`SourceError`], which names the
 //! site it comes from.
 
+pub mod base64;
 pub mod gamebanana;
 pub mod net;
 pub mod nexus;

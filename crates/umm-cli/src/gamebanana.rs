@@ -1,6 +1,6 @@
 //! `umm gamebanana ...`: GameBanana from the command line.
 
-use anyhow::{bail, Context, Result};
+use crate::error::{bail, Context, Result};
 use clap::Subcommand;
 use umm_core::{GbInstallReport, GbSearch, GbSort, GbUpdateState, Session, DEFAULT_PROFILE};
 

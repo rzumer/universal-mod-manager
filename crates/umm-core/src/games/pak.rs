@@ -79,7 +79,7 @@ pub fn read_matching(
         return Err("its file list is damaged".into());
     }
     let packed = read_at(&mut f, list_offset + 8, packed as usize)?;
-    let list = lz4_flex::block::decompress(&packed, files as usize * entry_size)
+    let list = lz4_block(&packed, files as usize * entry_size)
         .map_err(|e| format!("its file list: {e}"))?;
     if list.len() != files as usize * entry_size {
         return Err("its file list is damaged".into());
@@ -150,7 +150,7 @@ fn decompress(data: &[u8], flags: u32, size: u64) -> Result<Vec<u8>, String> {
                 .map_err(|e| e.to_string())?;
             Ok(out)
         }
-        2 => lz4_flex::block::decompress(data, size as usize).map_err(|e| e.to_string()),
+        2 => lz4_block(data, size as usize),
         3 => {
             let mut out = Vec::new();
             ruzstd::streaming_decoder::StreamingDecoder::new(data)
@@ -164,6 +164,76 @@ fn decompress(data: &[u8], flags: u32, size: u64) -> Result<Vec<u8>, String> {
     }
 }
 
+/// Decodes an LZ4 block (LZ4's raw format, without a frame) that holds `size` bytes. Each
+/// sequence is a token (literal and match lengths, 4 bits each, 15 meaning more bytes
+/// follow), the literals, then a 2-byte offset back into what was decoded and the match,
+/// which may overlap what it copies. The last sequence has literals only.
+fn lz4_block(src: &[u8], size: usize) -> Result<Vec<u8>, String> {
+    let damaged = || "damaged LZ4 data".to_string();
+    let mut out = Vec::with_capacity(size);
+    let mut i = 0;
+    let more = |i: &mut usize, mut n: usize| -> Result<usize, String> {
+        if n == 15 {
+            loop {
+                let b = *src.get(*i).ok_or_else(damaged)?;
+                *i += 1;
+                n += b as usize;
+                if b != 255 {
+                    break;
+                }
+            }
+        }
+        Ok(n)
+    };
+    while i < src.len() {
+        let token = src[i];
+        i += 1;
+        let literals = more(&mut i, (token >> 4) as usize)?;
+        let end = i.checked_add(literals).ok_or_else(damaged)?;
+        out.extend_from_slice(src.get(i..end).ok_or_else(damaged)?);
+        i = end;
+        if i == src.len() {
+            break;
+        }
+        let offset = u16::from_le_bytes([
+            *src.get(i).ok_or_else(damaged)?,
+            *src.get(i + 1).ok_or_else(damaged)?,
+        ]) as usize;
+        i += 2;
+        let len = more(&mut i, (token & 15) as usize)? + 4;
+        if offset == 0 || offset > out.len() || out.len() + len > size {
+            return Err(damaged());
+        }
+        let from = out.len() - offset;
+        for k in 0..len {
+            out.push(out[from + k]);
+        }
+    }
+    if out.len() == size {
+        Ok(out)
+    } else {
+        Err(damaged())
+    }
+}
+
+/// `data` as an LZ4 block of literals only: valid, if not smaller (for tests).
+#[cfg(test)]
+pub fn lz4_literals(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let n = data.len();
+    out.push((n.min(15) as u8) << 4);
+    if n >= 15 {
+        let mut rest = n - 15;
+        while rest >= 255 {
+            out.push(255);
+            rest -= 255;
+        }
+        out.push(rest as u8);
+    }
+    out.extend_from_slice(data);
+    out
+}
+
 /// A version 18 package of these files, LZ4-compressed as the game's are (for tests).
 #[cfg(test)]
 pub fn build(files: &[(&str, &[u8])]) -> Vec<u8> {
@@ -174,7 +244,7 @@ pub fn build(files: &[(&str, &[u8])]) -> Vec<u8> {
     out.extend_from_slice(&[0; 32]); // list offset and size, flags, priority, MD5, parts
     let mut list = Vec::new();
     for (name, content) in files {
-        let packed = lz4_flex::block::compress(content);
+        let packed = lz4_literals(content);
         let offset = out.len() as u64;
         out.extend_from_slice(&packed);
         let mut e = vec![0u8; 272];
@@ -187,7 +257,7 @@ pub fn build(files: &[(&str, &[u8])]) -> Vec<u8> {
         list.extend_from_slice(&e);
     }
     let list_offset = out.len() as u64;
-    let packed = lz4_flex::block::compress(&list);
+    let packed = lz4_literals(&list);
     out.extend_from_slice(&(files.len() as u32).to_le_bytes());
     out.extend_from_slice(&(packed.len() as u32).to_le_bytes());
     out.extend_from_slice(&packed);
@@ -220,5 +290,22 @@ mod tests {
         assert!(read_matching(&p, |n| n == "none").unwrap().is_none());
         std::fs::write(&p, b"PK\x03\x04 a zip").unwrap();
         assert!(read_matching(&p, |_| true).is_err());
+    }
+
+    #[test]
+    fn decodes_lz4_blocks() {
+        // "abc", then a 12-byte match 3 back (overlapping what it copies), then "12345".
+        let block = [
+            0x38, b'a', b'b', b'c', 3, 0, 0x50, b'1', b'2', b'3', b'4', b'5',
+        ];
+        assert_eq!(lz4_block(&block, 20).unwrap(), b"abcabcabcabcabc12345");
+        assert!(lz4_block(&block, 19).is_err(), "a size that does not fit");
+        assert!(
+            lz4_block(&[0x38, b'a', b'b', b'c', 9, 0], 20).is_err(),
+            "too far back"
+        );
+        assert!(lz4_block(&block[..8], 20).is_err(), "cut short");
+        let long: Vec<u8> = (0..1000u32).map(|i| (i * 7) as u8).collect();
+        assert_eq!(lz4_block(&lz4_literals(&long), 1000).unwrap(), long);
     }
 }

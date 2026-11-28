@@ -384,7 +384,6 @@ impl Session {
     /// An image in a mod (an installer option's picture) as a `data:` URL. Only common image
     /// types, at most 8 MB.
     pub fn mod_image(&self, game_id: &str, mod_id: &str, path: &str) -> Result<String> {
-        use base64::Engine;
         let meta = umm_store::load_mod(&self.data.game(game_id), mod_id)?;
         let key = meta
             .files
@@ -414,7 +413,7 @@ impl Session {
         let bytes = fs::read(&p).ctx(|| format!("reading {}", p.display()))?;
         Ok(format!(
             "data:{mime};base64,{}",
-            base64::engine::general_purpose::STANDARD.encode(bytes)
+            umm_sources::base64::encode(&bytes)
         ))
     }
 }

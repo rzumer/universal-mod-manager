@@ -202,20 +202,9 @@ pub fn steam_roots() -> Vec<PathBuf> {
 /// Reads `HIVE\sub\key:ValueName`. Returns `None` on any other platform.
 #[cfg(windows)]
 pub fn read_registry_string(spec: &str) -> Option<String> {
-    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
-    use winreg::RegKey;
     let (key, value) = spec.rsplit_once(':')?;
     let (hive, sub) = key.split_once('\\')?;
-    let hive = match hive.to_ascii_uppercase().as_str() {
-        "HKLM" | "HKEY_LOCAL_MACHINE" => HKEY_LOCAL_MACHINE,
-        "HKCU" | "HKEY_CURRENT_USER" => HKEY_CURRENT_USER,
-        _ => return None,
-    };
-    RegKey::predef(hive)
-        .open_subkey(sub)
-        .ok()?
-        .get_value::<String, _>(value)
-        .ok()
+    crate::registry::read_string(crate::registry::Hive::parse(hive)?, sub, value)
 }
 
 #[cfg(not(windows))]

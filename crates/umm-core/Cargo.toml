@@ -24,8 +24,6 @@ serde_json = { workspace = true, features = ["raw_value"] }
 same-file.workspace = true
 walkdir.workspace = true
 globset.workspace = true
-base64 = "0.22"
-lz4_flex = "0.14.2"
 # xdelta3 patches' LZMA secondary compression (already in the tree through 7z support).
 lzma-rust2 = { version = "0.16", default-features = false, features = ["std"] }
 flate2 = "1"
@@ -35,10 +33,8 @@ roxmltree = "0.20"
 [dev-dependencies]
 tempfile.workspace = true
 zip.workspace = true
-base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
-winreg.workspace = true
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_System_Registry",

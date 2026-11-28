@@ -14,8 +14,6 @@ thiserror.workspace = true
 zip.workspace = true
 ureq = "2"
 flate2 = "1"
-base64 = "0.22"
-serde_yaml = "0.9"
 
 [dev-dependencies]
 tempfile.workspace = true

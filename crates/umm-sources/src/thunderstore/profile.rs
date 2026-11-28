@@ -10,8 +10,7 @@
 use crate::net::Http;
 use crate::thunderstore::{net, Result, SourceError, BASE_URL};
 use crate::Site;
-use base64::Engine as _;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::io::{Cursor, Read, Write};
 use umm_gamedef::RelPath;
@@ -47,31 +46,137 @@ pub struct Export {
     pub skipped: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct R2x {
-    profile_name: String,
-    #[serde(default)]
-    mods: Vec<R2xMod>,
+/// A YAML scalar: plain when that reads back the same, else double-quoted (as JSON, which
+/// YAML reads).
+fn yaml_scalar(s: &str) -> String {
+    let plain = !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '_' | '-' | '.' | '(' | ')'))
+        && !s.starts_with([' ', '-'])
+        && !s.ends_with(' ')
+        && !matches!(
+            s.to_ascii_lowercase().as_str(),
+            "true" | "false" | "yes" | "no" | "on" | "off" | "null" | "~"
+        )
+        && s.parse::<f64>().is_err();
+    if plain {
+        s.to_string()
+    } else {
+        serde_json::to_string(s).unwrap_or_default()
+    }
 }
 
-#[derive(Serialize, Deserialize)]
-struct R2xMod {
-    name: String,
-    version: R2xVersion,
-    #[serde(default = "yes")]
-    enabled: bool,
+/// `export.r2x`, laid out as r2modman writes it.
+fn write_r2x(export: &Export) -> String {
+    let mut out = format!(
+        "profileName: {}\nmods:\n",
+        yaml_scalar(&export.profile_name)
+    );
+    for m in &export.mods {
+        let mut parts = m.version.split('.').map(|p| p.parse::<u64>().unwrap_or(0));
+        let mut part = || parts.next().unwrap_or(0);
+        let (major, minor, patch) = (part(), part(), part());
+        out.push_str(&format!(
+            "  - name: {}\n    version:\n      major: {major}\n      minor: {minor}\n      \
+             patch: {patch}\n    enabled: {}\n",
+            yaml_scalar(&m.name),
+            m.enabled
+        ));
+    }
+    out
 }
 
-fn yes() -> bool {
-    true
+/// A YAML scalar's value: unquoted, or plain without a trailing comment.
+fn read_scalar(v: &str) -> std::result::Result<String, String> {
+    let v = v.trim();
+    if v.starts_with('"') {
+        // Double-quoted YAML is JSON's string syntax for what r2modman writes.
+        let end = v.rfind('"').filter(|&e| e > 0).ok_or("an unclosed quote")?;
+        return serde_json::from_str(&v[..=end]).map_err(|e| e.to_string());
+    }
+    if let Some(rest) = v.strip_prefix('\'') {
+        let end = rest.rfind('\'').ok_or("an unclosed quote")?;
+        return Ok(rest[..end].replace("''", "'"));
+    }
+    let v = v.split(" #").next().unwrap_or(v);
+    Ok(v.trim().to_string())
 }
 
-#[derive(Serialize, Deserialize)]
-struct R2xVersion {
-    major: u64,
-    minor: u64,
-    patch: u64,
+/// Reads `export.r2x`: the profile's name and its mods. Every key r2modman writes is unique
+/// to its level (`profileName`, `mods`, a mod's `name`, `version` and `enabled`, a version's
+/// `major`, `minor` and `patch`), so lines are read by key, each `- ` starting a mod. A
+/// version written on one line (`{major: 1, minor: 0, patch: 3}`) is read too.
+fn read_r2x(text: &str) -> std::result::Result<(String, Vec<ExportMod>), String> {
+    struct Partial {
+        name: Option<String>,
+        version: [Option<u64>; 3],
+        enabled: bool,
+    }
+    let mut profile = None;
+    let mut mods: Vec<Partial> = Vec::new();
+    let mut entries: Vec<(String, String)> = Vec::new();
+    for line in text.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') || t == "---" {
+            continue;
+        }
+        let t = match t.strip_prefix("- ").or_else(|| (t == "-").then_some("")) {
+            Some(rest) => {
+                mods.push(Partial {
+                    name: None,
+                    version: [None; 3],
+                    enabled: true,
+                });
+                rest.trim()
+            }
+            None => t,
+        };
+        let Some((key, value)) = t.split_once(':') else {
+            continue;
+        };
+        let value = value.trim();
+        if let Some(flow) = value.strip_prefix('{').and_then(|v| v.strip_suffix('}')) {
+            for pair in flow.split(',') {
+                if let Some((k, v)) = pair.split_once(':') {
+                    entries.push((k.trim().into(), v.trim().into()));
+                }
+            }
+        }
+        entries.push((key.trim().into(), value.into()));
+        for (key, value) in entries.drain(..) {
+            let number = || {
+                read_scalar(&value)?
+                    .parse::<u64>()
+                    .map_err(|e| e.to_string())
+            };
+            let current = mods.last_mut();
+            match (key.as_str(), current) {
+                ("profileName", _) => profile = Some(read_scalar(&value)?),
+                ("name", Some(m)) => m.name = Some(read_scalar(&value)?),
+                ("enabled", Some(m)) => m.enabled = read_scalar(&value)? != "false",
+                ("major", Some(m)) => m.version[0] = Some(number()?),
+                ("minor", Some(m)) => m.version[1] = Some(number()?),
+                ("patch", Some(m)) => m.version[2] = Some(number()?),
+                _ => {}
+            }
+        }
+    }
+    let profile = profile.ok_or("no profileName")?;
+    let mods = mods
+        .into_iter()
+        .map(|m| match (m.name, m.version) {
+            (Some(name), [Some(a), Some(b), Some(c)]) => Ok(ExportMod {
+                name,
+                version: format!("{a}.{b}.{c}"),
+                enabled: m.enabled,
+            }),
+            (name, _) => Err(format!(
+                "a mod without a name or a full version ({})",
+                name.unwrap_or_default()
+            )),
+        })
+        .collect::<std::result::Result<_, _>>()?;
+    Ok((profile, mods))
 }
 
 fn bad(what: &str, m: impl std::fmt::Display) -> SourceError {
@@ -91,26 +196,7 @@ pub fn is_config_file(path: &str) -> bool {
 /// Builds the `.r2z` zip. `files` are paths in the profile; `BepInEx/config/...` is stored
 /// as `config/...`, as r2modman does.
 pub fn build_r2z(export: &Export) -> Result<Vec<u8>> {
-    let r2x = R2x {
-        profile_name: export.profile_name.clone(),
-        mods: export
-            .mods
-            .iter()
-            .map(|m| {
-                let mut parts = m.version.split('.').map(|p| p.parse::<u64>().unwrap_or(0));
-                R2xMod {
-                    name: m.name.clone(),
-                    version: R2xVersion {
-                        major: parts.next().unwrap_or(0),
-                        minor: parts.next().unwrap_or(0),
-                        patch: parts.next().unwrap_or(0),
-                    },
-                    enabled: m.enabled,
-                }
-            })
-            .collect(),
-    };
-    let yaml = serde_yaml::to_string(&r2x).map_err(|e| bad("export.r2x", e))?;
+    let yaml = write_r2x(export);
     let mut w = zip::ZipWriter::new(Cursor::new(Vec::new()));
     let opts = zip::write::SimpleFileOptions::default();
     let zerr = |e: zip::result::ZipError| bad("profile export", e);
@@ -132,7 +218,7 @@ pub fn build_r2z(export: &Export) -> Result<Vec<u8>> {
 pub fn read_r2z(bytes: &[u8]) -> Result<Export> {
     let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| bad("profile export", e))?;
     let mut out = Export::default();
-    let mut r2x: Option<R2x> = None;
+    let mut r2x = None;
     for i in 0..zip.len() {
         let mut f = zip.by_index(i).map_err(|e| bad("profile export", e))?;
         if f.is_dir() {
@@ -145,7 +231,7 @@ pub fn read_r2z(bytes: &[u8]) -> Result<Export> {
         let lower = name.to_lowercase();
         if lower == "export.r2x" {
             let text = String::from_utf8_lossy(&body);
-            r2x = Some(serde_yaml::from_str(&text).map_err(|e| bad("export.r2x", e))?);
+            r2x = Some(read_r2x(&text).map_err(|e| bad("export.r2x", e))?);
             continue;
         }
         if lower == "mods.yml" {
@@ -166,20 +252,9 @@ pub fn read_r2z(bytes: &[u8]) -> Result<Export> {
             _ => out.skipped.push(name),
         }
     }
-    let r2x = r2x.ok_or_else(|| bad("profile export", "no export.r2x in it"))?;
-    out.profile_name = r2x.profile_name;
-    out.mods = r2x
-        .mods
-        .into_iter()
-        .map(|m| ExportMod {
-            name: m.name,
-            version: format!(
-                "{}.{}.{}",
-                m.version.major, m.version.minor, m.version.patch
-            ),
-            enabled: m.enabled,
-        })
-        .collect();
+    let (profile_name, mods) = r2x.ok_or_else(|| bad("profile export", "no export.r2x in it"))?;
+    out.profile_name = profile_name;
+    out.mods = mods;
     Ok(out)
 }
 
@@ -191,10 +266,7 @@ pub fn upload(http: &dyn Http, r2z: &[u8]) -> Result<String> {
             r2z.len() / 1_000_000
         )));
     }
-    let body = format!(
-        "{CODE_PREFIX}\n{}",
-        base64::engine::general_purpose::STANDARD.encode(r2z)
-    );
+    let body = format!("{CODE_PREFIX}\n{}", crate::base64::encode(r2z));
     let resp = http
         .post(
             &format!("{BASE_URL}/api/experimental/legacyprofile/create/"),
@@ -228,9 +300,7 @@ pub fn download(http: &dyn Http, code: &str) -> Result<Vec<u8>> {
         .strip_prefix(CODE_PREFIX)
         .ok_or_else(|| bad("profile code", "not an r2modman profile"))?
         .trim();
-    base64::engine::general_purpose::STANDARD
-        .decode(b64.as_bytes())
-        .map_err(|e| bad("profile code", e))
+    crate::base64::decode(b64).ok_or_else(|| bad("profile code", "not base64"))
 }
 
 #[cfg(test)]
@@ -310,12 +380,39 @@ mod tests {
     }
 
     #[test]
+    fn r2x_names_that_yaml_reads_otherwise_are_quoted() {
+        let mut e = sample();
+        e.profile_name = "Run #2: \"hard\"".into();
+        e.mods[0].name = "true".into();
+        let yaml = write_r2x(&e);
+        assert!(
+            yaml.starts_with("profileName: \"Run #2: \\\"hard\\\"\"\n"),
+            "{yaml}"
+        );
+        assert!(yaml.contains("  - name: \"true\"\n"), "{yaml}");
+        let (name, mods) = read_r2x(&yaml).unwrap();
+        assert_eq!(name, e.profile_name);
+        assert_eq!(mods, e.mods);
+        // Single quotes, comments, a flow version, a list not indented under its key.
+        let other = "# made elsewhere\nprofileName: 'It''s mine' # a comment\nmods:\n- name: A-B\n  version: {major: 1, minor: 2, patch: 3}\n  enabled: false\n";
+        let (name, mods) = read_r2x(other).unwrap();
+        assert_eq!(name, "It's mine");
+        assert_eq!(
+            mods,
+            [ExportMod {
+                name: "A-B".into(),
+                version: "1.2.3".into(),
+                enabled: false
+            }]
+        );
+        assert!(read_r2x("mods:\n  - name: A\n").is_err());
+        assert!(read_r2x("profileName: x\nmods:\n  - name: A\n").is_err());
+    }
+
+    #[test]
     fn codes_wrap_the_zip_in_base64() {
         let zip = build_r2z(&sample()).unwrap();
-        let body = format!(
-            "{CODE_PREFIX}\n{}",
-            base64::engine::general_purpose::STANDARD.encode(&zip)
-        );
+        let body = format!("{CODE_PREFIX}\n{}", crate::base64::encode(&zip));
         let http = FakeHttp::default()
             .with(
                 "https://thunderstore.io/api/experimental/legacyprofile/get/0192-abc/",

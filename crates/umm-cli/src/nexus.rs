@@ -1,6 +1,6 @@
 //! `umm nexus ...`: Nexus Mods from the command line.
 
-use anyhow::{bail, Context, Result};
+use crate::error::{bail, Context, Result};
 use clap::Subcommand;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
