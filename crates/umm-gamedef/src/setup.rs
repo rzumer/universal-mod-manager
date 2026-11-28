@@ -3,11 +3,11 @@
 //! A game's own definition file is never rewritten; a setup chosen later in UMM is applied on
 //! top of it each time the definition is loaded.
 
+use crate::kind::{kind_of, rule};
 use crate::{
     loader_name, thunderstore_inject, GameDef, GameDefError, Inject, InstallRule, Loader,
-    Thunderstore, BEPINEX_KIND, BEPISLOADER_KIND, DATA_ARCHIVE_EXTENSIONS, DATA_DIRS,
-    EXTENDER_DIRS, GDWEAVE_KIND, GODOTML_KIND, LOVELY_KIND, MIO_KIND, NORTHSTAR_KIND,
-    PLUGIN_EXTENSIONS, RECURSIVE_MELONLOADER_KIND, RIVET_KIND, ROM_KIND, SHIMLOADER_KIND,
+    Thunderstore, BEPINEX_KIND, BEPISLOADER_KIND, GDWEAVE_KIND, GODOTML_KIND, LOVELY_KIND,
+    MIO_KIND, NORTHSTAR_KIND, RECURSIVE_MELONLOADER_KIND, RIVET_KIND, ROM_KIND, SHIMLOADER_KIND,
     THUNDERSTORE_SOURCE, UMM_KIND,
 };
 use serde::{Deserialize, Serialize};
@@ -56,93 +56,11 @@ pub struct Community<'a> {
     pub loader: &'a str,
 }
 
-fn rule(m: &str, t: &str) -> InstallRule {
-    InstallRule {
-        pattern: m.into(),
-        target: t.into(),
-    }
-}
-
-/// Install rules for a Bethesda game without a mod loader: plugins, archives and the data
-/// folder's usual folders go to the data folder (`Data`); everything else, a mod laid out from
-/// the game folder (`Data/…`) included, keeps its path.
-pub fn bethesda_rules(data: &str) -> Vec<InstallRule> {
-    let data = data.trim_matches('/');
-    let mut v: Vec<InstallRule> = PLUGIN_EXTENSIONS
-        .iter()
-        .chain(DATA_ARCHIVE_EXTENSIONS)
-        .map(|e| rule(&format!("*.{e}"), &format!("{data}/")))
-        .collect();
-    v.extend(
-        DATA_DIRS
-            .iter()
-            .map(|d| rule(&format!("{d}/**"), &format!("{data}/{d}/"))),
-    );
-    v.extend(
-        EXTENDER_DIRS
-            .iter()
-            .map(|d| rule(&format!("{d}/plugins/**"), &format!("{data}/{d}/plugins/"))),
-    );
-    v.push(rule("**", ""));
-    v
-}
-
-/// Install rules for a Paradox game: each mod in a folder of its own in the user folder's
-/// `mod/` (named `folder` in the definition's folders).
-pub fn paradox_rules(folder: &str) -> Vec<InstallRule> {
-    vec![rule("**", &format!("@{folder}/mod/{{mod}}/"))]
-}
-
-/// Install rules for a Larian game: `.pak` files to the user folder's `Mods/` (named
-/// `folder` in the definition's folders), where the game finds them only at its top, and the
-/// game folder's own folders (`bin/` for the Script Extender) where they are. Other files
-/// (`info.json`, readmes) are left out.
-pub fn larian_rules(folder: &str, format: crate::LarianFormat) -> Vec<InstallRule> {
-    let (bin, data) = (format.bin(), format.data());
-    let mut rules = vec![
-        rule("*.pak", &format!("@{folder}/Mods/")),
-        rule(&format!("{bin}/**"), &format!("{bin}/")),
-        rule(&format!("{data}/**"), &format!("{data}/")),
-    ];
-    if format == crate::LarianFormat::Dos2 {
-        // Laid out from `DefEd/`, as many are.
-        rules.push(rule("bin/**", &format!("{bin}/")));
-        rules.push(rule("Data/**", &format!("{data}/")));
-    }
-    // The Script Extender's loader.
-    rules.push(rule(format.extender(), &format!("{bin}/")));
-    rules
-}
-
 /// The data folder of a definition's Bethesda plugin list (not a list of mod folders).
 pub fn bethesda_data_folder(def: &GameDef) -> Option<&str> {
     let p = def.plugins.as_ref()?;
     let folder = p.folder.trim_matches('/');
     (!p.format.lists_mod_folders() && !folder.is_empty()).then_some(folder)
-}
-
-/// Install rules for a game listing mod folders (RimWorld, Factorio, Oxygen Not Included):
-/// each mod in its own folder in `folder`.
-pub fn mod_folder_rules(folder: &str) -> Vec<InstallRule> {
-    vec![rule(
-        "**",
-        &format!("{}/{{mod}}/", folder.trim_matches('/')),
-    )]
-}
-
-/// Install rules for tModLoader: each `.tmod` to its mods folder (`folder`), wherever it is
-/// in the mod (UMM then puts it at the top, named after the mod, as the game wants), and
-/// everything else to a folder of the mod's own among the resource packs beside it (UMM
-/// keeps only the packs in it, each folder holding a `pack.json`).
-pub fn tmodloader_rules(folder: &str) -> Vec<InstallRule> {
-    let folder = folder.trim_matches('/');
-    vec![
-        rule(&format!("**/*{}", crate::TML_EXT), &format!("{folder}/")),
-        rule(
-            "**",
-            &format!("{}{{mod}}/", crate::tml_packs_prefix(folder)),
-        ),
-    ]
 }
 
 /// Install rules for BepInEx mods that are not already laid out for the game.
@@ -336,17 +254,7 @@ impl GameDef {
     /// support ([`BUILT_IN_MODS`]: a mods folder it reads, a list of mods or plugins it
     /// loads). `None`: mods are files copied into the game folder.
     pub fn own_mods(&self) -> Option<&'static str> {
-        match &self.plugins {
-            Some(p) if p.format == crate::PluginListFormat::TmodloaderJson => Some("tModLoader"),
-            Some(_) => Some(BUILT_IN_MODS),
-            None if self.paradox.is_some()
-                || self.larian.is_some()
-                || self.bannerlord.is_some() =>
-            {
-                Some(BUILT_IN_MODS)
-            }
-            None => None,
-        }
+        kind_of(self).and_then(|k| k.own_mods())
     }
 
     /// The name of the setup in effect, or of the loader when no setup describes it.
@@ -377,26 +285,8 @@ impl GameDef {
         let (loader, rules, config) = match setup {
             LoaderSetup::Generic => (
                 None,
-                match (&self.paradox, &self.larian, &self.plugins) {
-                    _ if self.bannerlord.is_some() => mod_folder_rules(
-                        &self
-                            .bannerlord
-                            .as_ref()
-                            .map_or("Modules".into(), |b| b.folder.clone()),
-                    ),
-                    (Some(p), _, _) => paradox_rules(&p.folder),
-                    (None, Some(l), _) => larian_rules(&l.folder, l.format),
-                    (None, None, Some(p))
-                        if p.format == crate::PluginListFormat::TmodloaderJson =>
-                    {
-                        tmodloader_rules(&p.folder)
-                    }
-                    (None, None, Some(p)) if p.format.lists_mod_folders() => {
-                        mod_folder_rules(&p.folder)
-                    }
-                    (None, None, _) => bethesda_data_folder(self)
-                        .map_or_else(|| vec![rule("**", "")], bethesda_rules),
-                },
+                // The game's own, when UMM knows it; else every file keeps its path.
+                kind_of(self).map_or_else(|| vec![rule("**", "")], |k| k.own_rules(self)),
                 None,
             ),
             LoaderSetup::Bepinex => (

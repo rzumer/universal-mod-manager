@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use umm_gamedef::{GameDef, ParadoxList, PluginListFormat};
+use umm_gamedef::GameDef;
 pub use umm_sources::workshop::{
     browse_url, item_page, workshop_page, WorkshopDetails, WorkshopFound, WorkshopPage,
     WorkshopQuery, WorkshopSort, DETAILS_URL,
@@ -237,7 +237,7 @@ impl Session {
 
         let descriptors = legacy
             .as_deref()
-            .map(|m| legacy_descriptors(m, &cache.items))
+            .map(|m| legacy_descriptors(def, m, &cache.items))
             .unwrap_or_default();
         let mut items: Vec<WorkshopItem> = record
             .into_iter()
@@ -277,15 +277,10 @@ impl Session {
         })
     }
 
-    /// The `mod` folder a game on Steam's older Workshop downloads its items into (Crusader
-    /// Kings II, in its user folder); `None` for any other game.
+    /// The folder a game on Steam's older Workshop downloads its items into; `None` for any
+    /// other game.
     fn legacy_mod_folder(&self, def: &CompiledDef) -> Option<PathBuf> {
-        let px = def
-            .def
-            .paradox
-            .as_ref()
-            .filter(|p| p.list == ParadoxList::Settings)?;
-        Some(self.resolve_folders(def).ok()?.get(&px.folder)?.join("mod"))
+        crate::games::integration(&def.def)?.workshop_downloads(self, def)
     }
 
     /// For a game on Steam's older Workshop: the descriptor it wrote for each item it
@@ -296,7 +291,11 @@ impl Session {
         else {
             return BTreeMap::new();
         };
-        legacy_descriptors(&mods, &read_cache(&self.workshop_cache(app_id)).items)
+        legacy_descriptors(
+            &def.def,
+            &mods,
+            &read_cache(&self.workshop_cache(app_id)).items,
+        )
     }
 }
 
@@ -307,39 +306,15 @@ fn read_cache(file: &Path) -> Cache {
         .unwrap_or_default()
 }
 
-/// The descriptors in `mods` (a game's `mod` folder) of the items Steam names the files of,
-/// by item id, as `mod/<name>.mod`: the one whose `archive` (or `path`) is the item's file.
-/// The game names them after the file, not the item.
+/// What a game on Steam's older Workshop has downloaded into `folder`, by item id.
 fn legacy_descriptors(
-    mods: &Path,
+    def: &GameDef,
+    folder: &Path,
     items: &BTreeMap<String, WorkshopDetails>,
 ) -> BTreeMap<String, String> {
-    let norm = |s: &str| s.trim().trim_matches('"').replace('\\', "/").to_lowercase();
-    let mut by_file = BTreeMap::new();
-    for e in fs::read_dir(mods).into_iter().flatten().flatten() {
-        let name = e.file_name().to_string_lossy().into_owned();
-        if !name.to_ascii_lowercase().ends_with(".mod") {
-            continue;
-        }
-        let Ok(bytes) = fs::read(e.path()) else {
-            continue;
-        };
-        for line in String::from_utf8_lossy(&bytes).lines() {
-            let Some((k, v)) = line.split_once('=') else {
-                continue;
-            };
-            if matches!(k.trim().to_ascii_lowercase().as_str(), "archive" | "path") {
-                by_file
-                    .entry(norm(v))
-                    .or_insert_with(|| format!("mod/{name}"));
-            }
-        }
-    }
-    items
-        .iter()
-        .filter(|(_, d)| !d.filename.is_empty())
-        .filter_map(|(id, d)| Some((id.clone(), by_file.get(&norm(&d.filename))?.clone())))
-        .collect()
+    crate::games::integration(def)
+        .map(|g| g.workshop_downloaded(folder, items))
+        .unwrap_or_default()
 }
 
 /// How far UMM controls whether the game loads a Workshop item.
@@ -355,24 +330,7 @@ pub enum WorkshopControl {
 
 /// How far UMM controls the game's Workshop items.
 pub fn workshop_control(def: &GameDef) -> WorkshopControl {
-    // Bannerlord loads the modules it is started with.
-    if def.bannerlord.is_some() {
-        return WorkshopControl::Profile;
-    }
-    match (&def.paradox, def.plugins.as_ref().map(|p| p.format)) {
-        (Some(_), _) => WorkshopControl::Profile,
-        (
-            None,
-            Some(
-                PluginListFormat::RimworldXml
-                | PluginListFormat::OniJson
-                | PluginListFormat::KenshiCfg
-                | PluginListFormat::XcomIni
-                | PluginListFormat::TmodloaderJson,
-            ),
-        ) => WorkshopControl::Profile,
-        _ => WorkshopControl::Steam,
-    }
+    crate::games::integration(def).map_or(WorkshopControl::Steam, |g| g.workshop())
 }
 
 impl Session {
@@ -456,46 +414,4 @@ fn read_available(file: &Path) -> BTreeMap<String, (bool, u64)> {
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn finds_what_the_game_downloaded() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mods = tmp.path();
-        // As Crusader Kings II writes them, named after the file, not the item.
-        fs::write(
-            mods.join("sketchycheatmenu.mod.mod"),
-            "name=\"Sketchy Cheat Menu\"\narchive=\"mod/sketchycheatmenu.zip\"\n",
-        )
-        .unwrap();
-        fs::write(mods.join("umm_x.mod"), "name=\"x\"\npath=\"mod/x\"\n").unwrap();
-        let item = |filename: &str| WorkshopDetails {
-            title: String::new(),
-            description: String::new(),
-            preview_url: None,
-            file_size: 0,
-            time_updated: 0,
-            time_created: 0,
-            subscriptions: 0,
-            favorited: 0,
-            filename: filename.into(),
-            tags: Vec::new(),
-        };
-        let items = BTreeMap::from([
-            ("608738995".to_string(), item("mod/SketchyCheatMenu.zip")),
-            ("2".to_string(), item("mod/elsewhere.zip")),
-            ("3".to_string(), item("")),
-        ]);
-        assert_eq!(
-            legacy_descriptors(mods, &items),
-            BTreeMap::from([(
-                "608738995".to_string(),
-                "mod/sketchycheatmenu.mod.mod".to_string()
-            )])
-        );
-    }
 }

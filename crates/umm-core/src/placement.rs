@@ -237,33 +237,22 @@ pub fn suggest(files: &[&str], game: &GameIndex, def: &CompiledDef) -> Option<Pl
         .filter_map(|f| RelPath::parse(f).ok())
         .collect();
     // Games whose mods each have their own folder: its root found by what marks it.
-    let format = def.def.plugins.as_ref().map(|p| p.format);
-    let own_folder = match format {
-        Some(umm_gamedef::PluginListFormat::RimworldXml) => Some(rimworld_root(&rels)),
-        Some(umm_gamedef::PluginListFormat::FactorioJson) => Some(factorio_root(&rels)),
-        Some(umm_gamedef::PluginListFormat::OniJson) => Some(oni_root(&rels)),
-        Some(
-            f @ (umm_gamedef::PluginListFormat::KenshiCfg | umm_gamedef::PluginListFormat::XcomIni),
-        ) => Some(mod_file_root(
-            &rels,
-            crate::games::modfile::extension(f).unwrap_or_default(),
-        )),
-        _ if def.def.paradox.is_some() => Some(paradox_root(&rels, def)),
-        // A Bannerlord module's folder holds its `SubModule.xml`.
-        _ if def.def.bannerlord.is_some() => Some(marked_root(&rels, |n| {
-            n.eq_ignore_ascii_case(crate::games::bannerlord::SUBMODULE)
-        })),
-        _ if def.def.loader.as_ref().is_some_and(|l| l.kind == "lovely") => {
-            Some(lovely_root(&rels))
-        }
-        _ => None,
-    };
+    let integration = crate::games::integration(&def.def);
+    let own_folder = integration
+        .and_then(|g| g.mod_root(&rels, def))
+        .or_else(|| {
+            // Lovely, a loader, wants each mod's patches directly in its folder.
+            def.def
+                .loader
+                .as_ref()
+                .is_some_and(|l| l.kind == "lovely")
+                .then(|| lovely_root(&rels))
+        });
     if let Some(p) = own_folder {
         let mut p = p.unwrap_or_default();
         p.skip = doc_skips(&rels, &p.root, &p.target, game);
-        if format == Some(umm_gamedef::PluginListFormat::FactorioJson) {
-            // Factorio shows a mod's changelog in its mod manager.
-            let keep = join(&p.root, "changelog.txt");
+        for name in integration.map_or(&[][..], |g| g.kept_docs()) {
+            let keep = join(&p.root, name);
             p.skip.retain(|s| !s.eq_ignore_ascii_case(&keep));
         }
         return (p != Placement::default()).then_some(p);
@@ -386,65 +375,9 @@ fn doc_skips(rels: &[RelPath], root: &str, target: &str, game: &GameIndex) -> Ve
         .collect()
 }
 
-/// A RimWorld mod's folder is the one holding `About/About.xml`: whatever wraps it is
-/// dropped (the install rules give each mod its own folder in `Mods/`). Several at the same
-/// depth (a pack of mods) is a guess.
-fn rimworld_root(rels: &[RelPath]) -> Option<Placement> {
-    let mut roots: Vec<(usize, String)> = rels
-        .iter()
-        .filter(|r| {
-            let c: Vec<&str> = r.components().collect();
-            c.len() >= 2
-                && c[c.len() - 1].eq_ignore_ascii_case("About.xml")
-                && c[c.len() - 2].eq_ignore_ascii_case("About")
-        })
-        .map(|r| {
-            let root = r
-                .parent()
-                .and_then(|p| p.parent())
-                .unwrap_or_else(RelPath::root);
-            (root.depth(), root.as_str().to_string())
-        })
-        .collect();
-    roots.sort();
-    let (depth, root) = roots.first()?.clone();
-    let guessed = roots.get(1).is_some_and(|(d, _)| *d == depth);
-    let p = Placement {
-        root,
-        guessed,
-        ..Default::default()
-    };
-    (p != Placement::default()).then_some(p)
-}
-
-/// A Factorio mod's folder is the one holding its `info.json` (the shallowest).
-fn factorio_root(rels: &[RelPath]) -> Option<Placement> {
-    marked_root(rels, |n| {
-        n.eq_ignore_ascii_case(crate::games::factorio::INFO)
-    })
-}
-
-/// An Oxygen Not Included mod's folder is the one holding its `mod_info.yaml` or `mod.yaml`
-/// (the shallowest: older versions are kept in `archived_versions/`), or else its code.
-fn oni_root(rels: &[RelPath]) -> Option<Placement> {
-    marked_root(rels, |n| {
-        n.eq_ignore_ascii_case("mod_info.yaml") || n.eq_ignore_ascii_case("mod.yaml")
-    })
-    .or_else(|| marked_root(rels, |n| n.to_ascii_lowercase().ends_with(".dll")))
-}
-
-/// A Kenshi or XCOM 2 mod's folder is the one holding its file (`.mod`, `.XComMod`; the
-/// shallowest).
-fn mod_file_root(rels: &[RelPath], ext: &str) -> Option<Placement> {
-    marked_root(rels, |n| {
-        let n = n.to_ascii_lowercase();
-        n.len() > ext.len() && n.ends_with(ext)
-    })
-}
-
 /// The shallowest folder holding a file whose name `marks` it; a guess when another as
 /// shallow does too.
-fn marked_root(rels: &[RelPath], marks: impl Fn(&str) -> bool) -> Option<Placement> {
+pub(crate) fn marked_root(rels: &[RelPath], marks: impl Fn(&str) -> bool) -> Option<Placement> {
     let mut roots: Vec<(usize, String)> = rels
         .iter()
         .filter(|r| r.file_name().is_some_and(&marks))
@@ -501,32 +434,9 @@ fn lovely_root(rels: &[RelPath]) -> Option<Placement> {
     (p != Placement::default()).then_some(p)
 }
 
-/// A Paradox mod's folder is the one holding its `descriptor.mod` (an archive often has the
-/// launcher's `<mod>.mod` beside it, left out); without one, the folder beside the launcher's
-/// `<mod>.mod` (Crusader Kings II's mods), else wrapper folders are dropped.
-/// The install rules give it a folder of its own in the user folder's `mod/`.
-fn paradox_root(rels: &[RelPath], def: &CompiledDef) -> Option<Placement> {
-    let root = rels
-        .iter()
-        .filter(|r| {
-            r.file_name()
-                .is_some_and(|n| n.eq_ignore_ascii_case(crate::games::paradox::DESCRIPTOR))
-        })
-        .map(|r| r.parent().unwrap_or_else(RelPath::root))
-        .min_by_key(|r| r.depth())
-        .map(|r| r.as_str().to_string())
-        .or_else(|| launcher_folder(rels))
-        .unwrap_or_else(|| wrapper_chain(rels, def));
-    let p = Placement {
-        root,
-        ..Default::default()
-    };
-    (p != Placement::default()).then_some(p)
-}
-
 /// The folder beside a Paradox mod's launcher `<mod>.mod` (the shallowest): the one named like
 /// it, or the only one there.
-fn launcher_folder(rels: &[RelPath]) -> Option<String> {
+pub(crate) fn launcher_folder(rels: &[RelPath]) -> Option<String> {
     let m = rels
         .iter()
         .filter(|r| {
@@ -640,7 +550,7 @@ fn evidence(c: &RelPath, target: &str, game: &GameIndex, def: &CompiledDef) -> u
 }
 
 /// Single folders wrapping the whole mod ("My Mod 1.2/…", maybe beside its readme), unless the\n/// install rules name them.
-fn wrapper_chain(rels: &[RelPath], def: &CompiledDef) -> String {
+pub(crate) fn wrapper_chain(rels: &[RelPath], def: &CompiledDef) -> String {
     let keep: Vec<String> = def
         .content_top_dirs()
         .into_iter()
@@ -809,9 +719,8 @@ impl Session {
                 },
             };
             // A Paradox mod's launcher `.mod`, beside its folder: UMM writes the game its own.
-            let launcher = def.def.paradox.is_some()
-                && f.to_ascii_lowercase().ends_with(".mod")
-                && !f.eq_ignore_ascii_case(crate::games::paradox::DESCRIPTOR);
+            let launcher =
+                crate::games::integration(&def.def).is_some_and(|g| g.is_mod_descriptor(f));
             let note = match note {
                 Some(_) if launcher && target.is_none() && !skipped => Some(
                     "the mod's descriptor: UMM writes the game one from it, pointing at where the mod goes"

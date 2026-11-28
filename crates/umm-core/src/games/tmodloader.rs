@@ -373,6 +373,155 @@ fn plan_packs(plan: &mut Plan, prefix: &str) -> Result<Vec<String>> {
     Ok(names)
 }
 
+pub(crate) struct TModLoader;
+
+impl crate::games::GameIntegration for TModLoader {
+    fn workshop(&self) -> crate::workshop::WorkshopControl {
+        crate::workshop::WorkshopControl::Profile
+    }
+
+    fn plan(
+        &self,
+        s: &Session,
+        def: &CompiledDef,
+        _profile: &umm_store::Profile,
+        plan: &mut Plan,
+    ) -> Result<()> {
+        s.plan_tmodloader(def, plan)
+    }
+}
+
+impl crate::games::plugins::ModList for TModLoader {
+    fn kind(&self) -> &'static str {
+        "mods"
+    }
+
+    fn read(&self, text: &str) -> Vec<PluginEntry> {
+        read(text)
+    }
+
+    fn render(&self, _original: &str, entries: &[PluginEntry]) -> String {
+        render(entries)
+    }
+
+    /// A `.tmod` each, named after the mod in it.
+    fn entries<'a>(
+        &self,
+        files: &'a [umm_deploy::PlannedFile],
+        folder: &umm_gamedef::RelPath,
+    ) -> Vec<(&'a str, String)> {
+        let prefix = format!("{}/", folder.as_str());
+        files
+            .iter()
+            .filter_map(|f| {
+                let file = tmod_in(f.target.as_str(), &prefix)?;
+                Some((f.owner.as_str(), mod_name(&f.source, file)))
+            })
+            .collect()
+    }
+
+    fn lists_workshop_items(&self) -> bool {
+        true
+    }
+
+    fn workshop_entry(&self, folder: &Path) -> Option<String> {
+        workshop_mod(folder)
+    }
+
+    /// tModLoader rewrites its list on every start, in an order of its own.
+    fn tolerated(&self, _rendered: &str, entries: &[PluginEntry], _data: &Path) -> Vec<String> {
+        tolerated(entries)
+    }
+}
+
+/// tModLoader's launch script, which starts it on the .NET it installs beside it, passing
+/// its arguments on.
+pub const TML_EXE: &str = "start-tModLoader.bat";
+/// tModLoader's save folder (players, worlds, configs and its mods folder), and its list of
+/// enabled mods in that folder.
+const TML_USER: &str = "%DOCUMENTS%/My Games/Terraria/tModLoader";
+const TML_ENABLED: &str = "enabled.json";
+
+/// Install rules for tModLoader: each `.tmod` to its mods folder (`folder`), wherever it is
+/// in the mod (UMM then puts it at the top, named after the mod, as the game wants), and
+/// everything else to a folder of the mod's own among the resource packs beside it (UMM
+/// keeps only the packs in it, each folder holding a `pack.json`).
+pub fn tmodloader_rules(folder: &str) -> Vec<umm_gamedef::InstallRule> {
+    use umm_gamedef::kind::rule;
+    let folder = folder.trim_matches('/');
+    vec![
+        rule(&format!("**/*{TML_EXT}"), &format!("{folder}/")),
+        rule("**", &format!("{}{{mod}}/", tml_packs_prefix(folder))),
+    ]
+}
+
+impl umm_gamedef::GameKind for TModLoader {
+    fn key(&self) -> &'static str {
+        "tmodloader"
+    }
+
+    /// By its launch script beside its assembly (it runs on its own .NET).
+    fn recognise(&self, root: &Path, _exes: &[String]) -> Option<umm_gamedef::Recognised> {
+        use umm_gamedef::kind::has_file_ci;
+        (has_file_ci(root, TML_EXE) && has_file_ci(root, "tModLoader.dll")).then(|| {
+            umm_gamedef::Recognised {
+                key: "tmodloader",
+                label: Some("tModLoader (Terraria, XNA/FNA)"),
+                exe: Some(TML_EXE.to_string()),
+                own_mods: Some("tModLoader"),
+            }
+        })
+    }
+
+    fn shape(
+        &self,
+        _root: &Path,
+        _found: &umm_gamedef::steam::Inspection,
+        _exe: &str,
+        _setup: umm_gamedef::LoaderSetup,
+    ) -> umm_gamedef::Shape {
+        let mods = format!("@{}/Mods", umm_gamedef::steam::USER_FOLDER);
+        umm_gamedef::Shape {
+            notes: vec![umm_gamedef::steam::Note::new(
+                "tmodloader",
+                "tModLoader: .tmod mods go to its Mods folder in Documents\\My Games\\Terraria\\\
+                 tModLoader, named after the mod in each as it wants, and are enabled in its \
+                 enabled.json there while mods are deployed (your own list comes back afterwards). \
+                 Resource packs (folders or .zip files with a pack.json) go to its ResourcePacks \
+                 folder beside it and are turned on in its config.json while deployed, the rest of \
+                 your settings left as they are. Steam Workshop items can be turned on or off in a \
+                 profile too. UMM starts tModLoader directly, not through Steam.",
+            )],
+            user_folder: Some(TML_USER.to_string()),
+            install: tmodloader_rules(&mods),
+            plugins: Some(umm_gamedef::Plugins {
+                list: format!("{TML_USER}/Mods/{TML_ENABLED}"),
+                format: PluginListFormat::TmodloaderJson,
+                folder: mods,
+                in_game_folder_when: None,
+            }),
+            // It runs as `dotnet.exe` under its script: started directly, UMM follows it as the
+            // script's child, not by a name other programs share.
+            direct: true,
+            ..Default::default()
+        }
+    }
+
+    fn applies(&self, def: &umm_gamedef::GameDef) -> bool {
+        def.plugins
+            .as_ref()
+            .is_some_and(|p| p.format == PluginListFormat::TmodloaderJson)
+    }
+
+    fn own_mods(&self) -> Option<&'static str> {
+        Some("tModLoader")
+    }
+
+    fn own_rules(&self, def: &umm_gamedef::GameDef) -> Vec<umm_gamedef::InstallRule> {
+        tmodloader_rules(def.plugins.as_ref().map_or("", |p| p.folder.as_str()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -5,6 +5,7 @@ pub mod appinfo;
 pub mod detect;
 pub mod edit;
 pub mod gamemaker;
+pub mod kind;
 #[cfg(windows)]
 pub mod registry;
 pub mod relpath;
@@ -13,6 +14,7 @@ pub mod steam;
 pub mod vdf;
 
 pub use detect::{detect_install, proton_user, Detected};
+pub use kind::{GameKind, Recognised, Shape};
 pub use relpath::{RelPath, RelPathError};
 pub use setup::{Community, LoaderSetup, BUILT_IN_MODS};
 

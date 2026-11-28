@@ -253,6 +253,146 @@ impl Session {
     }
 }
 
+pub(crate) struct Larian;
+
+impl crate::games::GameIntegration for Larian {
+    fn plan(
+        &self,
+        s: &Session,
+        def: &CompiledDef,
+        profile: &umm_store::Profile,
+        plan: &mut Plan,
+    ) -> Result<()> {
+        s.plan_larian(def, profile, plan)
+    }
+}
+
+/// A Larian game: its exe (relative to the game folder), its user folder, with variables, and
+/// how it lists its modules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LarianGame {
+    pub exe: &'static str,
+    pub user: &'static str,
+    pub format: LarianFormat,
+}
+
+/// Larian games whose mods go in their user folder.
+pub const LARIAN_GAMES: &[LarianGame] = &[
+    LarianGame {
+        // Started directly, past Larian's launcher (`Launcher/LariLauncher.exe`).
+        exe: "bin/bg3.exe",
+        user: "%LOCALAPPDATA%/Larian Studios/Baldur's Gate 3",
+        format: LarianFormat::Bg3,
+    },
+    LarianGame {
+        // Definitive Edition, started directly, past its launcher.
+        exe: "DefEd/bin/EoCApp.exe",
+        user: "%DOCUMENTS%/Larian Studios/Divinity Original Sin 2 Definitive Edition",
+        format: LarianFormat::Dos2,
+    },
+];
+
+/// The Larian game installed in `root`, by its exe.
+pub fn larian_game(root: &std::path::Path) -> Option<&'static LarianGame> {
+    LARIAN_GAMES
+        .iter()
+        .find(|g| umm_gamedef::kind::has_file_ci(root, g.exe))
+}
+
+/// Install rules for a Larian game: `.pak` files to the user folder's `Mods/` (named
+/// `folder` in the definition's folders), where the game finds them only at its top, and the
+/// game folder's own folders (`bin/` for the Script Extender) where they are. Other files
+/// (`info.json`, readmes) are left out.
+pub fn larian_rules(folder: &str, format: LarianFormat) -> Vec<umm_gamedef::InstallRule> {
+    use umm_gamedef::kind::rule;
+    let (bin, data) = (format.bin(), format.data());
+    let mut rules = vec![
+        rule("*.pak", &format!("@{folder}/Mods/")),
+        rule(&format!("{bin}/**"), &format!("{bin}/")),
+        rule(&format!("{data}/**"), &format!("{data}/")),
+    ];
+    if format == LarianFormat::Dos2 {
+        // Laid out from `DefEd/`, as many are.
+        rules.push(rule("bin/**", &format!("{bin}/")));
+        rules.push(rule("Data/**", &format!("{data}/")));
+    }
+    // The Script Extender's loader.
+    rules.push(rule(format.extender(), &format!("{bin}/")));
+    rules
+}
+
+impl umm_gamedef::GameKind for Larian {
+    fn key(&self) -> &'static str {
+        "larian"
+    }
+
+    /// By its exe in `bin/` (the top holds its launcher's folder).
+    fn recognise(
+        &self,
+        root: &std::path::Path,
+        _exes: &[String],
+    ) -> Option<umm_gamedef::Recognised> {
+        let g = larian_game(root)?;
+        Some(umm_gamedef::Recognised {
+            key: "larian",
+            label: Some("Divinity Engine (Larian)"),
+            exe: Some(g.exe.to_string()),
+            own_mods: Some(umm_gamedef::BUILT_IN_MODS),
+        })
+    }
+
+    fn shape(
+        &self,
+        root: &std::path::Path,
+        _found: &umm_gamedef::steam::Inspection,
+        _exe: &str,
+        _setup: umm_gamedef::LoaderSetup,
+    ) -> umm_gamedef::Shape {
+        let Some(g) = larian_game(root) else {
+            return umm_gamedef::Shape::default();
+        };
+        umm_gamedef::Shape {
+            notes: vec![umm_gamedef::steam::Note::new(
+                "larian",
+                format!(
+                    "Larian game: .pak mods go to the Mods folder in {}, and are enabled in \
+                     {} while mods are deployed (your own mods there stay). The game must \
+                     have been started once, so that it has written that file. Script \
+                     Extender and {}/ or {}/ files go to the game folder. UMM starts the \
+                     game directly, not through Larian's launcher.",
+                    g.user.replace('/', "\\"),
+                    match g.format {
+                        LarianFormat::Bg3 => "modsettings.lsx",
+                        LarianFormat::Dos2 => "each player profile's modsettings.lsx",
+                    },
+                    g.format.bin(),
+                    g.format.data(),
+                ),
+            )],
+            user_folder: Some(g.user.to_string()),
+            install: larian_rules(umm_gamedef::steam::USER_FOLDER, g.format),
+            larian: Some(umm_gamedef::Larian {
+                folder: umm_gamedef::steam::USER_FOLDER.into(),
+                format: g.format,
+            }),
+            // Larian's launcher stands before the game.
+            direct: true,
+            ..Default::default()
+        }
+    }
+
+    fn applies(&self, def: &umm_gamedef::GameDef) -> bool {
+        def.larian.is_some()
+    }
+
+    fn own_rules(&self, def: &umm_gamedef::GameDef) -> Vec<umm_gamedef::InstallRule> {
+        def.larian.as_ref().map_or_else(
+            || vec![umm_gamedef::kind::rule("**", "")],
+            |l| larian_rules(&l.folder, l.format),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

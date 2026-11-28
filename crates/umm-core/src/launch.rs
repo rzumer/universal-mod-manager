@@ -137,18 +137,11 @@ impl Session {
         self.add_patches(&def, &profile, &root, &mut plan, true, progress)?;
         // WeiDU mods' installed result (installed again first, when out of date).
         self.add_weidu(&def, &profile, &root, &mut plan, true)?;
-        // A Paradox game's descriptors and list of enabled mods.
-        self.plan_paradox(&def, &profile, &mut plan)?;
-        // Factorio's mod folders, named as the game wants.
-        self.plan_factorio(&def, &mut plan)?;
-        // Kenshi's and XCOM 2's mod folders, named after their mods' files.
-        self.plan_mod_files(&def, &mut plan)?;
-        // Bannerlord's module folders, named after their ids.
-        self.plan_bannerlord(&def, &mut plan)?;
-        // A Larian game's enabled modules.
-        self.plan_larian(&def, &profile, &mut plan)?;
-        // tModLoader's mod files, named as it wants.
-        self.plan_tmodloader(&def, &mut plan)?;
+        // What the game needs beyond its mods' files: folders named as it wants, its
+        // descriptors and lists.
+        if let Some(g) = crate::games::integration(&def.def) {
+            g.plan(self, &def, &profile, &mut plan)?;
+        }
         let rl = def.def.runtime_loader();
         // The Godot Mod Loader's own files go to the game folder when UMM sets it up.
         let mut godotml_in_game = false;
@@ -471,9 +464,10 @@ impl Session {
             find_steam(),
             proton,
         )?;
-        spec.args.extend(self.paradox_mod_args(&def, &profile));
-        spec.args
-            .extend(self.bannerlord_args(&def, &profile, &journal));
+        if let Some(g) = crate::games::integration(&def.def) {
+            spec.args
+                .extend(g.launch_args(self, &def, &profile, &journal));
+        }
 
         let outcome = umm_launch::run(&spec, stop, &mut |e| {
             on_event(match e {

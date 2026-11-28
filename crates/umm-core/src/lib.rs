@@ -186,6 +186,7 @@ impl Session {
 
     /// Like [`Session::open`], with the given network access (tests pass a fake).
     pub fn open_with(root: Option<PathBuf>, http: Arc<dyn Http>) -> Result<Self> {
+        games::register();
         Ok(Self {
             data: DataDir::open(root.unwrap_or_else(DataDir::default_root))?,
             http,

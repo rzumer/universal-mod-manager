@@ -281,16 +281,7 @@ impl From<umm_core::PluginList> for PluginListDto {
     fn from(l: umm_core::PluginList) -> Self {
         PluginListDto {
             path: l.path.display().to_string(),
-            kind: match l.format {
-                umm_core::PluginListFormat::RimworldXml
-                | umm_core::PluginListFormat::FactorioJson
-                | umm_core::PluginListFormat::OniJson
-                | umm_core::PluginListFormat::KenshiCfg
-                | umm_core::PluginListFormat::XcomIni
-                | umm_core::PluginListFormat::TmodloaderJson => "mods",
-                umm_core::PluginListFormat::MorrowindIni => "dated",
-                _ => "plugins",
-            },
+            kind: l.kind(),
             entries: l
                 .entries
                 .into_iter()

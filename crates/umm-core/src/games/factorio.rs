@@ -165,6 +165,151 @@ impl Session {
     }
 }
 
+pub(crate) struct Factorio;
+
+impl crate::games::GameIntegration for Factorio {
+    fn mod_root(
+        &self,
+        rels: &[RelPath],
+        _def: &CompiledDef,
+    ) -> Option<Option<umm_store::Placement>> {
+        Some(mod_root(rels))
+    }
+
+    /// Factorio shows a mod's changelog in its mod manager.
+    fn kept_docs(&self) -> &'static [&'static str] {
+        &["changelog.txt"]
+    }
+
+    fn plan(
+        &self,
+        s: &Session,
+        def: &CompiledDef,
+        _profile: &umm_store::Profile,
+        plan: &mut Plan,
+    ) -> Result<()> {
+        s.plan_factorio(def, plan)
+    }
+}
+
+impl crate::games::plugins::ModList for Factorio {
+    fn kind(&self) -> &'static str {
+        "mods"
+    }
+
+    fn read(&self, text: &str) -> Vec<PluginEntry> {
+        read(text)
+    }
+
+    fn render(&self, original: &str, entries: &[PluginEntry]) -> String {
+        render(original, entries)
+    }
+
+    /// A folder each, named by its `info.json`.
+    fn entries<'a>(
+        &self,
+        files: &'a [umm_deploy::PlannedFile],
+        folder: &RelPath,
+    ) -> Vec<(&'a str, String)> {
+        let prefix = format!("{}/", folder.as_str());
+        files
+            .iter()
+            .filter(|f| info_folder(&f.target, &prefix).is_some())
+            .filter_map(|f| Some((f.owner.as_str(), mod_name(&f.source)?)))
+            .collect()
+    }
+}
+
+/// Factorio's exe, relative to its folder.
+pub const FACTORIO_EXE: &str = "bin/x64/factorio.exe";
+
+/// Factorio's user folder when it uses the system's (`config-path.cfg` says so: Steam's and
+/// the installer's copies). A zip copy keeps everything in its own folder instead.
+const FACTORIO_USER: &str = "%APPDATA%/Factorio";
+
+/// Whether the Factorio copy in `root` keeps its mods in its own folder (`config-path.cfg`
+/// with `use-system-read-write-data-directories=false`, or none).
+fn factorio_portable(root: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(root.join("config-path.cfg")) else {
+        return true;
+    };
+    !text.lines().any(|l| {
+        l.split_once('=').is_some_and(|(k, v)| {
+            k.trim() == "use-system-read-write-data-directories" && v.trim() == "true"
+        })
+    })
+}
+
+impl umm_gamedef::GameKind for Factorio {
+    fn key(&self) -> &'static str {
+        "factorio"
+    }
+
+    /// By its exe in `bin/x64/` and its base mod in `data/`.
+    fn recognise(&self, root: &Path, _exes: &[String]) -> Option<umm_gamedef::Recognised> {
+        (root.join(FACTORIO_EXE).is_file() && root.join("data/base/info.json").is_file()).then(
+            || umm_gamedef::Recognised {
+                key: "factorio",
+                label: Some("Factorio (Wube)"),
+                exe: Some(FACTORIO_EXE.to_string()),
+                own_mods: Some(umm_gamedef::BUILT_IN_MODS),
+            },
+        )
+    }
+
+    /// Its mods folder is in its user folder, or its own when it keeps everything there.
+    fn shape(
+        &self,
+        root: &Path,
+        _found: &umm_gamedef::steam::Inspection,
+        _exe: &str,
+        _setup: umm_gamedef::LoaderSetup,
+    ) -> umm_gamedef::Shape {
+        let (user, mods, list) = if factorio_portable(root) {
+            (None, "mods".to_string(), "mods/mod-list.json".to_string())
+        } else {
+            (
+                Some(FACTORIO_USER.to_string()),
+                format!("@{}/mods", umm_gamedef::steam::USER_FOLDER),
+                format!("{FACTORIO_USER}/mods/mod-list.json"),
+            )
+        };
+        umm_gamedef::Shape {
+            notes: vec![umm_gamedef::steam::Note::new(
+                "factorio",
+                "Factorio: each mod goes in its own folder in the game's mods folder, named after \
+                 the name in its info.json, and is enabled in mod-list.json while mods are deployed \
+                 (your own list comes back afterwards). Import mods as the .zip files from the mod \
+                 portal.",
+            )],
+            user_folder: user,
+            install: umm_gamedef::kind::mod_folder_rules(&mods),
+            plugins: Some(umm_gamedef::Plugins {
+                list,
+                format: PluginListFormat::FactorioJson,
+                folder: mods,
+                in_game_folder_when: None,
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn applies(&self, def: &umm_gamedef::GameDef) -> bool {
+        def.plugins
+            .as_ref()
+            .is_some_and(|p| p.format == PluginListFormat::FactorioJson)
+    }
+
+    fn own_rules(&self, def: &umm_gamedef::GameDef) -> Vec<umm_gamedef::InstallRule> {
+        umm_gamedef::kind::mod_folder_rules(def.plugins.as_ref().map_or("", |p| p.folder.as_str()))
+    }
+}
+
+/// A Factorio mod's folder is the one holding its `info.json` (the shallowest).
+fn mod_root(rels: &[RelPath]) -> Option<umm_store::Placement> {
+    crate::placement::marked_root(rels, |n| n.eq_ignore_ascii_case(INFO))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

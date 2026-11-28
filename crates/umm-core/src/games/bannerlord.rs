@@ -334,6 +334,107 @@ impl Session {
     }
 }
 
+pub(crate) struct Bannerlord;
+
+impl crate::games::GameIntegration for Bannerlord {
+    /// A module's folder holds its `SubModule.xml`.
+    fn mod_root(
+        &self,
+        rels: &[umm_gamedef::RelPath],
+        _def: &CompiledDef,
+    ) -> Option<Option<umm_store::Placement>> {
+        Some(crate::placement::marked_root(rels, |n| {
+            n.eq_ignore_ascii_case(SUBMODULE)
+        }))
+    }
+
+    fn workshop(&self) -> crate::workshop::WorkshopControl {
+        crate::workshop::WorkshopControl::Profile
+    }
+
+    fn plan(
+        &self,
+        s: &Session,
+        def: &CompiledDef,
+        _profile: &umm_store::Profile,
+        plan: &mut Plan,
+    ) -> Result<()> {
+        s.plan_bannerlord(def, plan)
+    }
+
+    fn launch_args(
+        &self,
+        s: &Session,
+        def: &CompiledDef,
+        profile: &umm_store::Profile,
+        journal: &umm_deploy::Journal,
+    ) -> Vec<String> {
+        s.bannerlord_args(def, profile, journal)
+    }
+}
+
+/// Bannerlord's exe, started directly past its launcher
+/// (`TaleWorlds.MountAndBlade.Launcher.exe` beside it).
+pub const BANNERLORD_EXE: &str = "bin/Win64_Shipping_Client/Bannerlord.exe";
+
+/// The game folder's folder of modules.
+const MODULES: &str = "Modules";
+
+impl umm_gamedef::GameKind for Bannerlord {
+    fn key(&self) -> &'static str {
+        "bannerlord"
+    }
+
+    /// By its exe in `bin/Win64_Shipping_Client/` and its own modules in `Modules/`.
+    fn recognise(&self, root: &Path, _exes: &[String]) -> Option<umm_gamedef::Recognised> {
+        use umm_gamedef::kind::has_file_ci;
+        (has_file_ci(root, BANNERLORD_EXE) && has_file_ci(root, "Modules/Native/SubModule.xml"))
+            .then(|| umm_gamedef::Recognised {
+                key: "bannerlord",
+                label: Some("TaleWorlds Engine (Bannerlord)"),
+                exe: Some(BANNERLORD_EXE.to_string()),
+                own_mods: Some(umm_gamedef::BUILT_IN_MODS),
+            })
+    }
+
+    fn shape(
+        &self,
+        _root: &Path,
+        _found: &umm_gamedef::steam::Inspection,
+        _exe: &str,
+        _setup: umm_gamedef::LoaderSetup,
+    ) -> umm_gamedef::Shape {
+        umm_gamedef::Shape {
+            notes: vec![umm_gamedef::steam::Note::new(
+                "bannerlord",
+                "Bannerlord: each mod goes in its own folder in Modules/, named after the module's \
+                 id as the game wants. UMM starts the game past its launcher with the modules to \
+                 load: the game's own, your profile's (Steam Workshop items included), and those \
+                 you selected in the launcher, each after the ones it depends on.",
+            )],
+            install: umm_gamedef::kind::mod_folder_rules(MODULES),
+            bannerlord: Some(umm_gamedef::Bannerlord {
+                folder: MODULES.into(),
+            }),
+            // Its launcher stands before the game.
+            direct: true,
+            ..Default::default()
+        }
+    }
+
+    fn applies(&self, def: &umm_gamedef::GameDef) -> bool {
+        def.bannerlord.is_some()
+    }
+
+    fn own_rules(&self, def: &umm_gamedef::GameDef) -> Vec<umm_gamedef::InstallRule> {
+        umm_gamedef::kind::mod_folder_rules(
+            def.bannerlord
+                .as_ref()
+                .map_or(MODULES, |b| b.folder.as_str()),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

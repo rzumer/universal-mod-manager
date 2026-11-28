@@ -327,7 +327,7 @@ fn terraria_is_set_up_as_tmodloader_when_it_is_installed() {
     let apps = installed_games_in(std::slice::from_ref(&lib));
     let list = s.steam_list(apps.clone());
     let row = |id: u32| list.games.iter().find(|g| g.app.app_id == id).unwrap();
-    assert_eq!(row(105600).engine, Engine::TModLoader);
+    assert_eq!(row(105600).engine.label(), "tModLoader (Terraria, XNA/FNA)");
     assert_eq!(row(105600).app.name, "Terraria");
 
     let d = s
@@ -337,7 +337,7 @@ fn terraria_is_set_up_as_tmodloader_when_it_is_installed() {
         (d.def.id.as_str(), d.def.name.as_str()),
         ("terraria", "Terraria")
     );
-    assert_eq!(d.engine, Engine::TModLoader);
+    assert_eq!(d.engine.label(), "tModLoader (Terraria, XNA/FNA)");
     assert_eq!(d.def.detect.steam_app_id, Some(1281930));
     assert_eq!(d.def.detect.steam_dir.as_deref(), Some("tModLoader"));
     assert_eq!(d.def.launch.as_ref().unwrap().exe, "start-tModLoader.bat");

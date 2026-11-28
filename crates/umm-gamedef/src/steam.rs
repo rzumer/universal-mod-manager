@@ -5,11 +5,11 @@
 //! their rules edited by hand.
 
 use crate::detect::steam_libraries;
+use crate::kind::{kind, kinds, rule, Recognised};
 use crate::vdf::{self, Value};
 use crate::{
-    slug, Community, Detect, GameDef, GameDefError, GameIniCondition, IniSetting, InstallRule,
-    Launch, LoaderSetup, ParadoxList, PluginListFormat, Plugins, SteamRelaunch, Thunderstore,
-    SCHEMA_VERSION, SHIMLOADER_KIND,
+    slug, Community, Detect, GameDef, GameDefError, Launch, LoaderSetup, SteamRelaunch,
+    Thunderstore, SCHEMA_VERSION, SHIMLOADER_KIND,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -40,7 +40,6 @@ fn is_tool(app_id: u32, name: &str) -> bool {
         || name.starts_with("Steamworks ")
 }
 
-/// Every installed game in every Steam library on this machine, sorted by name.
 /// Terraria's and tModLoader's Steam apps.
 pub const TERRARIA_APP: u32 = 105600;
 pub const TMODLOADER_APP: u32 = 1281930;
@@ -55,6 +54,7 @@ pub fn stand_in<'a>(app: &SteamApp, installed: &'a [SteamApp]) -> Option<&'a Ste
     installed.iter().find(|a| a.app_id == TMODLOADER_APP)
 }
 
+/// Every installed game in every Steam library on this machine, sorted by name.
 pub fn installed_games() -> Vec<SteamApp> {
     installed_games_in(&steam_libraries())
 }
@@ -113,30 +113,11 @@ pub enum Engine {
     UnityMono,
     UnityIl2cpp,
     Unreal,
-    /// Bethesda's engines (NetImmerse, Gamebryo, Creation Engine): a data folder of plugins
-    /// and archives.
-    Bethesda,
-    /// Paradox's engines: mods in the game's user folder, enabled in `dlc_load.json`.
-    Clausewitz,
-    /// Factorio's own engine: a folder per mod in its user folder, enabled in `mod-list.json`.
-    Factorio,
-    /// Larian's Divinity Engine: `.pak` mods in the game's user folder, enabled in
-    /// `modsettings.lsx`.
-    Divinity,
-    /// Oxygen Not Included: a Unity game with Klei's own mod loader, a folder per mod in
-    /// Documents, enabled in `mods.json`.
-    OxygenNotIncluded,
-    /// Mount & Blade II: Bannerlord: modules in `Modules/`, loaded as the game is told.
-    Bannerlord,
-    /// XCOM 2 (Unreal Engine 3): a folder per mod in `XComGame/Mods/`, enabled in the user's
-    /// `XComModOptions.ini`.
-    Xcom2,
     /// GameMaker: the game's code and assets in one data file (`data.win`), which mods
     /// replace or patch (`.xdelta`).
     GameMaker,
-    /// tModLoader, Terraria's mod loader (a game of its own on Steam): `.tmod` files in a
-    /// mods folder, enabled in `enabled.json` there.
-    TModLoader,
+    /// A game UMM knows that names its engine itself (see [`crate::kind`]).
+    Game(&'static str),
     Unknown,
 }
 
@@ -146,15 +127,8 @@ impl Engine {
             Engine::UnityMono => "Unity (Mono)",
             Engine::UnityIl2cpp => "Unity (IL2CPP)",
             Engine::Unreal => "Unreal Engine",
-            Engine::Bethesda => "Gamebryo / Creation Engine",
-            Engine::Clausewitz => "Clausewitz / Jomini (Paradox)",
-            Engine::Factorio => "Factorio (Wube)",
-            Engine::Divinity => "Divinity Engine (Larian)",
-            Engine::OxygenNotIncluded => "Unity (Mono), Klei's mod loader",
-            Engine::Bannerlord => "TaleWorlds Engine (Bannerlord)",
-            Engine::Xcom2 => "Unreal Engine 3 (XCOM 2)",
             Engine::GameMaker => "GameMaker",
-            Engine::TModLoader => "tModLoader (Terraria, XNA/FNA)",
+            Engine::Game(label) => label,
             Engine::Unknown => "Unknown engine",
         }
     }
@@ -247,7 +221,8 @@ fn exists_ci(dir: &Path, name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// What the install folder says about the game: its engine, exe and (Unreal) project folder.
+/// What the install folder says about the game: its engine, exe and (Unreal) project folder,
+/// and the game it is when UMM knows it.
 #[derive(Debug, Clone)]
 pub struct Inspection {
     pub engine: Engine,
@@ -256,142 +231,15 @@ pub struct Inspection {
     /// Every exe that could be the game, the likely one first.
     pub exes: Vec<String>,
     pub unreal_project: Option<String>,
-    /// A Bethesda game's data folder (`Data`, `Data Files`), as spelled on disk.
-    pub data_folder: Option<String>,
-    /// A Paradox game, recognised by its exe.
-    pub paradox: Option<&'static ParadoxGame>,
-    /// A Larian game, recognised by its exe.
-    pub larian: Option<&'static LarianGame>,
+    /// The game it is, when UMM knows it.
+    pub game: Option<Recognised>,
 }
 
 impl Inspection {
     /// The game's own mod support, as [`GameDef::own_mods`] will say for its draft.
     pub fn own_mods(&self) -> Option<&'static str> {
-        match self.engine {
-            Engine::TModLoader => Some("tModLoader"),
-            Engine::Factorio | Engine::OxygenNotIncluded | Engine::Xcom2 | Engine::Bannerlord => {
-                Some(crate::BUILT_IN_MODS)
-            }
-            _ if self.paradox.is_some()
-                || self.larian.is_some()
-                || list_game(&self.exes).is_some() =>
-            {
-                Some(crate::BUILT_IN_MODS)
-            }
-            _ => None,
-        }
+        self.game.as_ref().and_then(|g| g.own_mods)
     }
-}
-
-/// A Paradox game: its exe (relative to the game folder) and its user folder's name under
-/// `Documents\Paradox Interactive`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ParadoxGame {
-    pub exe: &'static str,
-    pub user: &'static str,
-    /// Where it lists its enabled mods.
-    pub list: ParadoxList,
-    /// Its exe's arguments to start the game directly.
-    pub args: &'static [&'static str],
-}
-
-/// Paradox games whose mods go in their user folder.
-pub const PARADOX_GAMES: &[ParadoxGame] = &[
-    ParadoxGame {
-        exe: "binaries/ck3.exe",
-        user: "Crusader Kings III",
-        list: ParadoxList::DlcLoad,
-        args: &[],
-    },
-    ParadoxGame {
-        exe: "binaries/victoria3.exe",
-        user: "Victoria 3",
-        list: ParadoxList::DlcLoad,
-        args: &[],
-    },
-    ParadoxGame {
-        exe: "binaries/imperator.exe",
-        user: "Imperator",
-        list: ParadoxList::DlcLoad,
-        args: &[],
-    },
-    ParadoxGame {
-        exe: "stellaris.exe",
-        user: "Stellaris",
-        list: ParadoxList::DlcLoad,
-        args: &[],
-    },
-    ParadoxGame {
-        exe: "hoi4.exe",
-        user: "Hearts of Iron IV",
-        list: ParadoxList::DlcLoad,
-        args: &[],
-    },
-    ParadoxGame {
-        exe: "eu4.exe",
-        user: "Europa Universalis IV",
-        list: ParadoxList::DlcLoad,
-        args: &[],
-    },
-    // Its own launcher, built into the exe, is skipped: the game is then given its mods as
-    // `-mod=` arguments, from `last_mods` in `settings.txt` (what that launcher shows ticked).
-    ParadoxGame {
-        exe: "CK2game.exe",
-        user: "Crusader Kings II",
-        list: ParadoxList::Settings,
-        args: &["-skiplauncher"],
-    },
-];
-
-/// Whether `root` has the file at `rel` (`/`-separated), in any case.
-fn has_file_ci(root: &Path, rel: &str) -> bool {
-    let mut p = root.to_path_buf();
-    for c in rel.split('/') {
-        let Some(found) = fs::read_dir(&p).ok().and_then(|rd| {
-            rd.flatten()
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .find(|n| n.eq_ignore_ascii_case(c))
-        }) else {
-            return false;
-        };
-        p = p.join(found);
-    }
-    p.is_file()
-}
-
-/// The Paradox game installed in `root`, by its exe.
-pub fn paradox_game(root: &Path) -> Option<&'static ParadoxGame> {
-    PARADOX_GAMES.iter().find(|g| has_file_ci(root, g.exe))
-}
-
-/// A Larian game: its exe (relative to the game folder), its user folder, with variables, and
-/// how it lists its modules.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LarianGame {
-    pub exe: &'static str,
-    pub user: &'static str,
-    pub format: crate::LarianFormat,
-}
-
-/// Larian games whose mods go in their user folder.
-pub const LARIAN_GAMES: &[LarianGame] = &[
-    LarianGame {
-        // Started directly, past Larian's launcher (`Launcher/LariLauncher.exe`).
-        exe: "bin/bg3.exe",
-        user: "%LOCALAPPDATA%/Larian Studios/Baldur's Gate 3",
-        format: crate::LarianFormat::Bg3,
-    },
-    LarianGame {
-        // Definitive Edition, started directly, past its launcher.
-        exe: "DefEd/bin/EoCApp.exe",
-        user: "%DOCUMENTS%/Larian Studios/Divinity Original Sin 2 Definitive Edition",
-        format: crate::LarianFormat::Dos2,
-    },
-];
-
-/// The Larian game installed in `root`, by its exe.
-pub fn larian_game(root: &Path) -> Option<&'static LarianGame> {
-    LARIAN_GAMES.iter().find(|g| has_file_ci(root, g.exe))
 }
 
 /// The name UMM gives a game's user folder outside the game folder in its definition
@@ -408,9 +256,35 @@ pub fn inspect(app: &SteamApp) -> Inspection {
     inspect_folder(&app.path)
 }
 
-/// Looks at an install folder to recognise the engine and find the exe.
+/// Looks at an install folder to recognise the game or its engine, and find the exe.
 pub fn inspect_folder(root: &Path) -> Inspection {
     let mut exes = by_size(exe_files(root));
+    let game = kinds().iter().find_map(|k| k.recognise(root, &exes));
+    let mut unreal_project = None;
+    let engine = match game.as_ref().and_then(|g| g.label) {
+        Some(label) => Engine::Game(label),
+        None => {
+            let (engine, project) = engine_of(root, &mut exes);
+            unreal_project = project;
+            engine
+        }
+    };
+    if let Some(exe) = game.as_ref().and_then(|g| g.exe.clone()) {
+        exes.retain(|e| !e.eq_ignore_ascii_case(&exe));
+        exes.insert(0, exe);
+    }
+    Inspection {
+        engine,
+        exe: exes.first().cloned().unwrap_or_default(),
+        exes,
+        unreal_project,
+        game,
+    }
+}
+
+/// The engine the files in `root` say, with its likely exe moved first in `exes` (Unity's) or
+/// the real ones added (Unreal's, in `<Project>/Binaries/Win64`), and the Unreal project.
+fn engine_of(root: &Path, exes: &mut Vec<String>) -> (Engine, Option<String>) {
     // Unity: `<Name>.exe` next to `<Name>_Data/` and UnityPlayer.dll.
     let unity_exe = exes.iter().find(|n| {
         let stem = &n[..n.len() - 4];
@@ -420,124 +294,14 @@ pub fn inspect_folder(root: &Path) -> Inspection {
         .filter(|_| exists_ci(root, "UnityPlayer.dll"))
         .cloned()
     {
-        let engine = if exe.eq_ignore_ascii_case(ONI_EXE) {
-            Engine::OxygenNotIncluded
-        } else if exists_ci(root, "GameAssembly.dll") {
+        exes.retain(|e| e != &exe);
+        exes.insert(0, exe);
+        let engine = if exists_ci(root, "GameAssembly.dll") {
             Engine::UnityIl2cpp
         } else {
             Engine::UnityMono
         };
-        exes.retain(|e| e != &exe);
-        exes.insert(0, exe.clone());
-        return Inspection {
-            engine,
-            exe,
-            exes,
-            unreal_project: None,
-            data_folder: None,
-            paradox: None,
-            larian: None,
-        };
-    }
-    // Paradox: its exe, often in `binaries/` (the top holds its launcher).
-    if let Some(g) = paradox_game(root) {
-        exes.retain(|e| !e.eq_ignore_ascii_case(g.exe));
-        exes.insert(0, g.exe.to_string());
-        return Inspection {
-            engine: Engine::Clausewitz,
-            exe: g.exe.to_string(),
-            exes,
-            unreal_project: None,
-            data_folder: None,
-            paradox: Some(g),
-            larian: None,
-        };
-    }
-    // Larian: its exe in `bin/` (the top holds its launcher's folder).
-    if let Some(g) = larian_game(root) {
-        exes.retain(|e| !e.eq_ignore_ascii_case(g.exe));
-        exes.insert(0, g.exe.to_string());
-        return Inspection {
-            engine: Engine::Divinity,
-            exe: g.exe.to_string(),
-            exes,
-            unreal_project: None,
-            data_folder: None,
-            paradox: None,
-            larian: Some(g),
-        };
-    }
-    // Bannerlord: its exe in `bin/Win64_Shipping_Client/`, its own modules in `Modules/`.
-    if has_file_ci(root, BANNERLORD_EXE) && has_file_ci(root, "Modules/Native/SubModule.xml") {
-        exes.retain(|e| !e.eq_ignore_ascii_case(BANNERLORD_EXE));
-        exes.insert(0, BANNERLORD_EXE.to_string());
-        return Inspection {
-            engine: Engine::Bannerlord,
-            exe: BANNERLORD_EXE.to_string(),
-            exes,
-            unreal_project: None,
-            data_folder: None,
-            paradox: None,
-            larian: None,
-        };
-    }
-    // XCOM 2: War of the Chosen when installed (its own game, in its folder), else the base
-    // game; both started directly, past 2K's launcher.
-    if has_file_ci(root, XCOM2_EXE) {
-        let exe = if has_file_ci(root, XCOM2_WOTC_EXE) {
-            XCOM2_WOTC_EXE
-        } else {
-            XCOM2_EXE
-        };
-        exes.retain(|e| !e.eq_ignore_ascii_case(exe));
-        exes.insert(0, exe.to_string());
-        return Inspection {
-            engine: Engine::Xcom2,
-            exe: exe.to_string(),
-            exes,
-            unreal_project: None,
-            data_folder: None,
-            paradox: None,
-            larian: None,
-        };
-    }
-    // Factorio: its exe in `bin/x64/`, its base mod in `data/`.
-    if root.join(FACTORIO_EXE).is_file() && root.join("data/base/info.json").is_file() {
-        exes.retain(|e| !e.eq_ignore_ascii_case(FACTORIO_EXE));
-        exes.insert(0, FACTORIO_EXE.to_string());
-        return Inspection {
-            engine: Engine::Factorio,
-            exe: FACTORIO_EXE.to_string(),
-            exes,
-            unreal_project: None,
-            data_folder: None,
-            paradox: None,
-            larian: None,
-        };
-    }
-    // tModLoader: its launch script beside its assembly (it runs on its own .NET).
-    if has_file_ci(root, TML_EXE) && has_file_ci(root, "tModLoader.dll") {
-        return Inspection {
-            engine: Engine::TModLoader,
-            exe: TML_EXE.to_string(),
-            exes: std::iter::once(TML_EXE.to_string()).chain(exes).collect(),
-            unreal_project: None,
-            data_folder: None,
-            paradox: None,
-            larian: None,
-        };
-    }
-    // Bethesda: a data folder at the top holding a master plugin (`Fallout3.esm`).
-    if let Some(data) = bethesda_data_folder(root) {
-        return Inspection {
-            engine: Engine::Bethesda,
-            exe: exes.first().cloned().unwrap_or_default(),
-            exes,
-            unreal_project: None,
-            data_folder: Some(data),
-            paradox: None,
-            larian: None,
-        };
+        return (engine, None);
     }
     if exists_ci(root, "Engine") {
         // Unreal: a small launcher exe at the root, the real one in <Project>/Binaries/Win64.
@@ -555,15 +319,7 @@ pub fn inspect_folder(root: &Path) -> Inspection {
                     .map(|e| format!("{p}/Binaries/Win64/{e}")),
             );
         }
-        return Inspection {
-            engine: Engine::Unreal,
-            exe: exes.first().cloned().unwrap_or_default(),
-            exes,
-            unreal_project: project,
-            data_folder: None,
-            paradox: None,
-            larian: None,
-        };
+        return (Engine::Unreal, project);
     }
     // GameMaker: its data file next to the exe, a real one (`FORM` … `GEN8`).
     let gamemaker_data = fs::read_dir(root).ok().and_then(|rd| {
@@ -576,91 +332,13 @@ pub fn inspect_folder(root: &Path) -> Inspection {
             .map(|e| e.path())
     });
     if !exes.is_empty() && gamemaker_data.is_some_and(|p| crate::gamemaker::is_data_file(&p)) {
-        return Inspection {
-            engine: Engine::GameMaker,
-            exe: exes.first().cloned().unwrap_or_default(),
-            exes,
-            unreal_project: None,
-            data_folder: None,
-            paradox: None,
-            larian: None,
-        };
+        return (Engine::GameMaker, None);
     }
-    Inspection {
-        engine: Engine::Unknown,
-        exe: exes.first().cloned().unwrap_or_default(),
-        exes,
-        unreal_project: None,
-        data_folder: None,
-        paradox: None,
-        larian: None,
-    }
+    (Engine::Unknown, None)
 }
 
 /// A GameMaker game's data file (Windows builds').
 pub const GAMEMAKER_DATA: &str = "data.win";
-
-/// tModLoader's launch script, which starts it on the .NET it installs beside it, passing
-/// its arguments on.
-pub const TML_EXE: &str = "start-tModLoader.bat";
-/// tModLoader's save folder (players, worlds, configs and its mods folder), and its list of
-/// enabled mods in that folder.
-const TML_USER: &str = "%DOCUMENTS%/My Games/Terraria/tModLoader";
-const TML_ENABLED: &str = "enabled.json";
-/// Terraria's exe: the game without tModLoader, which has no mods but resource packs.
-const TERRARIA_EXE: &str = "Terraria.exe";
-
-/// Factorio's exe, relative to its folder.
-pub const FACTORIO_EXE: &str = "bin/x64/factorio.exe";
-
-/// Factorio's user folder when it uses the system's (`config-path.cfg` says so: Steam's and
-/// the installer's copies). A zip copy keeps everything in its own folder instead.
-const FACTORIO_USER: &str = "%APPDATA%/Factorio";
-
-/// Whether the Factorio copy in `root` keeps its mods in its own folder (`config-path.cfg`
-/// with `use-system-read-write-data-directories=false`, or none).
-fn factorio_portable(root: &Path) -> bool {
-    let Ok(text) = fs::read_to_string(root.join("config-path.cfg")) else {
-        return true;
-    };
-    !text.lines().any(|l| {
-        l.split_once('=').is_some_and(|(k, v)| {
-            k.trim() == "use-system-read-write-data-directories" && v.trim() == "true"
-        })
-    })
-}
-
-/// Bannerlord's exe, started directly past its launcher
-/// (`TaleWorlds.MountAndBlade.Launcher.exe` beside it).
-pub const BANNERLORD_EXE: &str = "bin/Win64_Shipping_Client/Bannerlord.exe";
-
-/// XCOM 2's exe, and War of the Chosen's, in its folder within the game's.
-pub const XCOM2_EXE: &str = "Binaries/Win64/XCom2.exe";
-pub const XCOM2_WOTC_EXE: &str = "XCom2-WarOfTheChosen/Binaries/Win64/XCom2.exe";
-
-/// Oxygen Not Included's exe, at the top of its folder.
-pub const ONI_EXE: &str = "OxygenNotIncluded.exe";
-
-/// Oxygen Not Included's user folder (its mods in `mods/Local`, their list in `mods/mods.json`).
-const ONI_USER: &str = "%DOCUMENTS%/Klei/OxygenNotIncluded";
-
-/// The folder at the top of a game folder named `Data` or `Data Files` that holds an `.esm`
-/// master, as spelled on disk.
-fn bethesda_data_folder(root: &Path) -> Option<String> {
-    let rd = fs::read_dir(root).ok()?;
-    rd.flatten()
-        .filter(|e| e.path().is_dir())
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| n.eq_ignore_ascii_case("Data") || n.eq_ignore_ascii_case("Data Files"))
-        .find(|n| {
-            fs::read_dir(root.join(n)).is_ok_and(|rd| {
-                rd.flatten().any(|e| {
-                    let name = e.file_name().to_string_lossy().to_lowercase();
-                    name.ends_with(".esm") && e.path().is_file()
-                })
-            })
-        })
-}
 
 /// Where a draft's game comes from: everything besides the files that goes in its definition.
 struct Origin {
@@ -670,279 +348,6 @@ struct Origin {
     relaunch: SteamRelaunch,
     /// The game folder.
     root: PathBuf,
-}
-
-/// A game whose plugins (or mods) must be listed to load, recognised by its own exe in the
-/// game folder: every edition has it, regional ones (Fallout: New Vegas PCR) included,
-/// whichever store it came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ListGame {
-    pub exe: &'static str,
-    pub list: ListAt,
-    /// The folder holding plugins (RimWorld: mods), relative to the game folder.
-    pub folder: &'static str,
-    /// Editions keeping their `plugins.txt` in another folder under local app data: a file
-    /// only that edition has in the game folder, and the folder. As LOOT's libloadorder tells
-    /// them apart.
-    pub editions: &'static [(&'static str, &'static str)],
-    pub format: PluginListFormat,
-    /// Where its `Custom.ini` (and `Prefs.ini`) live, under Documents\My Games, when it needs
-    /// ini settings for mods to load.
-    pub ini: Option<&'static str>,
-}
-
-/// Where a game keeps its list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ListAt {
-    /// `plugins.txt` in this folder under the user's local app data.
-    LocalAppData(&'static str),
-    /// This file in the game folder.
-    Game(&'static str),
-    /// This absolute path, with variables (see [`crate::expand_path`]).
-    Path(&'static str),
-}
-
-const fn game(
-    exe: &'static str,
-    dir: &'static str,
-    editions: &'static [(&'static str, &'static str)],
-    format: PluginListFormat,
-    ini: Option<&'static str>,
-) -> ListGame {
-    ListGame {
-        exe,
-        list: ListAt::LocalAppData(dir),
-        folder: "Data",
-        editions,
-        format,
-        ini,
-    }
-}
-
-const fn other(
-    exe: &'static str,
-    list: ListAt,
-    folder: &'static str,
-    format: PluginListFormat,
-) -> ListGame {
-    ListGame {
-        exe,
-        list,
-        folder,
-        editions: &[],
-        format,
-        ini: None,
-    }
-}
-
-use PluginListFormat::{
-    Asterisk, FactorioJson, KenshiCfg, MorrowindIni, OniJson, Plain, RimworldXml, TmodloaderJson,
-    XcomIni,
-};
-
-/// RimWorld's list, in its folder under `AppData\LocalLow` (which has no variable of its own).
-const RIMWORLD_LIST: &str =
-    "%USERPROFILE%/AppData/LocalLow/Ludeon Studios/RimWorld by Ludeon Studios/Config/ModsConfig.xml";
-
-/// Games keeping a list, VR editions before the flat ones they share files with.
-pub const LIST_GAMES: &[ListGame] = &[
-    game("SkyrimVR.exe", "Skyrim VR", &[], Asterisk, None),
-    game(
-        "SkyrimSE.exe",
-        "Skyrim Special Edition",
-        &[
-            // Only GOG's installer installs Galaxy64.dll.
-            ("Galaxy64.dll", "Skyrim Special Edition GOG"),
-            ("EOSSDK-Win64-Shipping.dll", "Skyrim Special Edition EPIC"),
-            ("appxmanifest.xml", "Skyrim Special Edition MS"),
-        ],
-        Asterisk,
-        None,
-    ),
-    game("Fallout4VR.exe", "Fallout4VR", &[], Asterisk, None),
-    game(
-        "Fallout4.exe",
-        "Fallout4",
-        &[
-            ("appxmanifest.xml", "Fallout4 MS"),
-            ("EOSSDK-Win64-Shipping.dll", "Fallout4 EPIC"),
-        ],
-        Asterisk,
-        Some("Fallout4"),
-    ),
-    game(
-        "Starfield.exe",
-        "Starfield",
-        &[],
-        Asterisk,
-        Some("Starfield"),
-    ),
-    game("TESV.exe", "Skyrim", &[], Plain, None),
-    game(
-        "FalloutNV.exe",
-        "FalloutNV",
-        &[("EOSSDK-Win32-Shipping.dll", "FalloutNV_Epic")],
-        Plain,
-        None,
-    ),
-    game("Fallout3.exe", "Fallout3", &[], Plain, None),
-    game("Oblivion.exe", "Oblivion", &[], Plain, None),
-    // Its plugins and their list are in the Unreal project's content folder.
-    other(
-        "OblivionRemastered.exe",
-        ListAt::Game("OblivionRemastered/Content/Dev/ObvData/Data/Plugins.txt"),
-        "OblivionRemastered/Content/Dev/ObvData/Data",
-        Plain,
-    ),
-    other(
-        "Morrowind.exe",
-        ListAt::Game("Morrowind.ini"),
-        "Data Files",
-        MorrowindIni,
-    ),
-    other(
-        "RimWorldWin64.exe",
-        ListAt::Path(RIMWORLD_LIST),
-        "Mods",
-        RimworldXml,
-    ),
-    other(
-        "RimWorldWin.exe",
-        ListAt::Path(RIMWORLD_LIST),
-        "Mods",
-        RimworldXml,
-    ),
-    // Steam's and GOG's builds.
-    other(
-        "kenshi_x64.exe",
-        ListAt::Game("data/mods.cfg"),
-        "mods",
-        KenshiCfg,
-    ),
-    other(
-        "kenshi_GOG_x64.exe",
-        ListAt::Game("data/mods.cfg"),
-        "mods",
-        KenshiCfg,
-    ),
-];
-
-/// The game keeping a list whose exe is at the top of a game folder (`exes`, relative paths,
-/// as [`Inspection`] lists them).
-pub fn list_game(exes: &[String]) -> Option<&'static ListGame> {
-    LIST_GAMES.iter().find(|g| {
-        exes.iter()
-            .any(|x| !x.contains('/') && x.eq_ignore_ascii_case(g.exe))
-    })
-}
-
-/// Gives a draft of a game keeping a list its plugin list (for the edition in `folder`), the
-/// ini settings it needs, and (RimWorld) a folder per mod, with notes. Other games are left
-/// as they are.
-fn add_list_game(draft: &mut Draft, folder: &Path, found: &Inspection) {
-    let Some(g) = list_game(&found.exes) else {
-        return;
-    };
-    let plugins = g.plugins(folder);
-    let note = match g.format {
-        Asterisk | Plain => format!(
-            "Bethesda game: while mods are deployed, UMM enables their plugins in {}.",
-            plugins.list
-        ),
-        MorrowindIni => "Morrowind: while mods are deployed, UMM enables their plugins in the [Game Files] section of Morrowind.ini. The game loads plugins in the order of their file dates.".into(),
-        KenshiCfg => "Kenshi: each mod goes in its own folder in mods/, named after its .mod file as the game wants, and while mods are deployed, UMM enables them in data/mods.cfg, in load order (your own list comes back afterwards). Steam Workshop items can be turned on or off in a profile too.".into(),
-        // Factorio, Oxygen Not Included, XCOM 2 and tModLoader are set up in `build`, not as
-        // list games.
-        RimworldXml | FactorioJson | OniJson | XcomIni | TmodloaderJson => format!(
-            "RimWorld: each mod goes in its own folder in Mods/, and while mods are deployed, UMM activates them in {}, in load order.",
-            plugins.list
-        ),
-    };
-    draft.notes.push(Note::new("plugins", note));
-    // The list says what the game is, whatever its engine.
-    draft.notes.retain(|n| n.key != "unknown-engine");
-    if matches!(g.format, RimworldXml | KenshiCfg) && draft.setup == LoaderSetup::Generic {
-        for r in &mut draft.def.install {
-            if r.pattern == "**" && r.target.is_empty() {
-                r.target = format!("{}/{{mod}}/", g.folder);
-            }
-        }
-    }
-    draft.def.plugins = Some(plugins);
-    draft.def.ini = g.ini();
-    if !draft.def.ini.is_empty() {
-        draft.notes.push(Note::new(
-            "ini",
-            "Bethesda game: UMM sets the ini settings it needs to load mods (listed in this file) while they are deployed, and puts them back afterwards.",
-        ));
-    }
-}
-
-impl ListGame {
-    /// Its plugin list, for the edition installed in `folder`.
-    pub fn plugins(&self, folder: &Path) -> Plugins {
-        let list = match self.list {
-            ListAt::LocalAppData(dir) => {
-                let dir = self
-                    .editions
-                    .iter()
-                    .find(|(marker, _)| folder.join(marker).exists())
-                    .map_or(dir, |(_, dir)| *dir);
-                format!("%LOCALAPPDATA%/{dir}/plugins.txt")
-            }
-            ListAt::Game(p) | ListAt::Path(p) => p.into(),
-        };
-        Plugins {
-            list,
-            format: self.format,
-            folder: self.folder.into(),
-            // Oblivion set not to use My Games keeps its list in its own folder.
-            in_game_folder_when: (self.exe == "Oblivion.exe").then(|| GameIniCondition {
-                ini: "Oblivion.ini".into(),
-                section: "General".into(),
-                key: "bUseMyGamesDirectory".into(),
-                value: "0".into(),
-            }),
-        }
-    }
-
-    /// The ini settings it needs for mods to load: Fallout 4 reads its plugin list only with
-    /// `bEnableFileSelection`, and Fallout 4 and Starfield load loose files (outside `.ba2`
-    /// archives) only with archive invalidation in their `Custom.ini`, a file of overrides UMM
-    /// may create.
-    pub fn ini(&self) -> Vec<IniSetting> {
-        let Some(dir) = self.ini else {
-            return Vec::new();
-        };
-        let set = |file: String, section: &str, key: &str, value: &str, create: bool| IniSetting {
-            file,
-            section: section.into(),
-            key: key.into(),
-            value: value.into(),
-            create,
-        };
-        let base = format!("%DOCUMENTS%/My Games/{dir}");
-        let mut v = Vec::new();
-        if dir == "Fallout4" {
-            v.push(set(
-                format!("{base}/Fallout4Prefs.ini"),
-                "Launcher",
-                "bEnableFileSelection",
-                "1",
-                false,
-            ));
-        }
-        let custom = format!("{base}/{dir}Custom.ini");
-        v.push(set(
-            custom.clone(),
-            "Archive",
-            "bInvalidateOlderFiles",
-            "1",
-            true,
-        ));
-        v.push(set(custom, "Archive", "sResourceDataDirsFinal", "", true));
-        v
-    }
 }
 
 /// Drafts a game definition with the given setup. `community` is the game's Thunderstore
@@ -974,8 +379,7 @@ pub fn draft_from(
         relaunch: SteamRelaunch::ViaSteam,
         root: app.path.clone(),
     };
-    let mut draft = build(origin, found, &found.exe, setup, community)?;
-    add_list_game(&mut draft, &app.path, found);
+    let draft = build(origin, found, &found.exe, setup, community)?;
     // The setup was offered by this name before the draft was made.
     debug_assert_eq!(found.own_mods(), draft.def.own_mods(), "{}", draft.def.name);
     Ok(draft)
@@ -1014,8 +418,7 @@ pub fn draft_manual(
         relaunch: SteamRelaunch::None,
         root: folder.to_path_buf(),
     };
-    let mut draft = build(origin, found, exe, setup, community)?;
-    add_list_game(&mut draft, folder, found);
+    let draft = build(origin, found, exe, setup, community)?;
     // The setup was offered by this name before the draft was made.
     debug_assert_eq!(found.own_mods(), draft.def.own_mods(), "{}", draft.def.name);
     Ok(draft)
@@ -1036,23 +439,16 @@ fn build(
         "**/*.ini".to_string(),
         "**/*.json".to_string(),
     ];
-    let rule = |m: &str, t: &str| InstallRule {
-        pattern: m.into(),
-        target: t.into(),
-    };
+    // What the game UMM knows it to be adds.
+    let shape = found
+        .game
+        .as_ref()
+        .and_then(|g| kind(g.key))
+        .map(|k| k.shape(&origin.root, found, exe, setup))
+        .unwrap_or_default();
 
     match found.engine {
         Engine::UnityMono | Engine::UnityIl2cpp => protect.push("UnityPlayer.dll".into()),
-        Engine::OxygenNotIncluded => {
-            protect.push("UnityPlayer.dll".into());
-            notes.push(Note::new(
-                "oni",
-                "Oxygen Not Included: each mod goes in its own folder in \
-                 Documents\\Klei\\OxygenNotIncluded\\mods\\Local, and is enabled in mods.json \
-                 there while mods are deployed (your own list comes back afterwards). The game \
-                 loads mods with its own loader; no BepInEx is needed.",
-            ));
-        }
         Engine::Unreal => {
             // Under a mod loader its own rules apply instead.
             if let Some(p) = found
@@ -1075,105 +471,6 @@ fn build(
                 ));
             }
         }
-        Engine::Bethesda => {
-            if let Some(d) = found
-                .data_folder
-                .as_ref()
-                .filter(|_| setup == LoaderSetup::Generic)
-            {
-                install.extend(
-                    crate::setup::bethesda_rules(d)
-                        .into_iter()
-                        .filter(|r| r.pattern != "**"),
-                );
-                notes.push(Note::new(
-                    "bethesda",
-                    format!(
-                        "Bethesda game: plugins, archives and asset folders (meshes, textures, \
-                         sound, script extender plugins…) go to {d}/, and FOMOD installers \
-                         install there. Everything else keeps its path."
-                    ),
-                ));
-            }
-        }
-        Engine::Clausewitz => {
-            if let Some(g) = found.paradox {
-                notes.push(Note::new(
-                    "paradox",
-                    format!(
-                        "Paradox game: each mod goes in its own folder in Documents\\Paradox Interactive\\{}\\mod, \
-                         with a descriptor UMM writes, and is enabled in {} while mods are deployed \
-                         (your own list comes back afterwards). UMM starts the game directly, not through \
-                         {}.",
-                        g.user,
-                        match g.list {
-                            ParadoxList::DlcLoad => "dlc_load.json",
-                            ParadoxList::Settings => "settings.txt",
-                        },
-                        match g.list {
-                            ParadoxList::DlcLoad =>
-                                "Paradox's launcher, which would replace the list with its playset",
-                            ParadoxList::Settings => "its launcher",
-                        }
-                    ),
-                ));
-            }
-        }
-        Engine::Xcom2 => notes.push(Note::new(
-            "xcom2",
-            format!(
-                "XCOM 2{}: each mod goes in its own folder in {}XComGame/Mods/, named after its \
-                 .XComMod file as the game wants, and while mods are deployed, UMM enables them \
-                 in XComModOptions.ini in Documents\\My Games (your own list comes back \
-                 afterwards). Steam Workshop items can be turned on or off in a profile too. UMM \
-                 starts the game directly, not through 2K's launcher.",
-                if exe.eq_ignore_ascii_case(XCOM2_WOTC_EXE) {
-                    ": War of the Chosen"
-                } else {
-                    ""
-                },
-                if exe.eq_ignore_ascii_case(XCOM2_WOTC_EXE) {
-                    "XCom2-WarOfTheChosen/"
-                } else {
-                    ""
-                },
-            ),
-        )),
-        Engine::Bannerlord => notes.push(Note::new(
-            "bannerlord",
-            "Bannerlord: each mod goes in its own folder in Modules/, named after the module's \
-             id as the game wants. UMM starts the game past its launcher with the modules to \
-             load: the game's own, your profile's (Steam Workshop items included), and those \
-             you selected in the launcher, each after the ones it depends on.",
-        )),
-        Engine::Factorio => notes.push(Note::new(
-            "factorio",
-            "Factorio: each mod goes in its own folder in the game's mods folder, named after \
-             the name in its info.json, and is enabled in mod-list.json while mods are deployed \
-             (your own list comes back afterwards). Import mods as the .zip files from the mod \
-             portal.",
-        )),
-        Engine::Divinity => {
-            if let Some(g) = found.larian {
-                notes.push(Note::new(
-                    "larian",
-                    format!(
-                        "Larian game: .pak mods go to the Mods folder in {}, and are enabled in \
-                         {} while mods are deployed (your own mods there stay). The game must \
-                         have been started once, so that it has written that file. Script \
-                         Extender and {}/ or {}/ files go to the game folder. UMM starts the \
-                         game directly, not through Larian's launcher.",
-                        g.user.replace('/', "\\"),
-                        match g.format {
-                            crate::LarianFormat::Bg3 => "modsettings.lsx",
-                            crate::LarianFormat::Dos2 => "each player profile's modsettings.lsx",
-                        },
-                        g.format.bin(),
-                        g.format.data(),
-                    ),
-                ));
-            }
-        }
         Engine::GameMaker => notes.push(Note::new(
             "gamemaker",
             "GameMaker: mods replace files in the game folder, data files included (one going \
@@ -1187,89 +484,20 @@ fn build(
              winning where both change the same thing; if that fails, UMM says why and launches \
              nothing until one is disabled.",
         )),
-        Engine::TModLoader => notes.push(Note::new(
-            "tmodloader",
-            "tModLoader: .tmod mods go to its Mods folder in Documents\\My Games\\Terraria\\\
-             tModLoader, named after the mod in each as it wants, and are enabled in its \
-             enabled.json there while mods are deployed (your own list comes back afterwards). \
-             Resource packs (folders or .zip files with a pack.json) go to its ResourcePacks \
-             folder beside it and are turned on in its config.json while deployed, the rest of \
-             your settings left as they are. Steam Workshop items can be turned on or off in a \
-             profile too. UMM starts tModLoader directly, not through Steam.",
-        )),
-        Engine::Unknown if exe.eq_ignore_ascii_case(TERRARIA_EXE) => notes.push(Note::new(
-            "terraria",
-            "Terraria loads no mods by itself: they need tModLoader, a free game of its own on \
-             Steam. Install it there, then remove Terraria from UMM and add it again: UMM sets \
-             it up with tModLoader.",
-        )),
-        Engine::Unknown if setup == LoaderSetup::Generic => notes.push(Note::new(
-            "unknown-engine",
-            "Engine not recognised: mod files keep their paths relative to the game folder.",
-        )),
-        Engine::Unknown => {}
-    }
-    // Games listing a folder per mod: their user folder (if not the game's), its mods folder
-    // and their list. Factorio's is in its user folder, or its own when it keeps everything
-    // there.
-    let mod_list = match found.engine {
-        Engine::Factorio => Some(match factorio_portable(&origin.root) {
-            true => (None, "mods".to_string(), "mods/mod-list.json".to_string()),
-            false => (
-                Some(FACTORIO_USER.to_string()),
-                format!("@{USER_FOLDER}/mods"),
-                format!("{FACTORIO_USER}/mods/mod-list.json"),
-            ),
-        })
-        .map(|(u, m, l)| (u, m, l, FactorioJson)),
-        Engine::Xcom2 => {
-            let wotc = exe.eq_ignore_ascii_case(XCOM2_WOTC_EXE);
-            Some((
-                None,
-                format!(
-                    "{}XComGame/Mods",
-                    if wotc { "XCom2-WarOfTheChosen/" } else { "" }
-                ),
-                format!(
-                    "%DOCUMENTS%/My Games/{}/XComGame/Config/XComModOptions.ini",
-                    if wotc {
-                        "XCOM2 War of the Chosen"
-                    } else {
-                        "XCOM2"
-                    }
-                ),
-                XcomIni,
+        Engine::Unknown if found.game.is_none() && setup == LoaderSetup::Generic => {
+            notes.push(Note::new(
+                "unknown-engine",
+                "Engine not recognised: mod files keep their paths relative to the game folder.",
             ))
         }
-        Engine::TModLoader => Some((
-            Some(TML_USER.to_string()),
-            format!("@{USER_FOLDER}/Mods"),
-            format!("{TML_USER}/Mods/{TML_ENABLED}"),
-            TmodloaderJson,
-        )),
-        Engine::OxygenNotIncluded => Some((
-            Some(ONI_USER.to_string()),
-            format!("@{USER_FOLDER}/mods/Local"),
-            format!("{ONI_USER}/mods/mods.json"),
-            OniJson,
-        )),
-        _ => None,
-    };
-    match (found.paradox, found.larian, &mod_list) {
-        // Its .tmod files in its mods folder.
-        (None, None, Some((_, mods, _, TmodloaderJson))) => {
-            install.extend(crate::setup::tmodloader_rules(mods))
-        }
-        // A folder per module.
-        _ if found.engine == Engine::Bannerlord => {
-            install.extend(crate::setup::mod_folder_rules("Modules"))
-        }
-        // Mods go in the user folder's `mod/`, not the game folder.
-        (Some(_), _, _) => install.extend(crate::setup::paradox_rules(USER_FOLDER)),
-        // Paks in the user folder's `Mods/`.
-        (None, Some(g), _) => install.extend(crate::setup::larian_rules(USER_FOLDER, g.format)),
-        (None, None, Some((_, mods, _, _))) => install.extend(crate::setup::mod_folder_rules(mods)),
-        (None, None, None) => install.push(rule("**", "")),
+        Engine::Unknown | Engine::Game(_) => {}
+    }
+    notes.extend(shape.notes);
+    protect.extend(shape.protect);
+    if shape.install.is_empty() {
+        install.push(rule("**", ""));
+    } else {
+        install.extend(shape.install);
     }
 
     match (setup, found.engine) {
@@ -1353,24 +581,10 @@ fn build(
         }
         Some(Launch {
             exe: exe.to_string(),
-            args: found
-                .paradox
-                .filter(|g| exe.eq_ignore_ascii_case(g.exe))
-                .map(|g| g.args.iter().map(|a| a.to_string()).collect())
-                .unwrap_or_default(),
-            // A Paradox game started through Steam runs Paradox's launcher, which writes the
-            // list of enabled mods from its playset: started directly instead, Steam running.
-            // Larian's and Bannerlord's launchers likewise stand before the game. tModLoader
-            // runs as `dotnet.exe` under its script: started directly, UMM follows it as the
-            // script's child, not by a name other programs share.
-            steam_relaunch: if (found.paradox.is_some()
-                || found.larian.is_some()
-                || matches!(
-                    found.engine,
-                    Engine::Bannerlord | Engine::Xcom2 | Engine::TModLoader
-                ))
-                && origin.relaunch == SteamRelaunch::ViaSteam
-            {
+            args: shape.args,
+            // A game whose own launcher stands before it (and would undo what UMM set up, as
+            // Paradox's rewrites the list of enabled mods) is started directly, Steam running.
+            steam_relaunch: if shape.direct && origin.relaunch == SteamRelaunch::ViaSteam {
                 SteamRelaunch::AppidFile
             } else {
                 origin.relaunch
@@ -1391,37 +605,21 @@ fn build(
         loader: None,
         nexus: None,
         gamebanana: None,
-        plugins: mod_list.as_ref().map(|(_, mods, list, format)| Plugins {
-            list: list.clone(),
-            format: *format,
-            folder: mods.clone(),
-            in_game_folder_when: None,
-        }),
-        ini: Vec::new(),
+        plugins: shape.plugins,
+        ini: shape.ini,
         thunderstore: community.map(|c| Thunderstore {
             community: c.label.to_string(),
         }),
         install,
         protect,
         writable,
-        folders: found
-            .paradox
-            .map(|g| format!("%DOCUMENTS%/Paradox Interactive/{}", g.user))
-            .or_else(|| found.larian.map(|g| g.user.to_string()))
-            .or_else(|| mod_list.and_then(|(user, ..)| user))
+        folders: shape
+            .user_folder
             .map(|user| [(USER_FOLDER.to_string(), user)].into_iter().collect())
             .unwrap_or_default(),
-        paradox: found.paradox.map(|g| crate::Paradox {
-            folder: USER_FOLDER.into(),
-            list: g.list,
-        }),
-        bannerlord: (found.engine == Engine::Bannerlord).then(|| crate::Bannerlord {
-            folder: "Modules".into(),
-        }),
-        larian: found.larian.map(|g| crate::Larian {
-            folder: USER_FOLDER.into(),
-            format: g.format,
-        }),
+        paradox: shape.paradox,
+        bannerlord: shape.bannerlord,
+        larian: shape.larian,
     };
     let def = generic.with_setup(setup, community)?;
     Ok(Draft {
@@ -1547,382 +745,6 @@ mod tests {
     }
 
     #[test]
-    fn paradox_games_are_set_up_for_their_user_folder() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        touch(&root.join("binaries/ck3.exe"), 100);
-        touch(&root.join("launcher/dowser.exe"), 500);
-        let found = inspect_folder(root);
-        assert_eq!(
-            (found.engine, found.exe.as_str()),
-            (Engine::Clausewitz, "binaries/ck3.exe")
-        );
-        let d = draft_manual(root, "CK3", &found.exe, &found, LoaderSetup::Generic, None).unwrap();
-        assert_eq!(
-            d.def.folders.get(USER_FOLDER).map(String::as_str),
-            Some("%DOCUMENTS%/Paradox Interactive/Crusader Kings III")
-        );
-        assert_eq!(d.def.paradox.as_ref().unwrap().folder, USER_FOLDER);
-        assert_eq!(d.def.install.len(), 1);
-        assert_eq!(d.def.install[0].target, "@user/mod/{mod}/");
-        assert!(d.notes.iter().any(|n| n.key == "paradox"));
-        assert_eq!(found.own_mods(), Some(crate::BUILT_IN_MODS));
-        assert_eq!(d.def.setup_label(), crate::BUILT_IN_MODS);
-        // Reloads as written, and back to generic keeps the rule.
-        let text = to_toml(&d);
-        let back = GameDef::parse_game(&text, Path::new("game.toml"), "ck3").unwrap();
-        assert_eq!(back.paradox, d.def.paradox);
-        let again = back
-            .with_setup(LoaderSetup::Bepinex, None)
-            .unwrap()
-            .with_setup(LoaderSetup::Generic, None)
-            .unwrap();
-        assert_eq!(again.install[0].target, "@user/mod/{mod}/");
-    }
-
-    #[test]
-    fn tmodloader_mods_go_to_its_mods_folder_and_terraria_points_to_it() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().join("tModLoader");
-        touch(&root.join(TML_EXE), 10);
-        touch(&root.join("tModLoader.dll"), 100);
-        touch(&root.join("LaunchUtils/busybox64.exe"), 50);
-        let found = inspect_folder(&root);
-        assert_eq!(
-            (found.engine, found.exe.as_str()),
-            (Engine::TModLoader, TML_EXE)
-        );
-        let d = draft_manual(
-            &root,
-            "tModLoader",
-            &found.exe,
-            &found,
-            LoaderSetup::Generic,
-            None,
-        )
-        .unwrap();
-        assert!(d.notes.iter().any(|n| n.key == "tmodloader"));
-        // Named after its loader, before and after it is drafted.
-        assert_eq!(found.own_mods(), Some("tModLoader"));
-        assert_eq!(d.def.setup_label(), "tModLoader");
-        assert_eq!(
-            d.def.folders.get(USER_FOLDER).map(String::as_str),
-            Some(TML_USER)
-        );
-        let p = d.def.plugins.as_ref().unwrap();
-        assert_eq!(
-            (p.list.as_str(), p.format, p.folder.as_str()),
-            (
-                "%DOCUMENTS%/My Games/Terraria/tModLoader/Mods/enabled.json",
-                PluginListFormat::TmodloaderJson,
-                "@user/Mods"
-            )
-        );
-        let back = GameDef::parse_game(&to_toml(&d), Path::new("game.toml"), "tml").unwrap();
-        // Set up again (the loader changed back to generic), the rules are the same.
-        let again = back.with_setup(LoaderSetup::Thunderstore, None).err();
-        assert!(again.is_some());
-        assert_eq!(back.install.len(), 2);
-        let c = back.compile().unwrap();
-        let map = |p: &str| {
-            c.map_mod_file("m", &crate::RelPath::parse(p).unwrap())
-                .unwrap()
-                .map(|t| t.to_string())
-        };
-        assert_eq!(
-            map("Wrap/Calamity.tmod").as_deref(),
-            Some("@user/Mods/Wrap/Calamity.tmod")
-        );
-        // Anything else to the mod's folder among the packs, where UMM keeps only packs.
-        assert_eq!(
-            map("README.md").as_deref(),
-            Some("@user/ResourcePacks/m/README.md")
-        );
-
-        let terraria = tmp.path().join("Terraria");
-        touch(&terraria.join("Terraria.exe"), 100);
-        touch(&terraria.join("dotNetFx40_Full_setup.exe"), 10);
-        let found = inspect_folder(&terraria);
-        let d = draft_manual(
-            &terraria,
-            "Terraria",
-            &found.exe,
-            &found,
-            LoaderSetup::Generic,
-            None,
-        )
-        .unwrap();
-        assert!(d.notes.iter().any(|n| n.key == "terraria"));
-        assert!(d.def.plugins.is_none());
-    }
-
-    #[test]
-    fn factorio_mods_go_to_its_user_folder_unless_it_keeps_its_own() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        touch(&root.join("bin/x64/factorio.exe"), 100);
-        touch(&root.join("data/base/info.json"), 10);
-        fs::write(
-            root.join("config-path.cfg"),
-            "config-path=__PATH__system-write-data__/config\n\
-             # A comment\nuse-system-read-write-data-directories=true\n",
-        )
-        .unwrap();
-        let found = inspect_folder(root);
-        assert_eq!(
-            (found.engine, found.exe.as_str()),
-            (Engine::Factorio, FACTORIO_EXE)
-        );
-        let d = draft_manual(
-            root,
-            "Factorio",
-            &found.exe,
-            &found,
-            LoaderSetup::Generic,
-            None,
-        )
-        .unwrap();
-        assert_eq!(
-            d.def.folders.get(USER_FOLDER).map(String::as_str),
-            Some("%APPDATA%/Factorio")
-        );
-        let p = d.def.plugins.as_ref().unwrap();
-        assert_eq!(
-            (p.list.as_str(), p.format, p.folder.as_str()),
-            (
-                "%APPDATA%/Factorio/mods/mod-list.json",
-                PluginListFormat::FactorioJson,
-                "@user/mods"
-            )
-        );
-        assert!(d.notes.iter().any(|n| n.key == "factorio"));
-        let c = d.def.compile().unwrap();
-        let map = |p: &str| {
-            c.map_mod_file("k2", &crate::RelPath::parse(p).unwrap())
-                .unwrap()
-                .map(|t| t.to_string())
-        };
-        assert_eq!(map("info.json").as_deref(), Some("@user/mods/k2/info.json"));
-        let text = to_toml(&d);
-        let back = GameDef::parse_game(&text, Path::new("game.toml"), "factorio").unwrap();
-        assert_eq!(back.plugins, d.def.plugins);
-        // Back to generic from another setup: the same rules.
-        let again = back
-            .with_setup(LoaderSetup::Bepinex, None)
-            .unwrap()
-            .with_setup(LoaderSetup::Generic, None)
-            .unwrap();
-        assert_eq!(again.install[0].target, "@user/mods/{mod}/");
-
-        // A zip copy keeps its mods (and their list) in its own folder.
-        fs::write(
-            root.join("config-path.cfg"),
-            "use-system-read-write-data-directories=false\n",
-        )
-        .unwrap();
-        let d = draft_manual(
-            root,
-            "Factorio",
-            &found.exe,
-            &found,
-            LoaderSetup::Generic,
-            None,
-        )
-        .unwrap();
-        assert!(d.def.folders.is_empty());
-        let p = d.def.plugins.as_ref().unwrap();
-        assert_eq!(
-            (p.list.as_str(), p.folder.as_str()),
-            ("mods/mod-list.json", "mods")
-        );
-        assert_eq!(d.def.install[0].target, "mods/{mod}/");
-    }
-
-    #[test]
-    fn divinity_original_sin_2_mods_go_to_its_user_folder() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        touch(&root.join("DefEd/bin/EoCApp.exe"), 100);
-        touch(&root.join("DefEd/Data/Arena.pak"), 10);
-        let found = inspect_folder(root);
-        assert_eq!(
-            (found.engine, found.exe.as_str()),
-            (Engine::Divinity, "DefEd/bin/EoCApp.exe")
-        );
-        let d = draft_manual(root, "DOS2", &found.exe, &found, LoaderSetup::Generic, None).unwrap();
-        assert_eq!(
-            d.def.folders.get(USER_FOLDER).map(String::as_str),
-            Some("%DOCUMENTS%/Larian Studios/Divinity Original Sin 2 Definitive Edition")
-        );
-        let l = d.def.larian.as_ref().unwrap();
-        assert_eq!(
-            (l.folder.as_str(), l.format),
-            (USER_FOLDER, crate::LarianFormat::Dos2)
-        );
-        assert!(d
-            .notes
-            .iter()
-            .any(|n| n.key == "larian" && n.text.contains("each player profile")));
-        let c = d.def.compile().unwrap();
-        let map = |p: &str| {
-            c.map_mod_file("m", &crate::RelPath::parse(p).unwrap())
-                .unwrap()
-                .map(|t| t.to_string())
-        };
-        assert_eq!(map("Armory.pak").as_deref(), Some("@user/Mods/Armory.pak"));
-        assert_eq!(map("DXGI.dll").as_deref(), Some("DefEd/bin/DXGI.dll"));
-        assert_eq!(
-            map("bin/OsiExtenderEoCApp.dll").as_deref(),
-            Some("DefEd/bin/OsiExtenderEoCApp.dll")
-        );
-        assert_eq!(map("DefEd/Data/x.pak").as_deref(), Some("DefEd/Data/x.pak"));
-        let text = to_toml(&d);
-        assert!(text.contains("format = \"dos2\""), "{text}");
-        let back = GameDef::parse_game(&text, Path::new("game.toml"), "dos2").unwrap();
-        assert_eq!(back.larian, d.def.larian);
-        let again = back
-            .with_setup(LoaderSetup::Bepinex, None)
-            .unwrap()
-            .with_setup(LoaderSetup::Generic, None)
-            .unwrap();
-        let targets = |rules: &[crate::InstallRule]| {
-            rules.iter().map(|r| r.target.clone()).collect::<Vec<_>>()
-        };
-        assert_eq!(targets(&again.install), targets(&d.def.install));
-    }
-
-    #[test]
-    fn baldurs_gate_3_mods_go_to_its_user_folder() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        touch(&root.join("bin/bg3.exe"), 100);
-        touch(&root.join("bin/bg3_dx11.exe"), 100);
-        touch(&root.join("Launcher/LariLauncher.exe"), 50);
-        let found = inspect_folder(root);
-        assert_eq!(
-            (found.engine, found.exe.as_str()),
-            (Engine::Divinity, "bin/bg3.exe")
-        );
-        let d = draft_manual(root, "BG3", &found.exe, &found, LoaderSetup::Generic, None).unwrap();
-        assert_eq!(
-            d.def.folders.get(USER_FOLDER).map(String::as_str),
-            Some("%LOCALAPPDATA%/Larian Studios/Baldur's Gate 3")
-        );
-        assert_eq!(d.def.larian.as_ref().unwrap().folder, USER_FOLDER);
-        assert!(d.notes.iter().any(|n| n.key == "larian"));
-        let c = d.def.compile().unwrap();
-        let map = |p: &str| {
-            c.map_mod_file("m", &crate::RelPath::parse(p).unwrap())
-                .unwrap()
-                .map(|t| t.to_string())
-        };
-        assert_eq!(map("Bags.pak").as_deref(), Some("@user/Mods/Bags.pak"));
-        assert_eq!(map("DWrite.dll").as_deref(), Some("bin/DWrite.dll"));
-        assert_eq!(
-            map("bin/NativeMods/x.dll").as_deref(),
-            Some("bin/NativeMods/x.dll")
-        );
-        assert_eq!(map("info.json"), None, "left out");
-        let text = to_toml(&d);
-        let back = GameDef::parse_game(&text, Path::new("game.toml"), "bg3").unwrap();
-        assert_eq!(back.larian, d.def.larian);
-        // Back to generic from another setup: the same rules.
-        let again = back
-            .with_setup(LoaderSetup::Bepinex, None)
-            .unwrap()
-            .with_setup(LoaderSetup::Generic, None)
-            .unwrap();
-        assert_eq!(again.install[0].target, "@user/Mods/");
-    }
-
-    #[test]
-    fn oxygen_not_included_mods_go_to_its_local_mods_folder() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        touch(&root.join(ONI_EXE), 100);
-        touch(&root.join("UnityPlayer.dll"), 10);
-        touch(&root.join("OxygenNotIncluded_Data/globalgamemanagers"), 10);
-        let found = inspect_folder(root);
-        assert_eq!(
-            (found.engine, found.exe.as_str()),
-            (Engine::OxygenNotIncluded, ONI_EXE)
-        );
-        let d = draft_manual(
-            root,
-            "Oxygen Not Included",
-            &found.exe,
-            &found,
-            LoaderSetup::Generic,
-            None,
-        )
-        .unwrap();
-        assert_eq!(
-            d.def.folders.get(USER_FOLDER).map(String::as_str),
-            Some("%DOCUMENTS%/Klei/OxygenNotIncluded")
-        );
-        let p = d.def.plugins.as_ref().unwrap();
-        assert_eq!(
-            (p.list.as_str(), p.format, p.folder.as_str()),
-            (
-                "%DOCUMENTS%/Klei/OxygenNotIncluded/mods/mods.json",
-                PluginListFormat::OniJson,
-                "@user/mods/Local"
-            )
-        );
-        assert!(d.notes.iter().any(|n| n.key == "oni"));
-        assert!(!d.notes.iter().any(|n| n.key == "generic-unity"));
-        assert!(d.def.protect.contains(&"UnityPlayer.dll".to_string()));
-        let c = d.def.compile().unwrap();
-        let mapped = c
-            .map_mod_file("tweaks", &crate::RelPath::parse("Tweaks.dll").unwrap())
-            .unwrap()
-            .map(|t| t.to_string());
-        assert_eq!(
-            mapped.as_deref(),
-            Some("@user/mods/Local/tweaks/Tweaks.dll")
-        );
-        let back = GameDef::parse_game(&to_toml(&d), Path::new("game.toml"), "oni").unwrap();
-        assert_eq!(back.plugins, d.def.plugins);
-    }
-
-    #[test]
-    fn kenshi_mods_get_a_folder_each_and_are_listed_in_its_mods_cfg() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        touch(&root.join("kenshi_x64.exe"), 100);
-        touch(&root.join("data/gamedata.base"), 10);
-        let found = inspect_folder(root);
-        let d = draft_manual(
-            root,
-            "Kenshi",
-            &found.exe,
-            &found,
-            LoaderSetup::Generic,
-            None,
-        )
-        .unwrap();
-        let p = d.def.plugins.as_ref().unwrap();
-        assert_eq!(
-            (p.list.as_str(), p.format, p.folder.as_str()),
-            ("data/mods.cfg", PluginListFormat::KenshiCfg, "mods")
-        );
-        assert!(d
-            .notes
-            .iter()
-            .any(|n| n.key == "plugins" && n.text.starts_with("Kenshi")));
-        assert!(!d.notes.iter().any(|n| n.key == "unknown-engine"));
-        assert_eq!(d.def.install[0].target, "mods/{mod}/");
-        let back = GameDef::parse_game(&to_toml(&d), Path::new("game.toml"), "kenshi").unwrap();
-        assert_eq!(back.plugins, d.def.plugins);
-        let again = back
-            .with_setup(LoaderSetup::Bepinex, None)
-            .unwrap()
-            .with_setup(LoaderSetup::Generic, None)
-            .unwrap();
-        assert_eq!(again.install[0].target, "mods/{mod}/");
-    }
-
-    #[test]
     fn gamemaker_games_are_recognised_by_their_data_file() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
@@ -1949,114 +771,9 @@ mod tests {
         )
         .unwrap();
         assert!(d.notes.iter().any(|n| n.key == "gamemaker"));
+        assert_eq!(found.game, None);
         assert!(!d.notes.iter().any(|n| n.key == "unknown-engine"));
         assert_eq!(d.def.install[0].target, "");
-    }
-
-    #[test]
-    fn bannerlord_modules_get_a_folder_each() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        touch(&root.join(BANNERLORD_EXE), 100);
-        touch(
-            &root.join("bin/Win64_Shipping_Client/TaleWorlds.MountAndBlade.Launcher.exe"),
-            50,
-        );
-        touch(&root.join("Modules/Native/SubModule.xml"), 10);
-        let found = inspect_folder(root);
-        assert_eq!(
-            (found.engine, found.exe.as_str()),
-            (Engine::Bannerlord, BANNERLORD_EXE)
-        );
-        let d = draft_manual(
-            root,
-            "Bannerlord",
-            &found.exe,
-            &found,
-            LoaderSetup::Generic,
-            None,
-        )
-        .unwrap();
-        assert_eq!(d.def.bannerlord.as_ref().unwrap().folder, "Modules");
-        assert_eq!(d.def.install[0].target, "Modules/{mod}/");
-        assert!(d.notes.iter().any(|n| n.key == "bannerlord"));
-        let back = GameDef::parse_game(&to_toml(&d), Path::new("game.toml"), "mb2").unwrap();
-        assert_eq!(back.bannerlord, d.def.bannerlord);
-        let again = back
-            .with_setup(LoaderSetup::Bepinex, None)
-            .unwrap()
-            .with_setup(LoaderSetup::Generic, None)
-            .unwrap();
-        assert_eq!(again.install[0].target, "Modules/{mod}/");
-    }
-
-    #[test]
-    fn xcom_2_mods_go_to_war_of_the_chosen_when_it_is_there() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        touch(&root.join(XCOM2_EXE), 100);
-        touch(&root.join("Binaries/Win64/Launcher/ModLauncherWPF.exe"), 50);
-        let base = inspect_folder(root);
-        assert_eq!((base.engine, base.exe.as_str()), (Engine::Xcom2, XCOM2_EXE));
-        let d = draft_manual(root, "XCOM 2", &base.exe, &base, LoaderSetup::Generic, None).unwrap();
-        let p = d.def.plugins.as_ref().unwrap();
-        assert_eq!(
-            (p.list.as_str(), p.format, p.folder.as_str()),
-            (
-                "%DOCUMENTS%/My Games/XCOM2/XComGame/Config/XComModOptions.ini",
-                PluginListFormat::XcomIni,
-                "XComGame/Mods"
-            )
-        );
-        assert_eq!(d.def.install[0].target, "XComGame/Mods/{mod}/");
-
-        touch(&root.join(XCOM2_WOTC_EXE), 100);
-        let wotc = inspect_folder(root);
-        assert_eq!(wotc.exe, XCOM2_WOTC_EXE);
-        let d = draft_manual(root, "XCOM 2", &wotc.exe, &wotc, LoaderSetup::Generic, None).unwrap();
-        let p = d.def.plugins.as_ref().unwrap();
-        assert_eq!(
-            (p.list.as_str(), p.folder.as_str()),
-            (
-                "%DOCUMENTS%/My Games/XCOM2 War of the Chosen/XComGame/Config/XComModOptions.ini",
-                "XCom2-WarOfTheChosen/XComGame/Mods"
-            )
-        );
-        assert_eq!(
-            d.def.install[0].target,
-            "XCom2-WarOfTheChosen/XComGame/Mods/{mod}/"
-        );
-        assert!(d
-            .notes
-            .iter()
-            .any(|n| n.key == "xcom2" && n.text.contains("War of the Chosen")));
-        let back = GameDef::parse_game(&to_toml(&d), Path::new("game.toml"), "xcom2").unwrap();
-        assert_eq!(back.plugins, d.def.plugins);
-    }
-
-    #[test]
-    fn crusader_kings_ii_lists_its_mods_in_its_settings() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        touch(&root.join("CK2game.exe"), 100);
-        let found = inspect_folder(root);
-        assert_eq!(
-            (found.engine, found.exe.as_str()),
-            (Engine::Clausewitz, "CK2game.exe")
-        );
-        let d = draft_manual(root, "CK2", &found.exe, &found, LoaderSetup::Generic, None).unwrap();
-        assert_eq!(
-            d.def.folders.get(USER_FOLDER).map(String::as_str),
-            Some("%DOCUMENTS%/Paradox Interactive/Crusader Kings II")
-        );
-        assert_eq!(d.def.paradox.as_ref().unwrap().list, ParadoxList::Settings);
-        assert_eq!(d.def.launch.as_ref().unwrap().args, ["-skiplauncher"]);
-        let note = d.notes.iter().find(|n| n.key == "paradox").unwrap();
-        assert!(note.text.contains("settings.txt"), "{}", note.text);
-        let text = to_toml(&d);
-        assert!(text.contains("list = \"settings\""), "{text}");
-        let back = GameDef::parse_game(&text, Path::new("game.toml"), "ck2").unwrap();
-        assert_eq!(back.paradox, d.def.paradox);
     }
 
     #[test]
@@ -2105,195 +822,6 @@ mod tests {
             ["Trip.exe", "Trip-Win64-Shipping.exe"],
             "the launcher and the real exe it hands off to"
         );
-
-        // Bethesda games get their plugin list, recognised by their exe.
-        let exe = |e: &str| list_game(&[e.to_string()]).unwrap();
-        let steam = tempfile::tempdir().unwrap();
-        let sse = exe("SkyrimSE.exe").plugins(steam.path());
-        assert_eq!(
-            (sse.list.as_str(), sse.format, sse.folder.as_str()),
-            (
-                "%LOCALAPPDATA%/Skyrim Special Edition/plugins.txt",
-                PluginListFormat::Asterisk,
-                "Data"
-            )
-        );
-        // Any edition, regional ones included, has the exe; case does not matter.
-        let exes = vec![
-            "FalloutNVLauncher.exe".to_string(),
-            "falloutnv.exe".to_string(),
-        ];
-        let nv = list_game(&exes).unwrap();
-        assert_eq!(
-            (nv.list, nv.format),
-            (ListAt::LocalAppData("FalloutNV"), PluginListFormat::Plain)
-        );
-        let vr = vec!["Fallout4VR.exe".to_string(), "Fallout4.exe".to_string()];
-        assert_eq!(
-            list_game(&vr).unwrap().list,
-            ListAt::LocalAppData("Fallout4VR")
-        );
-        assert!(list_game(&["Game.exe".to_string(), "bin/SkyrimSE.exe".to_string()]).is_none());
-        let fo4 = exe("Fallout4.exe").ini();
-        assert_eq!(fo4.len(), 3);
-        assert!(
-            !fo4[0].create && fo4[1].create,
-            "Prefs is the game's own; Custom is overrides"
-        );
-        assert_eq!(
-            fo4[1].file,
-            "%DOCUMENTS%/My Games/Fallout4/Fallout4Custom.ini"
-        );
-        let sf = exe("Starfield.exe").ini();
-        assert_eq!(
-            (sf[0].file.as_str(), sf[1].value.as_str()),
-            ("%DOCUMENTS%/My Games/Starfield/StarfieldCustom.ini", "")
-        );
-        assert!(exe("SkyrimSE.exe").ini().is_empty());
-
-        // Other stores' editions keep their list elsewhere, told apart by a file of theirs.
-        let gog = tempfile::tempdir().unwrap();
-        touch(&gog.path().join("Galaxy64.dll"), 1);
-        assert_eq!(
-            exe("SkyrimSE.exe").plugins(gog.path()).list,
-            "%LOCALAPPDATA%/Skyrim Special Edition GOG/plugins.txt"
-        );
-        let epic = tempfile::tempdir().unwrap();
-        touch(&epic.path().join("EOSSDK-Win32-Shipping.dll"), 1);
-        assert_eq!(
-            exe("FalloutNV.exe").plugins(epic.path()).list,
-            "%LOCALAPPDATA%/FalloutNV_Epic/plugins.txt"
-        );
-        // Oblivion's list moves to its own folder when its ini says not to use My Games.
-        let c = exe("Oblivion.exe")
-            .plugins(gog.path())
-            .in_game_folder_when
-            .unwrap();
-        assert_eq!(
-            (c.ini.as_str(), c.key.as_str(), c.value.as_str()),
-            ("Oblivion.ini", "bUseMyGamesDirectory", "0")
-        );
-        assert!(exe("SkyrimSE.exe")
-            .plugins(gog.path())
-            .in_game_folder_when
-            .is_none());
-        // GOG's Fallout 4 uses the same folder as Steam's.
-        assert_eq!(
-            exe("Fallout4.exe").plugins(gog.path()).list,
-            "%LOCALAPPDATA%/Fallout4/plugins.txt"
-        );
-
-        // A game added by hand (a GOG install, say) is recognised the same way.
-        let manual = tempfile::tempdir().unwrap();
-        touch(&manual.path().join("FalloutNV.exe"), 100);
-        touch(&manual.path().join("FalloutNVLauncher.exe"), 10);
-        touch(&manual.path().join("Data/FalloutNV.esm"), 1);
-        let found = inspect_folder(manual.path());
-        let d = draft_manual(
-            manual.path(),
-            "New Vegas",
-            "FalloutNV.exe",
-            &found,
-            LoaderSetup::Generic,
-            None,
-        )
-        .unwrap();
-        assert_eq!(
-            d.def.plugins.as_ref().unwrap().list,
-            "%LOCALAPPDATA%/FalloutNV/plugins.txt"
-        );
-        // Its launcher, which Steam starts first, is followed too.
-        assert_eq!(
-            d.def.launch.as_ref().unwrap().process_names,
-            ["FalloutNV.exe", "FalloutNVLauncher.exe"]
-        );
-        // Recognised by its data folder, which plugins, archives and assets go to.
-        assert_eq!(found.engine, Engine::Bethesda);
-        assert_eq!(found.data_folder.as_deref(), Some("Data"));
-        let c = d.def.compile().unwrap();
-        let map = |p: &str| {
-            c.map_mod_file("m", &crate::RelPath::parse(p).unwrap())
-                .unwrap()
-                .unwrap()
-                .to_string()
-        };
-        assert_eq!(map("Mod.esp"), "Data/Mod.esp");
-        assert_eq!(map("Mod - Main.bsa"), "Data/Mod - Main.bsa");
-        assert_eq!(map("meshes/a/b.nif"), "Data/meshes/a/b.nif");
-        assert_eq!(map("nvse/plugins/x.dll"), "Data/nvse/plugins/x.dll");
-        assert_eq!(map("src/nvse/x.cpp"), "src/nvse/x.cpp");
-        assert_eq!(map("nvse/x.cpp"), "nvse/x.cpp");
-        assert_eq!(map("Data/textures/t.dds"), "Data/textures/t.dds");
-        assert_eq!(map("nvse_loader.exe"), "nvse_loader.exe");
-        assert_eq!(map("sub/Mod.esp"), "sub/Mod.esp");
-        assert!(d.notes.iter().any(|n| n.key == "bethesda"));
-        // Set to generic again from another setup, the rules come back.
-        let other = d
-            .def
-            .with_setup(LoaderSetup::Bepinex, None)
-            .unwrap()
-            .with_setup(LoaderSetup::Generic, None)
-            .unwrap();
-        assert_eq!(other.install.len(), d.def.install.len());
-        // Morrowind's is `Data Files`.
-        let mw_dir = tempfile::tempdir().unwrap();
-        touch(&mw_dir.path().join("Morrowind.exe"), 100);
-        touch(&mw_dir.path().join("Data Files/Morrowind.esm"), 1);
-        let mw_found = inspect_folder(mw_dir.path());
-        assert_eq!(mw_found.data_folder.as_deref(), Some("Data Files"));
-
-        // Other games keeping a list: in the game folder, or with a folder per mod.
-        let or = exe("OblivionRemastered.exe").plugins(manual.path());
-        assert_eq!(
-            (or.list.as_str(), or.folder.as_str(), or.format),
-            (
-                "OblivionRemastered/Content/Dev/ObvData/Data/Plugins.txt",
-                "OblivionRemastered/Content/Dev/ObvData/Data",
-                PluginListFormat::Plain
-            )
-        );
-        assert_eq!(
-            or.list_path(Path::new("C:/g"), &crate::PathVars::default()),
-            Some(PathBuf::from(
-                "C:/g/OblivionRemastered/Content/Dev/ObvData/Data/Plugins.txt"
-            ))
-        );
-        let mw = exe("Morrowind.exe").plugins(manual.path());
-        assert_eq!(
-            (mw.list.as_str(), mw.folder.as_str(), mw.format),
-            (
-                "Morrowind.ini",
-                "Data Files",
-                PluginListFormat::MorrowindIni
-            )
-        );
-        let rim = tempfile::tempdir().unwrap();
-        touch(&rim.path().join("RimWorldWin64.exe"), 100);
-        touch(&rim.path().join("RimWorldWin64_Data/x"), 1);
-        touch(&rim.path().join("UnityPlayer.dll"), 1);
-        let found = inspect_folder(rim.path());
-        let d = draft_manual(
-            rim.path(),
-            "RimWorld",
-            "RimWorldWin64.exe",
-            &found,
-            LoaderSetup::Generic,
-            None,
-        )
-        .unwrap();
-        let p = d.def.plugins.as_ref().unwrap();
-        assert_eq!(
-            (p.format, p.folder.as_str()),
-            (PluginListFormat::RimworldXml, "Mods")
-        );
-        assert!(p.list.ends_with("/Config/ModsConfig.xml"));
-        assert_eq!(
-            d.def.install.last().unwrap().target,
-            "Mods/{mod}/",
-            "a folder per mod"
-        );
-        let text = to_toml(&d);
-        GameDef::parse_game(&text, Path::new("game.toml"), &d.def.id).unwrap();
 
         let plain = draft_for(&apps, 1004);
         assert_eq!(plain.engine, Engine::Unknown);

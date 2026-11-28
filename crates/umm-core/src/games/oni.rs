@@ -228,6 +228,140 @@ pub fn mod_folder<'a>(target: &'a str, prefix: &str) -> Option<&'a str> {
     (!dir.is_empty()).then_some(dir)
 }
 
+pub(crate) struct Oni;
+
+impl crate::games::plugins::ModList for Oni {
+    fn kind(&self) -> &'static str {
+        "mods"
+    }
+
+    fn read(&self, text: &str) -> Vec<PluginEntry> {
+        read(text)
+    }
+
+    fn render(&self, original: &str, entries: &[PluginEntry]) -> String {
+        render(original, entries)
+    }
+
+    /// A folder each, known by its name.
+    fn entries<'a>(
+        &self,
+        files: &'a [umm_deploy::PlannedFile],
+        folder: &umm_gamedef::RelPath,
+    ) -> Vec<(&'a str, String)> {
+        let prefix = format!("{}/", folder.as_str());
+        files
+            .iter()
+            .filter_map(|f| {
+                Some((
+                    f.owner.as_str(),
+                    mod_folder(f.target.as_str(), &prefix)?.to_string(),
+                ))
+            })
+            .collect()
+    }
+
+    /// Steam Workshop items are listed as `<id>.Steam`, once the game has listed them.
+    fn workshop_toggle(&self, item: &str) -> Option<String> {
+        Some(format!("{item}.Steam"))
+    }
+}
+
+/// Oxygen Not Included's exe, at the top of its folder.
+pub const ONI_EXE: &str = "OxygenNotIncluded.exe";
+
+/// Its user folder (its mods in `mods/Local`, their list in `mods/mods.json`).
+const ONI_USER: &str = "%DOCUMENTS%/Klei/OxygenNotIncluded";
+
+impl umm_gamedef::GameKind for Oni {
+    fn key(&self) -> &'static str {
+        "oni"
+    }
+
+    /// A Unity game (`<Name>_Data/` and `UnityPlayer.dll` beside its exe) by its exe's name.
+    fn recognise(
+        &self,
+        root: &std::path::Path,
+        exes: &[String],
+    ) -> Option<umm_gamedef::Recognised> {
+        let exe = exes
+            .iter()
+            .find(|e| !e.contains('/') && e.eq_ignore_ascii_case(ONI_EXE))?;
+        let unity = root
+            .join(format!("{}_Data", &exe[..exe.len() - 4]))
+            .is_dir()
+            && umm_gamedef::kind::has_file_ci(root, "UnityPlayer.dll");
+        unity.then(|| umm_gamedef::Recognised {
+            key: "oni",
+            label: Some("Unity (Mono), Klei's mod loader"),
+            exe: Some(exe.clone()),
+            own_mods: Some(umm_gamedef::BUILT_IN_MODS),
+        })
+    }
+
+    fn shape(
+        &self,
+        _root: &std::path::Path,
+        _found: &umm_gamedef::steam::Inspection,
+        _exe: &str,
+        _setup: umm_gamedef::LoaderSetup,
+    ) -> umm_gamedef::Shape {
+        let mods = format!("@{}/mods/Local", umm_gamedef::steam::USER_FOLDER);
+        umm_gamedef::Shape {
+            notes: vec![umm_gamedef::steam::Note::new(
+                "oni",
+                "Oxygen Not Included: each mod goes in its own folder in \
+                 Documents\\Klei\\OxygenNotIncluded\\mods\\Local, and is enabled in mods.json \
+                 there while mods are deployed (your own list comes back afterwards). The game \
+                 loads mods with its own loader; no BepInEx is needed.",
+            )],
+            protect: vec!["UnityPlayer.dll".into()],
+            user_folder: Some(ONI_USER.to_string()),
+            install: umm_gamedef::kind::mod_folder_rules(&mods),
+            plugins: Some(umm_gamedef::Plugins {
+                list: format!("{ONI_USER}/mods/mods.json"),
+                format: umm_gamedef::PluginListFormat::OniJson,
+                folder: mods,
+                in_game_folder_when: None,
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn applies(&self, def: &umm_gamedef::GameDef) -> bool {
+        def.plugins
+            .as_ref()
+            .is_some_and(|p| p.format == umm_gamedef::PluginListFormat::OniJson)
+    }
+
+    fn own_rules(&self, def: &umm_gamedef::GameDef) -> Vec<umm_gamedef::InstallRule> {
+        umm_gamedef::kind::mod_folder_rules(def.plugins.as_ref().map_or("", |p| p.folder.as_str()))
+    }
+}
+
+impl crate::games::GameIntegration for Oni {
+    fn mod_root(
+        &self,
+        rels: &[umm_gamedef::RelPath],
+        _def: &umm_gamedef::CompiledDef,
+    ) -> Option<Option<umm_store::Placement>> {
+        Some(mod_root(rels))
+    }
+
+    fn workshop(&self) -> crate::workshop::WorkshopControl {
+        crate::workshop::WorkshopControl::Profile
+    }
+}
+
+/// An Oxygen Not Included mod's folder is the one holding its `mod_info.yaml` or `mod.yaml`
+/// (the shallowest: older versions are kept in `archived_versions/`), or else its code.
+fn mod_root(rels: &[umm_gamedef::RelPath]) -> Option<umm_store::Placement> {
+    crate::placement::marked_root(rels, |n| {
+        n.eq_ignore_ascii_case("mod_info.yaml") || n.eq_ignore_ascii_case("mod.yaml")
+    })
+    .or_else(|| crate::placement::marked_root(rels, |n| n.to_ascii_lowercase().ends_with(".dll")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

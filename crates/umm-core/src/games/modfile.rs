@@ -15,16 +15,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use umm_deploy::Plan;
-use umm_gamedef::{CompiledDef, PluginListFormat, RelPath};
-
-/// The extension of the file naming a mod, lower-case, for the games that have one.
-pub fn extension(format: PluginListFormat) -> Option<&'static str> {
-    match format {
-        PluginListFormat::KenshiCfg => Some(".mod"),
-        PluginListFormat::XcomIni => Some(".xcommod"),
-        _ => None,
-    }
-}
+use umm_gamedef::{CompiledDef, RelPath};
 
 /// A mod's file (with extension `ext`) directly in its folder in the mods folder (`prefix`,
 /// ending in `/`): the folder and the file's name, as spelled.
@@ -62,14 +53,17 @@ pub fn mod_in(folder: &Path, ext: &str) -> Option<String> {
 }
 
 impl Session {
-    /// For Kenshi and XCOM 2: each mod's folder in the mods folder named after its file.
-    pub(crate) fn plan_mod_files(&self, def: &CompiledDef, plan: &mut Plan) -> Result<()> {
-        let Some((cfg, ext)) = def
-            .def
-            .plugins
-            .as_ref()
-            .and_then(|p| Some((p, extension(p.format)?)))
-        else {
+    /// For a game naming each mod's folder after the file in it (`ext`, lower-case: Kenshi's
+    /// `.mod`, XCOM 2's `.xcommod`): each mod's folder in the mods folder named so. `what`
+    /// says what the mods are to the game, for a clash.
+    pub(crate) fn plan_mod_files(
+        &self,
+        def: &CompiledDef,
+        plan: &mut Plan,
+        ext: &str,
+        what: &str,
+    ) -> Result<()> {
+        let Some(cfg) = def.def.plugins.as_ref() else {
             return Ok(());
         };
         let prefix = format!("{}/", cfg.folder.trim_matches('/'));
@@ -81,10 +75,6 @@ impl Session {
                     .or_insert_with(|| name_of(file, ext).to_string());
             }
         }
-        let what = match cfg.format {
-            PluginListFormat::XcomIni => "XCOM 2 mod",
-            _ => "Kenshi mod",
-        };
         rename_folders(plan, &prefix, &names, what)
     }
 }
@@ -136,6 +126,15 @@ pub(crate) fn rename_folders(
     }
     plan.files.sort_by_key(|f| f.target.key());
     Ok(())
+}
+
+/// A Kenshi or XCOM 2 mod's folder is the one holding its file (`.mod`, `.XComMod`; the
+/// shallowest).
+pub(crate) fn mod_root(rels: &[RelPath], ext: &str) -> Option<umm_store::Placement> {
+    crate::placement::marked_root(rels, |n| {
+        let n = n.to_ascii_lowercase();
+        n.len() > ext.len() && n.ends_with(ext)
+    })
 }
 
 #[cfg(test)]

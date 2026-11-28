@@ -6,7 +6,7 @@ use std::fs;
 use std::io::{Cursor, Write};
 use std::path::Path;
 use umm_core::{Faults, ImportOptions, LoaderSetup, Session, DEFAULT_PROFILE};
-use umm_gamedef::steam::{draft_manual, inspect_folder, Engine};
+use umm_gamedef::steam::{draft_manual, inspect_folder};
 
 const GAME: &str = "tmodloader";
 
@@ -73,8 +73,10 @@ fn tmod_files_go_to_its_mods_folder_named_after_their_mod() {
     write(&root.join("tModLoader.dll"), b"dll");
     write(&root.join("LaunchUtils/busybox64.exe"), b"exe");
 
+    // Opening a session tells umm-gamedef the games UMM knows.
+    let _session = Session::open(Some(tmp.path().join("session"))).unwrap();
     let found = inspect_folder(&root);
-    assert_eq!(found.engine, Engine::TModLoader);
+    assert_eq!(found.game.as_ref().map(|g| g.key), Some("tmodloader"));
     let draft = draft_manual(
         &root,
         "tModLoader",

@@ -14,7 +14,7 @@
 use crate::{CoreError, Result, Session};
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use umm_deploy::{Plan, PlannedExternal, PlannedFile, PlannedList};
 use umm_gamedef::{CompiledDef, ParadoxList, RelPath};
 use umm_store::fsutil::{hash_file, write_atomic, IoCtx};
@@ -334,9 +334,319 @@ impl Session {
     }
 }
 
+pub(crate) struct Paradox;
+
+impl crate::games::GameIntegration for Paradox {
+    /// Crusader Kings II, on Steam's older Workshop: its user folder's `mod/`.
+    fn workshop_downloads(&self, s: &Session, def: &CompiledDef) -> Option<PathBuf> {
+        let px = def
+            .def
+            .paradox
+            .as_ref()
+            .filter(|p| p.list == ParadoxList::Settings)?;
+        Some(s.resolve_folders(def).ok()?.get(&px.folder)?.join("mod"))
+    }
+
+    /// The descriptor the game wrote for each item, as its mod list names it (`mod/<name>.mod`).
+    fn workshop_downloaded(
+        &self,
+        folder: &Path,
+        items: &BTreeMap<String, crate::workshop::WorkshopDetails>,
+    ) -> BTreeMap<String, String> {
+        workshop_descriptors_in(folder, items)
+    }
+
+    fn mod_root(
+        &self,
+        rels: &[RelPath],
+        def: &CompiledDef,
+    ) -> Option<Option<umm_store::Placement>> {
+        Some(mod_root(rels, def))
+    }
+
+    /// The launcher's `<mod>.mod` beside a mod's folder: UMM writes the game its own.
+    fn is_mod_descriptor(&self, file: &str) -> bool {
+        file.to_ascii_lowercase().ends_with(".mod") && !file.eq_ignore_ascii_case(DESCRIPTOR)
+    }
+
+    fn workshop(&self) -> crate::workshop::WorkshopControl {
+        crate::workshop::WorkshopControl::Profile
+    }
+
+    fn plan(
+        &self,
+        s: &Session,
+        def: &CompiledDef,
+        profile: &umm_store::Profile,
+        plan: &mut Plan,
+    ) -> Result<()> {
+        s.plan_paradox(def, profile, plan)
+    }
+
+    fn launch_args(
+        &self,
+        s: &Session,
+        def: &CompiledDef,
+        profile: &umm_store::Profile,
+        _journal: &umm_deploy::Journal,
+    ) -> Vec<String> {
+        s.paradox_mod_args(def, profile)
+    }
+}
+
+/// A Paradox game: its exe (relative to the game folder) and its user folder's name under
+/// `Documents\\Paradox Interactive`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParadoxGame {
+    pub exe: &'static str,
+    pub user: &'static str,
+    /// Where it lists its enabled mods.
+    pub list: ParadoxList,
+    /// Its exe's arguments to start the game directly.
+    pub args: &'static [&'static str],
+}
+
+/// Paradox games whose mods go in their user folder.
+pub const PARADOX_GAMES: &[ParadoxGame] = &[
+    ParadoxGame {
+        exe: "binaries/ck3.exe",
+        user: "Crusader Kings III",
+        list: ParadoxList::DlcLoad,
+        args: &[],
+    },
+    ParadoxGame {
+        exe: "binaries/victoria3.exe",
+        user: "Victoria 3",
+        list: ParadoxList::DlcLoad,
+        args: &[],
+    },
+    ParadoxGame {
+        exe: "binaries/imperator.exe",
+        user: "Imperator",
+        list: ParadoxList::DlcLoad,
+        args: &[],
+    },
+    ParadoxGame {
+        exe: "stellaris.exe",
+        user: "Stellaris",
+        list: ParadoxList::DlcLoad,
+        args: &[],
+    },
+    ParadoxGame {
+        exe: "hoi4.exe",
+        user: "Hearts of Iron IV",
+        list: ParadoxList::DlcLoad,
+        args: &[],
+    },
+    ParadoxGame {
+        exe: "eu4.exe",
+        user: "Europa Universalis IV",
+        list: ParadoxList::DlcLoad,
+        args: &[],
+    },
+    // Its own launcher, built into the exe, is skipped: the game is then given its mods as
+    // `-mod=` arguments, from `last_mods` in `settings.txt` (what that launcher shows ticked).
+    ParadoxGame {
+        exe: "CK2game.exe",
+        user: "Crusader Kings II",
+        list: ParadoxList::Settings,
+        args: &["-skiplauncher"],
+    },
+];
+
+/// The Paradox game installed in `root`, by its exe.
+pub fn paradox_game(root: &std::path::Path) -> Option<&'static ParadoxGame> {
+    PARADOX_GAMES
+        .iter()
+        .find(|g| umm_gamedef::kind::has_file_ci(root, g.exe))
+}
+
+/// Install rules for a Paradox game: each mod in a folder of its own in the user folder's
+/// `mod/` (named `folder` in the definition's folders).
+pub fn paradox_rules(folder: &str) -> Vec<umm_gamedef::InstallRule> {
+    vec![umm_gamedef::kind::rule(
+        "**",
+        &format!("@{folder}/mod/{{mod}}/"),
+    )]
+}
+
+impl umm_gamedef::GameKind for Paradox {
+    fn key(&self) -> &'static str {
+        "paradox"
+    }
+
+    /// By its exe, often in `binaries/` (the top holds its launcher).
+    fn recognise(
+        &self,
+        root: &std::path::Path,
+        _exes: &[String],
+    ) -> Option<umm_gamedef::Recognised> {
+        let g = paradox_game(root)?;
+        Some(umm_gamedef::Recognised {
+            key: "paradox",
+            label: Some("Clausewitz / Jomini (Paradox)"),
+            exe: Some(g.exe.to_string()),
+            own_mods: Some(umm_gamedef::BUILT_IN_MODS),
+        })
+    }
+
+    fn shape(
+        &self,
+        root: &std::path::Path,
+        _found: &umm_gamedef::steam::Inspection,
+        exe: &str,
+        _setup: umm_gamedef::LoaderSetup,
+    ) -> umm_gamedef::Shape {
+        let Some(g) = paradox_game(root) else {
+            return umm_gamedef::Shape::default();
+        };
+        let (list, launcher) = match g.list {
+            ParadoxList::DlcLoad => (
+                "dlc_load.json",
+                "Paradox's launcher, which would replace the list with its playset",
+            ),
+            ParadoxList::Settings => ("settings.txt", "its launcher"),
+        };
+        umm_gamedef::Shape {
+            notes: vec![umm_gamedef::steam::Note::new(
+                "paradox",
+                format!(
+                    "Paradox game: each mod goes in its own folder in Documents\\Paradox Interactive\\{}\\mod, \
+                     with a descriptor UMM writes, and is enabled in {list} while mods are deployed \
+                     (your own list comes back afterwards). UMM starts the game directly, not through \
+                     {launcher}.",
+                    g.user,
+                ),
+            )],
+            user_folder: Some(format!("%DOCUMENTS%/Paradox Interactive/{}", g.user)),
+            install: paradox_rules(umm_gamedef::steam::USER_FOLDER),
+            paradox: Some(umm_gamedef::Paradox {
+                folder: umm_gamedef::steam::USER_FOLDER.into(),
+                list: g.list,
+            }),
+            args: if exe.eq_ignore_ascii_case(g.exe) {
+                g.args.iter().map(|a| a.to_string()).collect()
+            } else {
+                Vec::new()
+            },
+            // Started through Steam it runs Paradox's launcher, which writes the list of
+            // enabled mods from its playset: started directly instead, Steam running.
+            direct: true,
+            ..Default::default()
+        }
+    }
+
+    fn applies(&self, def: &umm_gamedef::GameDef) -> bool {
+        def.paradox.is_some()
+    }
+
+    fn own_rules(&self, def: &umm_gamedef::GameDef) -> Vec<umm_gamedef::InstallRule> {
+        paradox_rules(
+            def.paradox
+                .as_ref()
+                .map_or(umm_gamedef::steam::USER_FOLDER, |p| p.folder.as_str()),
+        )
+    }
+}
+
+/// A Paradox mod's folder is the one holding its `descriptor.mod` (an archive often has the
+/// launcher's `<mod>.mod` beside it, left out); without one, the folder beside the launcher's
+/// `<mod>.mod` (Crusader Kings II's mods), else wrapper folders are dropped.
+/// The install rules give it a folder of its own in the user folder's `mod/`.
+fn mod_root(rels: &[RelPath], def: &CompiledDef) -> Option<umm_store::Placement> {
+    let root = rels
+        .iter()
+        .filter(|r| {
+            r.file_name()
+                .is_some_and(|n| n.eq_ignore_ascii_case(DESCRIPTOR))
+        })
+        .map(|r| r.parent().unwrap_or_else(RelPath::root))
+        .min_by_key(|r| r.depth())
+        .map(|r| r.as_str().to_string())
+        .or_else(|| crate::placement::launcher_folder(rels))
+        .unwrap_or_else(|| crate::placement::wrapper_chain(rels, def));
+    let p = umm_store::Placement {
+        root,
+        ..Default::default()
+    };
+    (p != umm_store::Placement::default()).then_some(p)
+}
+
+/// The descriptors in `mods` (a game's `mod` folder) of the items Steam names the files of,
+/// by item id, as `mod/<name>.mod`: the one whose `archive` (or `path`) is the item's file.
+/// The game names them after the file, not the item.
+pub(crate) fn workshop_descriptors_in(
+    mods: &Path,
+    items: &BTreeMap<String, crate::workshop::WorkshopDetails>,
+) -> BTreeMap<String, String> {
+    let norm = |s: &str| s.trim().trim_matches('"').replace('\\', "/").to_lowercase();
+    let mut by_file = BTreeMap::new();
+    for e in fs::read_dir(mods).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !name.to_ascii_lowercase().ends_with(".mod") {
+            continue;
+        }
+        let Ok(bytes) = fs::read(e.path()) else {
+            continue;
+        };
+        for line in String::from_utf8_lossy(&bytes).lines() {
+            let Some((k, v)) = line.split_once('=') else {
+                continue;
+            };
+            if matches!(k.trim().to_ascii_lowercase().as_str(), "archive" | "path") {
+                by_file
+                    .entry(norm(v))
+                    .or_insert_with(|| format!("mod/{name}"));
+            }
+        }
+    }
+    items
+        .iter()
+        .filter(|(_, d)| !d.filename.is_empty())
+        .filter_map(|(id, d)| Some((id.clone(), by_file.get(&norm(&d.filename))?.clone())))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_what_the_game_downloaded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mods = tmp.path();
+        // As Crusader Kings II writes them, named after the file, not the item.
+        fs::write(
+            mods.join("sketchycheatmenu.mod.mod"),
+            "name=\"Sketchy Cheat Menu\"\narchive=\"mod/sketchycheatmenu.zip\"\n",
+        )
+        .unwrap();
+        fs::write(mods.join("umm_x.mod"), "name=\"x\"\npath=\"mod/x\"\n").unwrap();
+        let item = |filename: &str| crate::workshop::WorkshopDetails {
+            title: String::new(),
+            description: String::new(),
+            preview_url: None,
+            file_size: 0,
+            time_updated: 0,
+            time_created: 0,
+            subscriptions: 0,
+            favorited: 0,
+            filename: filename.into(),
+            tags: Vec::new(),
+        };
+        let items = BTreeMap::from([
+            ("608738995".to_string(), item("mod/SketchyCheatMenu.zip")),
+            ("2".to_string(), item("mod/elsewhere.zip")),
+            ("3".to_string(), item("")),
+        ]);
+        assert_eq!(
+            workshop_descriptors_in(mods, &items),
+            BTreeMap::from([(
+                "608738995".to_string(),
+                "mod/sketchycheatmenu.mod.mod".to_string()
+            )])
+        );
+    }
 
     #[test]
     fn writes_descriptors_and_the_enabled_list() {
