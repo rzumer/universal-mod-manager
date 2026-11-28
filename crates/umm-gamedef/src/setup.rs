@@ -20,24 +20,31 @@ pub enum LoaderSetup {
     Thunderstore,
     /// BepInEx (5 or 6) through Doorstop, with a pack the user imports as the mod `bepinex`.
     Bepinex,
-    /// No mod loader: mod files are copied into the game folder as they are.
+    /// No loader from Thunderstore or the user: the game's own mod support where it has one
+    /// (or the mod loader it comes with, as tModLoader), else mod files copied into the game
+    /// folder as they are.
     Generic,
 }
 
 /// Mod id of the BepInEx pack in the "BepInEx with your own pack" setup.
 pub const BEPINEX_PACK_MOD: &str = "bepinex";
 
+/// The name of the generic setup for a game with mod support of its own, when that is not a
+/// loader with a name.
+pub const BUILT_IN_MODS: &str = "Built-in mod support";
+
 impl LoaderSetup {
     /// The setup's name. `ts_loader` is the Thunderstore loader kind it uses or would use;
-    /// the Thunderstore setup is named after it ("Shimloader from Thunderstore").
-    pub fn label(self, ts_loader: Option<&str>) -> String {
+    /// the Thunderstore setup is named after it ("Shimloader from Thunderstore"). `own` is the
+    /// game's own mod support (see [`GameDef::own_mods`]), which names the generic setup.
+    pub fn label(self, ts_loader: Option<&str>, own: Option<&str>) -> String {
         match self {
             LoaderSetup::Thunderstore => format!(
                 "{} from Thunderstore",
                 loader_name(ts_loader.unwrap_or(BEPINEX_KIND))
             ),
             LoaderSetup::Bepinex => "BepInEx with your own pack".into(),
-            LoaderSetup::Generic => "Generic (no mod loader)".into(),
+            LoaderSetup::Generic => own.unwrap_or("Generic (no mod loader)").into(),
         }
     }
 }
@@ -324,12 +331,30 @@ impl GameDef {
             .map(|l| l.kind.as_str())
     }
 
+    /// The game's own mod support, used without a loader from Thunderstore or the user: a
+    /// mod loader that comes as a game of its own (tModLoader), or the game's built-in
+    /// support ([`BUILT_IN_MODS`]: a mods folder it reads, a list of mods or plugins it
+    /// loads). `None`: mods are files copied into the game folder.
+    pub fn own_mods(&self) -> Option<&'static str> {
+        match &self.plugins {
+            Some(p) if p.format == crate::PluginListFormat::TmodloaderJson => Some("tModLoader"),
+            Some(_) => Some(BUILT_IN_MODS),
+            None if self.paradox.is_some()
+                || self.larian.is_some()
+                || self.bannerlord.is_some() =>
+            {
+                Some(BUILT_IN_MODS)
+            }
+            None => None,
+        }
+    }
+
     /// The name of the setup in effect, or of the loader when no setup describes it.
     pub fn setup_label(&self) -> String {
         match (self.setup(), &self.loader) {
-            (Some(s), _) => s.label(self.ts_loader()),
+            (Some(s), _) => s.label(self.ts_loader(), self.own_mods()),
             (None, Some(l)) => loader_name(&l.kind).to_string(),
-            (None, None) => LoaderSetup::Generic.label(None),
+            (None, None) => LoaderSetup::Generic.label(None, self.own_mods()),
         }
     }
 

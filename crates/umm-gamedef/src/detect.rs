@@ -89,6 +89,39 @@ fn read_installdir(lib: &Path, app_id: u32) -> Option<String> {
     }
 }
 
+/// The Windows user's folder in a Steam game's Proton prefix,
+/// `steamapps/compatdata/<app id>/pfx/drive_c/users/steamuser`: in the library the game is
+/// installed in (`install`, in its `steamapps/common`), else in another of `libraries`.
+/// `None` when it has none (run natively, or not started yet).
+pub fn proton_user_in(
+    app_id: u32,
+    install: Option<&Path>,
+    libraries: &[PathBuf],
+) -> Option<PathBuf> {
+    let own = install
+        .and_then(Path::parent)
+        .filter(|c| c.file_name().is_some_and(|n| n == "common"))
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .map(Path::to_path_buf);
+    own.into_iter()
+        .chain(libraries.iter().cloned())
+        .map(|lib| {
+            lib.join("steamapps/compatdata")
+                .join(app_id.to_string())
+                .join("pfx/drive_c/users/steamuser")
+        })
+        .find(|p| p.is_dir())
+}
+
+/// [`proton_user_in`] the Steam libraries. Never on Windows, where games run as they are.
+pub fn proton_user(app_id: u32, install: Option<&Path>) -> Option<PathBuf> {
+    if cfg!(windows) {
+        return None;
+    }
+    proton_user_in(app_id, install, &steam_libraries())
+}
+
 pub fn steam_libraries() -> Vec<PathBuf> {
     let mut libs: Vec<PathBuf> = Vec::new();
     let mut seen: Vec<PathBuf> = Vec::new();
@@ -188,4 +221,27 @@ pub fn read_registry_string(spec: &str) -> Option<String> {
 #[cfg(not(windows))]
 pub fn read_registry_string(_spec: &str) -> Option<String> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_prefix_is_in_the_games_library_else_another() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, b) = (tmp.path().join("a"), tmp.path().join("b"));
+        let install = a.join("steamapps/common/Game");
+        let user = |lib: &Path| lib.join("steamapps/compatdata/42/pfx/drive_c/users/steamuser");
+        let libs = [a.clone(), b.clone()];
+        assert_eq!(proton_user_in(42, Some(&install), &libs), None);
+        fs::create_dir_all(user(&b)).unwrap();
+        assert_eq!(proton_user_in(42, Some(&install), &libs), Some(user(&b)));
+        fs::create_dir_all(user(&a)).unwrap();
+        assert_eq!(
+            proton_user_in(42, Some(&install), &[b.clone()]),
+            Some(user(&a))
+        );
+        assert_eq!(proton_user_in(7, Some(&install), &libs), None);
+    }
 }

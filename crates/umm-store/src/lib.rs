@@ -114,12 +114,13 @@ pub struct DataDir {
 }
 
 impl DataDir {
-    /// `UMM_DATA` if set, otherwise `%APPDATA%\umm` (or the platform's config folder).
+    /// `UMM_DATA` if set, otherwise `umm` in the platform's data folder: `%APPDATA%\umm` on
+    /// Windows, `~/.local/share/umm` (`$XDG_DATA_HOME`) on Linux.
     pub fn default_root() -> PathBuf {
         if let Some(p) = std::env::var_os("UMM_DATA") {
             return PathBuf::from(p);
         }
-        dirs::config_dir()
+        dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("umm")
     }

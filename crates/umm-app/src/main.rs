@@ -120,6 +120,8 @@ macro_rules! umm_handlers {
         ]
     };
 }
+// For the tests' mock app.
+#[cfg(test)]
 pub(crate) use umm_handlers;
 
 use std::sync::atomic::{AtomicBool, Ordering};

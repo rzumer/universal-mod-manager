@@ -10,9 +10,9 @@ pub mod setup;
 pub mod steam;
 pub mod vdf;
 
-pub use detect::{detect_install, Detected};
+pub use detect::{detect_install, proton_user, Detected};
 pub use relpath::{RelPath, RelPathError};
-pub use setup::{Community, LoaderSetup};
+pub use setup::{Community, LoaderSetup, BUILT_IN_MODS};
 
 use globset::{GlobBuilder, GlobMatcher, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
@@ -416,12 +416,12 @@ pub const DATA_DIRS: &[&str] = &[
 pub const EXTENDER_DIRS: &[&str] = &["fose", "nvse", "obse", "skse", "f4se", "sfse"];
 
 impl Plugins {
-    /// The list file's path, with variables filled in (see [`expand_path`]), or in the game
-    /// folder `root` when relative. `None` when a variable is not set.
-    pub fn list_path(&self, root: &Path) -> Option<PathBuf> {
+    /// The list file's path, with variables filled in (see [`expand_path_with`]), or in the
+    /// game folder `root` when relative. `None` when a variable is not set.
+    pub fn list_path(&self, root: &Path, vars: &PathVars) -> Option<PathBuf> {
         match self.relative_list() {
             Some(r) => Some(r.to_path(root)),
-            None => expand_path(&self.list),
+            None => expand_path_with(&self.list, vars),
         }
     }
 
@@ -450,10 +450,64 @@ pub struct IniSetting {
     pub create: bool,
 }
 
+/// What a game's path variables stand for: the system's own, or, for a Windows game run
+/// through Proton, its prefix's.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PathVars {
+    /// The Windows user's folder in the game's prefix (`…/pfx/drive_c/users/steamuser`).
+    pub prefix_user: Option<PathBuf>,
+}
+
+impl PathVars {
+    /// The variables of a game whose prefix has this Windows user folder.
+    pub fn in_prefix(user: PathBuf) -> Self {
+        PathVars {
+            prefix_user: Some(user),
+        }
+    }
+
+    /// What `name` stands for in the prefix, for the Windows folders a game looks up there;
+    /// `None` for any other variable, or without a prefix.
+    fn in_prefix_var(&self, name: &str) -> Option<Option<PathBuf>> {
+        let user = self.prefix_user.as_ref()?;
+        let sub = match name.to_ascii_uppercase().as_str() {
+            "DOCUMENTS" => {
+                // Older prefixes spell it so.
+                let older = user.join("My Documents");
+                let docs = user.join("Documents");
+                return Some(Some(if !docs.is_dir() && older.is_dir() {
+                    older
+                } else {
+                    docs
+                }));
+            }
+            "USERPROFILE" => return Some(Some(user.clone())),
+            "APPDATA" => "AppData/Roaming",
+            "LOCALAPPDATA" => "AppData/Local",
+            // `drive_c/users/<user>` → `drive_c/ProgramData`.
+            "PROGRAMDATA" => {
+                return Some(
+                    user.parent()
+                        .and_then(Path::parent)
+                        .map(|c| c.join("ProgramData")),
+                )
+            }
+            _ => return None,
+        };
+        Some(Some(user.join(sub)))
+    }
+}
+
 /// A path written with variables: `%NAME%` for an environment variable, and `%DOCUMENTS%`
 /// for the user's Documents folder (wherever Windows keeps it). `None` when a variable is not
 /// set or the result is not an absolute path.
 pub fn expand_path(s: &str) -> Option<PathBuf> {
+    expand_path_with(s, &PathVars::default())
+}
+
+/// [`expand_path`], with the Windows folders (`%DOCUMENTS%`, `%APPDATA%`, `%LOCALAPPDATA%`,
+/// `%USERPROFILE%`, `%PROGRAMDATA%`) in the game's prefix when `vars` has one.
+pub fn expand_path_with(s: &str, vars: &PathVars) -> Option<PathBuf> {
     let mut out = String::new();
     let mut rest = s;
     while let Some(i) = rest.find('%') {
@@ -461,7 +515,9 @@ pub fn expand_path(s: &str) -> Option<PathBuf> {
         let after = &rest[i + 1..];
         let j = after.find('%')?;
         let name = &after[..j];
-        let value = if name.eq_ignore_ascii_case("DOCUMENTS") {
+        let value = if let Some(v) = vars.in_prefix_var(name) {
+            v?.display().to_string()
+        } else if name.eq_ignore_ascii_case("DOCUMENTS") {
             dirs::document_dir()?.display().to_string()
         } else {
             std::env::var(name).ok()?
@@ -1206,7 +1262,8 @@ impl GameDef {
 fn glob(pattern: &str) -> Result<globset::Glob, GameDefError> {
     GlobBuilder::new(pattern)
         .literal_separator(true)
-        .case_insensitive(cfg!(windows))
+        // Mods are made for Windows, which ignores case.
+        .case_insensitive(true)
         .build()
         .map_err(|source| GameDefError::Glob {
             pattern: pattern.to_string(),
@@ -1315,6 +1372,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn windows_folders_are_in_the_prefix_for_a_game_under_proton() {
+        let tmp = tempfile::tempdir().unwrap();
+        let user = tmp.path().join("pfx/drive_c/users/steamuser");
+        let vars = PathVars::in_prefix(user.clone());
+        let at = |s: &str| expand_path_with(s, &vars).unwrap();
+        assert_eq!(
+            at("%LOCALAPPDATA%/Fallout3/plugins.txt"),
+            user.join("AppData/Local").join("Fallout3/plugins.txt")
+        );
+        assert_eq!(at("%APPDATA%/x"), user.join("AppData/Roaming").join("x"));
+        assert_eq!(at("%USERPROFILE%/x"), user.join("x"));
+        assert_eq!(
+            at("%PROGRAMDATA%/x"),
+            tmp.path().join("pfx/drive_c/ProgramData").join("x")
+        );
+        assert_eq!(at("%DOCUMENTS%/x"), user.join("Documents").join("x"));
+        // An older prefix's Documents.
+        std::fs::create_dir_all(user.join("My Documents")).unwrap();
+        assert_eq!(at("%DOCUMENTS%/x"), user.join("My Documents").join("x"));
+    }
+
+    // Elsewhere these are not set, unless in a prefix.
+    #[test]
+    #[cfg(windows)]
     fn expanded_paths_read_as_the_system_writes_them() {
         let p = expand_path("%LOCALAPPDATA%/Fallout3/plugins.txt").unwrap();
         assert!(p.ends_with("Fallout3/plugins.txt"));

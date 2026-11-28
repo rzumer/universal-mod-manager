@@ -209,7 +209,7 @@ impl Session {
         if def.def.bannerlord.is_none() {
             return Vec::new();
         }
-        let selection = umm_gamedef::expand_path(LAUNCHER_DATA)
+        let selection = umm_gamedef::expand_path_with(LAUNCHER_DATA, &self.path_vars(&def.def))
             .and_then(|p| fs::read(p).ok())
             .map(|b| launcher_selection(&String::from_utf8_lossy(&b)))
             .unwrap_or_default();

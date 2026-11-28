@@ -381,9 +381,10 @@ impl Session {
             return Ok(None);
         };
         let root = self.install_path(&def.def)?.map(|(r, _)| r);
+        let vars = self.path_vars(&def.def);
         let path = match (&root, cfg.relative_list()) {
-            (Some(r), _) => cfg.list_path(r),
-            (None, None) => cfg.list_path(Path::new("")),
+            (Some(r), _) => cfg.list_path(r, &vars),
+            (None, None) => cfg.list_path(Path::new(""), &vars),
             (None, Some(_)) => None,
         };
         let Some(mut path) = path else {
@@ -642,11 +643,12 @@ impl Session {
 
     /// The game's ini settings, planned for a deploy.
     pub(crate) fn plan_ini(&self, def: &CompiledDef) -> Result<Vec<umm_deploy::PlannedIni>> {
+        let vars = self.path_vars(&def.def);
         def.def
             .ini
             .iter()
             .map(|s| {
-                let path = umm_gamedef::expand_path(&s.file).ok_or_else(|| {
+                let path = umm_gamedef::expand_path_with(&s.file, &vars).ok_or_else(|| {
                     crate::CoreError::Invalid(format!(
                         "cannot find {}: [[ini]] file needs an absolute path, and its variables set",
                         s.file

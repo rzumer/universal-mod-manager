@@ -264,6 +264,25 @@ pub struct Inspection {
     pub larian: Option<&'static LarianGame>,
 }
 
+impl Inspection {
+    /// The game's own mod support, as [`GameDef::own_mods`] will say for its draft.
+    pub fn own_mods(&self) -> Option<&'static str> {
+        match self.engine {
+            Engine::TModLoader => Some("tModLoader"),
+            Engine::Factorio | Engine::OxygenNotIncluded | Engine::Xcom2 | Engine::Bannerlord => {
+                Some(crate::BUILT_IN_MODS)
+            }
+            _ if self.paradox.is_some()
+                || self.larian.is_some()
+                || list_game(&self.exes).is_some() =>
+            {
+                Some(crate::BUILT_IN_MODS)
+            }
+            _ => None,
+        }
+    }
+}
+
 /// A Paradox game: its exe (relative to the game folder) and its user folder's name under
 /// `Documents\Paradox Interactive`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -957,6 +976,8 @@ pub fn draft_from(
     };
     let mut draft = build(origin, found, &found.exe, setup, community)?;
     add_list_game(&mut draft, &app.path, found);
+    // The setup was offered by this name before the draft was made.
+    debug_assert_eq!(found.own_mods(), draft.def.own_mods(), "{}", draft.def.name);
     Ok(draft)
 }
 
@@ -995,6 +1016,8 @@ pub fn draft_manual(
     };
     let mut draft = build(origin, found, exe, setup, community)?;
     add_list_game(&mut draft, folder, found);
+    // The setup was offered by this name before the draft was made.
+    debug_assert_eq!(found.own_mods(), draft.def.own_mods(), "{}", draft.def.name);
     Ok(draft)
 }
 
@@ -1543,6 +1566,8 @@ mod tests {
         assert_eq!(d.def.install.len(), 1);
         assert_eq!(d.def.install[0].target, "@user/mod/{mod}/");
         assert!(d.notes.iter().any(|n| n.key == "paradox"));
+        assert_eq!(found.own_mods(), Some(crate::BUILT_IN_MODS));
+        assert_eq!(d.def.setup_label(), crate::BUILT_IN_MODS);
         // Reloads as written, and back to generic keeps the rule.
         let text = to_toml(&d);
         let back = GameDef::parse_game(&text, Path::new("game.toml"), "ck3").unwrap();
@@ -1577,6 +1602,9 @@ mod tests {
         )
         .unwrap();
         assert!(d.notes.iter().any(|n| n.key == "tmodloader"));
+        // Named after its loader, before and after it is drafted.
+        assert_eq!(found.own_mods(), Some("tModLoader"));
+        assert_eq!(d.def.setup_label(), "tModLoader");
         assert_eq!(
             d.def.folders.get(USER_FOLDER).map(String::as_str),
             Some(TML_USER)
@@ -2225,7 +2253,7 @@ mod tests {
             )
         );
         assert_eq!(
-            or.list_path(Path::new("C:/g")),
+            or.list_path(Path::new("C:/g"), &crate::PathVars::default()),
             Some(PathBuf::from(
                 "C:/g/OblivionRemastered/Content/Dev/ObvData/Data/Plugins.txt"
             ))

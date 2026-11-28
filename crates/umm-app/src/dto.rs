@@ -443,6 +443,10 @@ pub enum SessionEvent {
         loader: String,
         started_steam: bool,
     },
+    Proton {
+        game: String,
+        notes: Vec<String>,
+    },
     WaitingForGame {
         game: String,
     },
@@ -496,6 +500,7 @@ impl SessionEvent {
                 loader,
                 started_steam,
             },
+            LaunchEvent::Proton { notes } => SessionEvent::Proton { game, notes },
             LaunchEvent::WaitingForGame => SessionEvent::WaitingForGame { game },
             LaunchEvent::GameDetected => SessionEvent::GameDetected { game },
             LaunchEvent::Exited { code } => SessionEvent::Exited { game, code },
@@ -552,13 +557,14 @@ pub struct SetupOption {
     pub label: String,
 }
 
-/// `ts_loader`: the Thunderstore loader kind the Thunderstore setup would use.
-fn options(setups: &[LoaderSetup], ts_loader: Option<&str>) -> Vec<SetupOption> {
+/// `ts_loader`: the Thunderstore loader kind the Thunderstore setup would use; `own`: the
+/// game's own mod support, which names the generic setup.
+fn options(setups: &[LoaderSetup], ts_loader: Option<&str>, own: Option<&str>) -> Vec<SetupOption> {
     setups
         .iter()
         .map(|&value| SetupOption {
             value,
-            label: value.label(ts_loader),
+            label: value.label(ts_loader, own),
         })
         .collect()
 }
@@ -587,7 +593,7 @@ impl From<umm_core::SteamCandidate> for SteamGameDto {
             defined_as: c.defined_as,
             community: c.community,
             other_loader: c.other_loader,
-            setups: options(&c.setups, c.ts_loader.as_deref()),
+            setups: options(&c.setups, c.ts_loader.as_deref(), c.own_mods),
         }
     }
 }
@@ -631,7 +637,7 @@ impl From<umm_core::FolderInfo> for FolderInfoDto {
             exes: f.exes,
             community: f.community,
             other_loader: f.other_loader,
-            setups: options(&f.setups, f.ts_loader.as_deref()),
+            setups: options(&f.setups, f.ts_loader.as_deref(), f.own_mods),
             steam_app_id: f.steam_app.as_ref().map(|s| s.0),
             steam_name: f.steam_app.map(|s| s.1),
         }
@@ -655,9 +661,9 @@ impl From<LoaderChoice> for LoaderChoiceDto {
             current: c.current,
             current_label: c
                 .current
-                .map(|s| s.label(c.ts_loader.as_deref()))
+                .map(|s| s.label(c.ts_loader.as_deref(), c.own_mods))
                 .unwrap_or_else(|| "Set by hand in game.toml".into()),
-            available: options(&c.available, c.ts_loader.as_deref()),
+            available: options(&c.available, c.ts_loader.as_deref(), c.own_mods),
             community: c.community,
             other_loader: c.other_loader,
         }

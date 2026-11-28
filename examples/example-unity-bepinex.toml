@@ -1,8 +1,8 @@
 # Example game definition for a Unity game modded with BepInEx 5.
 #
 # UMM usually writes this file for you (Add from Steam, or Add manually). To write one by hand,
-# save it as <data folder>/games/<id>/game.toml (on Windows the data folder is %APPDATA%\umm),
-# then use Reload game definitions. The folder's name is the game's id (lower-case letters,
+# save it as <data folder>/games/<id>/game.toml (the data folder is %APPDATA%\umm on Windows,
+# ~/.local/share/umm on Linux), then use Reload game definitions. The folder's name is the game's id (lower-case letters,
 # digits, `-` and `_`); the file itself does not name it. UMM edits the file in place when you
 # change the game's settings (install folder, loader setup, Nexus Mods game) and keeps your
 # comments.

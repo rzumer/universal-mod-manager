@@ -975,6 +975,7 @@ impl Session {
 /// should not ask anything: one that waits for input is stopped after a minute.
 fn run_quiet(exe: &Path, dir: &Path, args: &[String]) -> std::io::Result<String> {
     use std::io::Read;
+    crate::windows_program(exe)?;
     let mut cmd = std::process::Command::new(exe);
     cmd.args(args)
         .current_dir(dir)
@@ -1017,6 +1018,7 @@ fn run_quiet(exe: &Path, dir: &Path, args: &[String]) -> std::io::Result<String>
 /// Runs a WeiDU installer in a console window of its own, where the user answers its
 /// questions, and waits for it. Returns its exit code.
 fn run_console(exe: &Path, dir: &Path, args: &[String]) -> std::io::Result<Option<i32>> {
+    crate::windows_program(exe)?;
     let mut cmd = std::process::Command::new(exe);
     cmd.args(args).current_dir(dir);
     #[cfg(windows)]

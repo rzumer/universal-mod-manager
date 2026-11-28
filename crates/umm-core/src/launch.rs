@@ -44,6 +44,11 @@ pub enum LaunchEvent {
         game_files: usize,
         runtime: Option<SyncReport>,
     },
+    /// A Windows game run through Proton: started through Steam, which picks its Proton.
+    /// `notes`: what the user has to set in Steam themselves for its mods to load.
+    Proton {
+        notes: Vec<String>,
+    },
     Started {
         pid: u32,
     },
@@ -371,6 +376,18 @@ impl Session {
             return Err(CoreError::NoLaunch(id.into()));
         }
         self.ensure_not_running(&def.def)?;
+        let proton = self.path_vars(&def.def).prefix_user.is_some();
+        let windows_exe = || {
+            let root = self.install_path(&def.def).ok().flatten().map(|(r, _)| r);
+            let exe = def.def.launch.as_ref().map(|l| l.exe.as_str());
+            match (root, exe.and_then(|e| RelPath::parse(e).ok())) {
+                (Some(root), Some(exe)) => crate::is_windows_program(&exe.to_path(&root)),
+                _ => false,
+            }
+        };
+        if !cfg!(windows) && !proton && windows_exe() {
+            return Err(crate::not_through_proton(&def.def.name));
+        }
         if let Some(r) = self.revert(id, false, &mut Faults::none())? {
             on_event(LaunchEvent::Recovered(r));
         }
@@ -403,14 +420,33 @@ impl Session {
         if !patched.is_empty() {
             on_event(LaunchEvent::Patched { files: patched });
         }
-        if let Some(loader) = extender_loader(&def_launch, &journal.game_root) {
+        if proton {
+            let mut notes = Vec::new();
+            if let Some(loader) = extender_loader(&def_launch, &journal.game_root) {
+                notes.push(format!(
+                    "{} cannot be started through Steam, so the game starts without its script \
+                     extender. To use it under Proton, have Steam start it instead of the game.",
+                    loader.file_name().unwrap_or_default()
+                ));
+                if let Some(l) = def_launch.launch.as_mut() {
+                    l.ignore_extender_loader = true;
+                }
+            }
+            if let Some(dll) = injection.as_ref().and_then(proton_override) {
+                notes.push(format!(
+                    "Under Proton the mod loader loads only with this in the game's launch \
+                     options in Steam: WINEDLLOVERRIDES=\"{dll}=n,b\" %command%"
+                ));
+            }
+            on_event(LaunchEvent::Proton { notes });
+        } else if let Some(loader) = extender_loader(&def_launch, &journal.game_root) {
             // A Steam game started outside Steam restarts itself through Steam (without the
             // extender) when Steam is not running: start Steam first.
             let via_steam = def_launch
                 .launch
                 .as_ref()
                 .is_some_and(|l| l.steam_relaunch == SteamRelaunch::ViaSteam);
-            let started_steam = via_steam && ensure_steam(find_steam_exe());
+            let started_steam = via_steam && ensure_steam(find_steam());
             on_event(LaunchEvent::ExtenderLoader {
                 loader: loader.file_name().unwrap_or_default().to_string(),
                 started_steam,
@@ -423,15 +459,16 @@ impl Session {
         {
             // Started directly (a Paradox game, past its launcher): the game needs Steam
             // running to start, else it restarts itself through Steam.
-            ensure_steam(find_steam_exe());
+            ensure_steam(find_steam());
         }
-        let mut spec = build_spec(
+        let mut spec = build_spec_on(
             &def_launch,
             &journal.game_root,
             &game.runtime_dir(&profile.name),
             &profile,
             injection,
-            find_steam_exe(),
+            find_steam(),
+            proton,
         )?;
         spec.args.extend(self.paradox_mod_args(&def, &profile));
         spec.args
@@ -913,13 +950,20 @@ const STEAM_SETTLE: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// Starts Steam (minimised to the tray) if it is not running, and waits for it. Returns
 /// whether it had to be started.
-fn ensure_steam(steam: Option<PathBuf>) -> bool {
-    let names = ["steam.exe".to_string()];
-    if umm_launch::is_any_running(&names).unwrap_or(true) {
+fn ensure_steam(steam: Option<SteamCmd>) -> bool {
+    let exe = |n: &str| {
+        if cfg!(windows) {
+            format!("{n}.exe")
+        } else {
+            n.to_string()
+        }
+    };
+    if umm_launch::is_any_running(&[exe("steam")]).unwrap_or(true) {
         return false;
     }
     let Some(steam) = steam else { return false };
-    if std::process::Command::new(&steam)
+    if std::process::Command::new(&steam.program)
+        .args(&steam.args)
         .arg("-silent")
         .spawn()
         .is_err()
@@ -930,7 +974,7 @@ fn ensure_steam(steam: Option<PathBuf>) -> bool {
     while start.elapsed() < STEAM_START_WAIT {
         std::thread::sleep(std::time::Duration::from_millis(500));
         // Its web helper starts once Steam is past its own updates and signing in.
-        if umm_launch::is_any_running(&["steamwebhelper.exe".to_string()]).unwrap_or(false) {
+        if umm_launch::is_any_running(&[exe("steamwebhelper")]).unwrap_or(false) {
             std::thread::sleep(STEAM_SETTLE);
             break;
         }
@@ -938,14 +982,54 @@ fn ensure_steam(steam: Option<PathBuf>) -> bool {
     true
 }
 
-fn find_steam_exe() -> Option<PathBuf> {
+/// How to start Steam: its program, and the arguments before Steam's own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SteamCmd {
+    pub program: PathBuf,
+    pub args: Vec<String>,
+}
+
+impl From<PathBuf> for SteamCmd {
+    fn from(program: PathBuf) -> Self {
+        SteamCmd {
+            program,
+            args: Vec::new(),
+        }
+    }
+}
+
+/// Steam's exe on Windows; elsewhere `steam` on the PATH, else Steam's Flatpak.
+fn find_steam() -> Option<SteamCmd> {
     if cfg!(windows) {
-        steam_roots()
+        return steam_roots()
             .into_iter()
             .map(|r| r.join("steam.exe"))
             .find(|p| p.is_file())
+            .map(SteamCmd::from);
+    }
+    let on_path = std::env::var_os("PATH")
+        .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join("steam").is_file()));
+    let flatpak = || {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .is_some_and(|h| h.join(".var/app/com.valvesoftware.Steam").is_dir())
+    };
+    Some(if !on_path && flatpak() {
+        SteamCmd {
+            program: "flatpak".into(),
+            args: vec!["run".into(), "com.valvesoftware.Steam".into()],
+        }
     } else {
-        Some(PathBuf::from("steam"))
+        PathBuf::from("steam").into()
+    })
+}
+
+/// The DLL a mod loader replaces, which Wine loads instead of its own only when told to.
+fn proton_override(i: &Injection) -> Option<&'static str> {
+    match i {
+        Injection::Doorstop(_) | Injection::BepisLoader { .. } => Some("winhttp"),
+        Injection::MelonLoader { .. } | Injection::Lovely => Some("version"),
+        _ => None,
     }
 }
 
@@ -960,7 +1044,14 @@ fn native_path(p: &Path) -> String {
     }
 }
 
+/// A path as a Windows program run through Wine sees it: Wine's `Z:` drive is the Linux
+/// file system's root.
+fn wine_path(p: &Path) -> String {
+    format!("Z:{}", p.display().to_string().replace('/', "\\"))
+}
+
 /// Pure: turns a game definition and profile into what to run and how to track it.
+#[cfg(test)]
 pub(crate) fn build_spec(
     def: &GameDef,
     game_root: &Path,
@@ -969,11 +1060,41 @@ pub(crate) fn build_spec(
     injection: Option<Injection>,
     steam_exe: Option<PathBuf>,
 ) -> Result<LaunchSpec> {
+    build_spec_on(
+        def,
+        game_root,
+        runtime_dir,
+        profile,
+        injection,
+        steam_exe.map(SteamCmd::from),
+        false,
+    )
+}
+
+/// [`build_spec`] with Steam's command, for a game run through Proton (`proton`) or not.
+/// Under Proton every game starts through Steam, which picks its Proton, and paths given to
+/// it are Wine's.
+pub(crate) fn build_spec_on(
+    def: &GameDef,
+    game_root: &Path,
+    runtime_dir: &Path,
+    profile: &Profile,
+    injection: Option<Injection>,
+    steam: Option<SteamCmd>,
+    proton: bool,
+) -> Result<LaunchSpec> {
     let launch = def
         .launch
         .as_ref()
         .ok_or_else(|| CoreError::NoLaunch(def.id.clone()))?;
     let exe_rel = RelPath::parse(&launch.exe).map_err(|e| CoreError::Invalid(e.to_string()))?;
+    let native_path = |p: &Path| {
+        if proton {
+            wine_path(p)
+        } else {
+            native_path(p)
+        }
+    };
 
     let mut game_args = launch.args.clone();
     let in_runtime = |rel: &str| {
@@ -1100,7 +1221,7 @@ pub(crate) fn build_spec(
     // A script extender's loader starts the game itself, with the extender loaded; a Steam
     // game started so still talks to the Steam client (overlay, playtime, achievements).
     // The loader exits once the game is up: the game is followed by its process names.
-    if let Some(loader) = extender_loader(def, game_root) {
+    if let Some(loader) = extender_loader(def, game_root).filter(|_| !proton) {
         let path = loader.to_path(game_root);
         // The loader too: one that fails (a game version it does not support) shows its error
         // and exits before the game starts, which ends the session instead of waiting.
@@ -1117,15 +1238,16 @@ pub(crate) fn build_spec(
         });
     }
 
-    if launch.steam_relaunch == SteamRelaunch::ViaSteam {
+    if launch.steam_relaunch == SteamRelaunch::ViaSteam || proton {
         let app_id = def.detect.steam_app_id.ok_or_else(|| {
             CoreError::Invalid("steam_relaunch = \"via_steam\" needs steam_app_id".into())
         })?;
-        let steam = steam_exe.ok_or_else(|| CoreError::Invalid("Steam was not found".into()))?;
-        let mut args = vec!["-applaunch".to_string(), app_id.to_string()];
+        let steam = steam.ok_or_else(|| CoreError::Invalid("Steam was not found".into()))?;
+        let mut args = steam.args;
+        args.extend(["-applaunch".to_string(), app_id.to_string()]);
         args.extend(game_args);
         return Ok(LaunchSpec {
-            program: steam,
+            program: steam.program,
             args,
             env: Vec::new(),
             cwd: None,
@@ -1708,5 +1830,50 @@ mod tests {
             ),
             "doorstop for a non-Unity loader"
         );
+    }
+
+    #[test]
+    fn under_proton_every_game_starts_through_steam_with_wines_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("skse64_loader.exe"), b"loader").unwrap();
+        let d = def("[launch]\nexe = \"Game.exe\"\nargs = [\"-windowed\"]\n\
+             [loader]\nkind = \"bepinex\"\ninject = \"doorstop\"\n");
+        let flatpak = SteamCmd {
+            program: "flatpak".into(),
+            args: vec!["run".into(), "com.valvesoftware.Steam".into()],
+        };
+        let ds = Some(Injection::Doorstop(Doorstop {
+            build: DoorstopTarget::V5,
+            major: 4,
+        }));
+        let spec = build_spec_on(
+            &d,
+            root,
+            Path::new("/rt"),
+            &Profile::new("Default"),
+            ds,
+            Some(flatpak),
+            true,
+        )
+        .unwrap();
+        // Not the script extender's loader, which Steam cannot start.
+        assert_eq!(spec.program, Path::new("flatpak"));
+        assert_eq!(
+            spec.args,
+            [
+                "run",
+                "com.valvesoftware.Steam",
+                "-applaunch",
+                "480",
+                "-windowed",
+                "--doorstop-enabled",
+                "true",
+                "--doorstop-target-assembly",
+                "Z:\\rt\\BepInEx\\core\\BepInEx.Preloader.dll",
+            ]
+        );
+        assert!(matches!(spec.tracking, Tracking::Names { .. }));
+        assert_eq!(ds.as_ref().and_then(proton_override), Some("winhttp"));
     }
 }

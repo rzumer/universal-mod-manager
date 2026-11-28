@@ -58,6 +58,8 @@ pub struct SteamCandidate {
     pub default_setup: LoaderSetup,
     /// Every setup that can be picked, default first.
     pub setups: Vec<LoaderSetup>,
+    /// The game's own mod support, which names the generic setup (`None`: files copied in).
+    pub own_mods: Option<&'static str>,
 }
 
 /// Installed Steam games, plus why Thunderstore's list could not be used, if it could not.
@@ -104,6 +106,7 @@ fn candidate(
         other_loader: fit.other_loader,
         default_setup,
         setups,
+        own_mods: found.own_mods(),
     }
 }
 
@@ -188,6 +191,9 @@ impl Session {
                 app.name, d.id
             )));
         }
+        if !cfg!(windows) && umm_gamedef::proton_user(app.app_id, Some(&app.path)).is_none() {
+            return Err(crate::not_through_proton(&app.name));
+        }
         let eco = self.ecosystem(false).ok();
         let found = inspect(app);
         let c = candidate(app.clone(), &found, eco.as_deref(), None);
@@ -196,7 +202,7 @@ impl Session {
             return Err(CoreError::Invalid(format!(
                 "{} cannot be set up as {}",
                 app.name,
-                setup.label(c.ts_loader.as_deref())
+                setup.label(c.ts_loader.as_deref(), c.own_mods)
             )));
         }
         let fit = TsFit {

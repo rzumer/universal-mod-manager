@@ -2,11 +2,14 @@
 //!
 //! * [`Tracking::Job`]: the launcher starts the exe itself, suspended, inside a Windows job
 //!   object, then resumes it. Every process it spawns joins the job, so the session ends only
-//!   when the whole tree has exited (launcher-to-game hops, crash reporters).
+//!   when the whole tree has exited (launcher-to-game hops, crash reporters). Elsewhere the
+//!   exe starts in a process group of its own, followed through `/proc` the same way.
 //! * [`Tracking::Names`]: for launches handed to Steam (`steam.exe -applaunch`), where the
 //!   game is not our child: wait for a matching process to appear, then until none has been
 //!   alive for a grace period.
 
+#[cfg(not(windows))]
+mod tree;
 #[cfg(windows)]
 mod win;
 
@@ -175,25 +178,44 @@ fn run_job(
     })
 }
 
-/// Without job objects, wait for the direct child; descendants are not tracked.
+/// Without job objects: the game starts in a process group of its own, and the session ends
+/// once no process is left in it or below the game (see [`tree::Tree`]).
 #[cfg(not(windows))]
 fn run_job(
     spec: &LaunchSpec,
     stop: &dyn Fn() -> bool,
     on_event: &mut dyn FnMut(Event),
 ) -> Result<Outcome, LaunchError> {
-    let mut child: Child = command(spec).spawn().map_err(|source| LaunchError::Spawn {
-        program: spec.program.clone(),
-        source,
-    })?;
+    use std::os::unix::process::CommandExt;
+    let mut child: Child =
+        command(spec)
+            .process_group(0)
+            .spawn()
+            .map_err(|source| LaunchError::Spawn {
+                program: spec.program.clone(),
+                source,
+            })?;
     on_event(Event::Started { pid: child.id() });
+    let mut tree = tree::Tree::new(child.id());
+    let mut exit_code = None;
     loop {
-        if let Some(status) = child.try_wait().map_err(LaunchError::Track)? {
-            return Ok(Outcome {
-                exit_code: status.code(),
-                appeared: true,
-                ..Default::default()
-            });
+        if exit_code.is_none() {
+            if let Some(status) = child.try_wait().map_err(LaunchError::Track)? {
+                exit_code = Some(status.code());
+            }
+        }
+        // The game has exited, and nothing it started is left.
+        if let Some(code) = exit_code {
+            if !tree.alive().map_err(LaunchError::Track)? {
+                return Ok(Outcome {
+                    exit_code: code,
+                    appeared: true,
+                    ..Default::default()
+                });
+            }
+        } else {
+            // Note its children while it runs, should they leave its group.
+            tree.alive().map_err(LaunchError::Track)?;
         }
         if stop() {
             return Ok(Outcome {

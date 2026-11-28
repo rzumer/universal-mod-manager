@@ -13,6 +13,12 @@ fn touch(p: &Path) {
     fs::write(p, b"x").unwrap();
 }
 
+/// The app's Proton prefix: how a Windows game is installed on Linux.
+fn prefix(lib: &Path, app_id: u32) {
+    let user = format!("steamapps/compatdata/{app_id}/pfx/drive_c/users/steamuser");
+    fs::create_dir_all(lib.join(user)).unwrap();
+}
+
 /// Thunderstore knows app 4242 as the BepInEx community `test-quest`, and app 5150 as a
 /// game whose loader (GDPatch) UMM does not support.
 const ECOSYSTEM: &str = r#"{
@@ -34,6 +40,7 @@ fn unity_game(lib: &Path, app_id: u32, name: &str, dir: &str) -> PathBuf {
         format!("\"AppState\" {{ \"appid\" \"{app_id}\" \"name\" \"{name}\" \"installdir\" \"{dir}\" }}"),
     )
     .unwrap();
+    prefix(lib, app_id);
     let root = lib.join("steamapps/common").join(dir);
     touch(&root.join(format!("{dir}.exe")));
     touch(&root.join("UnityPlayer.dll"));
@@ -227,6 +234,7 @@ fn a_taken_id_gets_the_app_id_appended() {
         "\"AppState\" { \"appid\" \"7\" \"name\" \"Clash\" \"installdir\" \"Clash\" }",
     )
     .unwrap();
+    prefix(&lib, 7);
     touch(&lib.join("steamapps/common/Clash/clash.exe"));
     let s = session(&tmp.path().join("data"), false);
     let taken = s.data().game("clash").def_path();
@@ -291,6 +299,7 @@ fn manifest(lib: &Path, app_id: u32, name: &str, dir: &str) -> PathBuf {
         format!("\"AppState\" {{ \"appid\" \"{app_id}\" \"name\" \"{name}\" \"installdir\" \"{dir}\" }}"),
     )
     .unwrap();
+    prefix(lib, app_id);
     lib.join("steamapps/common").join(dir)
 }
 

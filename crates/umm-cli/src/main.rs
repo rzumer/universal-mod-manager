@@ -235,6 +235,12 @@ fn launch(s: &Session, game: &str, profile: &str) -> Result<()> {
             }
             println!("starting the game with {loader}, so that its script extender loads")
         }
+        LaunchEvent::Proton { notes } => {
+            println!("starting the game through Steam, with Proton");
+            for n in notes {
+                println!("  note: {n}");
+            }
+        }
         LaunchEvent::WaitingForGame => {
             println!("launched through Steam; waiting for the game to start")
         }
@@ -267,7 +273,7 @@ fn launch(s: &Session, game: &str, profile: &str) -> Result<()> {
     about = "Universal Mod Manager: deploy mods into game folders and put them back"
 )]
 struct Cli {
-    /// Data folder (default: UMM_DATA, or %APPDATA%\umm)
+    /// Data folder (default: UMM_DATA, else %APPDATA%\umm on Windows, ~/.local/share/umm on Linux)
     #[arg(long, global = true)]
     data: Option<PathBuf>,
     #[command(subcommand)]
@@ -536,8 +542,8 @@ impl SetupArg {
     }
 }
 
-fn setup_label(s: Option<LoaderSetup>, ts_loader: Option<&str>) -> String {
-    s.map(|s| s.label(ts_loader))
+fn setup_label(s: Option<LoaderSetup>, ts_loader: Option<&str>, own: Option<&str>) -> String {
+    s.map(|s| s.label(ts_loader, own))
         .unwrap_or_else(|| "loader from the definition".into())
 }
 
@@ -795,14 +801,18 @@ fn run(cli: Cli) -> Result<()> {
                 None => s.loader_choice(&game)?,
             };
             let ts = c.ts_loader.as_deref();
-            println!("{game}: {}", setup_label(c.current, ts));
+            println!("{game}: {}", setup_label(c.current, ts, c.own_mods));
             if let Some(cm) = &c.community {
                 println!("  Thunderstore community: {cm}");
             }
             if let Some(l) = &c.other_loader {
                 println!("  on Thunderstore it uses {l}, which UMM does not support yet");
             }
-            let others: Vec<String> = c.available.iter().map(|a| a.label(ts)).collect();
+            let others: Vec<String> = c
+                .available
+                .iter()
+                .map(|a| a.label(ts, c.own_mods))
+                .collect();
             println!("  available: {}", others.join(", "));
         }
         Cmd::Game(GameCmd::DeleteData { game, yes }) => {
@@ -1087,7 +1097,7 @@ fn run(cli: Cli) -> Result<()> {
                     Some(id) => format!("added as `{id}`"),
                     None => format!(
                         "would be: {}",
-                        g.default_setup.label(g.ts_loader.as_deref())
+                        g.default_setup.label(g.ts_loader.as_deref(), g.own_mods)
                     ),
                 };
                 println!(

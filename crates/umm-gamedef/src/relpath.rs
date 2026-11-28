@@ -93,14 +93,10 @@ impl RelPath {
         self.0.is_empty()
     }
 
-    /// Key used to detect two paths that name the same file. Windows file systems are
-    /// case-insensitive, so the key is lowercased there.
+    /// Key used to detect two paths that name the same file: lower-case, as mods are made for
+    /// Windows, whose file systems ignore case (and so does Wine, for games under Proton).
     pub fn key(&self) -> String {
-        if cfg!(windows) {
-            self.0.to_lowercase()
-        } else {
-            self.0.clone()
-        }
+        self.0.to_lowercase()
     }
 
     pub fn components(&self) -> impl Iterator<Item = &str> {

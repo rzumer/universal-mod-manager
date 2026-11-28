@@ -4408,6 +4408,7 @@ dependencies = [
  "same-file",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "umm-gamedef",
  "umm-store",

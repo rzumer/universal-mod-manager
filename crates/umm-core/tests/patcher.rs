@@ -24,7 +24,7 @@ fn a_patcher_runs_on_a_copy_and_its_result_is_swapped_in_while_deployed() {
         &s.data().game(GAME).def_path(),
         b"schema = 1\nname = \"Fallout\"\nprotect = [\"*.exe\"]\n[detect]\nmarker = \"Game.exe\"\n\
           [launch]\nexe = \"Game.exe\"\n\
-          [mod_list]\nlist = \"%LOCALAPPDATA%/Fallout3/plugins.txt\"\nfolder = \"Data\"\n\
+          [mod_list]\nlist = \"plugins.txt\"\nfolder = \"Data\"\n\
           [[install]]\nmatch = \"**\"\ntarget = \"\"\n",
     );
     s.set_install_path(GAME, &root).unwrap();

@@ -4600,6 +4600,10 @@ function onSession(e) {
       if (e.startedSteam) logLine("Started Steam first, so the game can connect to it");
       logLine(`Starting the game with ${e.loader}, so that its script extender loads`);
       break;
+    case "proton":
+      logLine("Starting the game through Steam, with Proton");
+      for (const n of e.notes) logLine(n);
+      break;
     case "patched":
       logLine(`Swapped in the patched ${e.files.join(", ")}`);
       break;

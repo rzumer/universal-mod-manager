@@ -44,6 +44,7 @@ const OUT: &str = "out";
 
 /// Starts the exe and waits for it to quit, without a window.
 pub(crate) fn run_setup(exe: &Path, args: &[String]) -> io::Result<()> {
+    crate::windows_program(exe)?;
     let mut cmd = std::process::Command::new(exe);
     cmd.args(args)
         .current_dir(exe.parent().unwrap_or(Path::new(".")))

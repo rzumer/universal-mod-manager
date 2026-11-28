@@ -919,6 +919,11 @@ pub async fn profile_import_file<R: Runtime>(
 }
 
 fn current_exe() -> Res<PathBuf> {
+    // Started from an AppImage, the program runs from a mount that changes every start: the
+    // AppImage itself is what links should open.
+    if let Some(image) = std::env::var_os("APPIMAGE").filter(|_| cfg!(target_os = "linux")) {
+        return Ok(PathBuf::from(image));
+    }
     std::env::current_exe().map_err(|e| format!("cannot find UMM's own program: {e}"))
 }
 

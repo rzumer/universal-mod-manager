@@ -20,6 +20,8 @@ pub struct LoaderChoice {
     pub ts_loader: Option<String>,
     /// Thunderstore's mod loader for the game when UMM does not support it (Northstar, say).
     pub other_loader: Option<String>,
+    /// The game's own mod support, which names the generic setup (`None`: files copied in).
+    pub own_mods: Option<&'static str>,
 }
 
 impl Session {
@@ -84,6 +86,7 @@ impl Session {
             community: fit.community,
             ts_loader: fit.loader,
             other_loader: fit.other_loader,
+            own_mods: def.own_mods(),
         })
     }
 

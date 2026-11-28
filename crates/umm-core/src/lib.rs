@@ -297,6 +297,18 @@ impl Session {
         Ok(detect_install(def).map(|d| (d.path, d.via)))
     }
 
+    /// What the game's path variables stand for: for a Steam game run through Proton, the
+    /// Windows folders in its prefix; otherwise the system's own.
+    pub fn path_vars(&self, def: &GameDef) -> umm_gamedef::PathVars {
+        let Some(app) = def.detect.steam_app_id else {
+            return umm_gamedef::PathVars::default();
+        };
+        let install = self.install_path(def).ok().flatten().map(|(p, _)| p);
+        umm_gamedef::detect::proton_user(app, install.as_deref())
+            .map(umm_gamedef::PathVars::in_prefix)
+            .unwrap_or_default()
+    }
+
     fn require_install(&self, def: &GameDef) -> Result<PathBuf> {
         match self.install_path(def)? {
             Some((p, _)) if p.is_dir() => Ok(p),
@@ -661,4 +673,36 @@ impl Session {
     pub fn doctor(&self, id: &str) -> Result<Vec<Finding>> {
         doctor::run(self, id)
     }
+}
+
+/// Why a game cannot be handled on a system other than Windows, where UMM supports only
+/// Windows games that Steam runs through Proton for now.
+pub(crate) fn not_through_proton(name: &str) -> CoreError {
+    CoreError::Invalid(format!(
+        "{name} is not run through Proton: on this system UMM supports only Windows games \
+         that Steam runs through Proton for now. To use it, pick a Proton version in the \
+         game's Compatibility settings in Steam, start it once, then try again."
+    ))
+}
+
+/// Whether a file is a Windows program (it starts as one: `MZ`), whatever its name.
+pub(crate) fn is_windows_program(path: &Path) -> bool {
+    use std::io::Read;
+    let mut magic = [0u8; 2];
+    fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut magic))
+        .is_ok_and(|()| &magic == b"MZ")
+}
+
+/// Refuses a Windows program (a patcher or an installer a mod ships) on other systems,
+/// where UMM does not yet run them through Wine or Proton: a clear reason rather than the
+/// system's "exec format error".
+pub(crate) fn windows_program(exe: &Path) -> std::io::Result<()> {
+    if cfg!(windows) || !is_windows_program(exe) {
+        return Ok(());
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "it is a Windows program, which UMM cannot run on this system yet",
+    ))
 }

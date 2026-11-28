@@ -130,11 +130,12 @@ pub fn dlc_load(original: Option<&str>, ours: &[String], drop: &[String]) -> Res
 impl Session {
     /// The game definition's folders outside the game folder, their variables filled in.
     pub(crate) fn resolve_folders(&self, def: &CompiledDef) -> Result<BTreeMap<String, PathBuf>> {
+        let vars = self.path_vars(&def.def);
         def.def
             .folders
             .iter()
             .map(|(name, path)| {
-                let p = umm_gamedef::expand_path(path).ok_or_else(|| {
+                let p = umm_gamedef::expand_path_with(path, &vars).ok_or_else(|| {
                     CoreError::Invalid(format!(
                         "[folders] {name}: cannot find {path} (an absolute path, with its variables set)"
                     ))

@@ -28,6 +28,8 @@ pub struct FolderInfo {
     pub setups: Vec<LoaderSetup>,
     /// The folder is a Steam game's install: `(app id, name)`. Add from Steam suits it better.
     pub steam_app: Option<(u32, String)>,
+    /// The game's own mod support, which names the generic setup (`None`: files copied in).
+    pub own_mods: Option<&'static str>,
 }
 
 impl Session {
@@ -53,6 +55,7 @@ impl Session {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default(),
+            own_mods: found.own_mods(),
             exes: found.exes,
             setups: setups_for(found.engine, fit.loader.as_deref()),
             community: fit.community,
@@ -107,11 +110,19 @@ impl Session {
         if !setups.contains(&setup) {
             return Err(CoreError::Invalid(format!(
                 "{name} cannot be set up as {}",
-                setup.label(fit.loader.as_deref())
+                setup.label(fit.loader.as_deref(), found.own_mods())
             )));
         }
         found.exe = exe.clone();
         let mut draft = draft_manual(folder, name, &exe, &found, setup, fit.as_community())?;
+        // Its Windows folders (`%DOCUMENTS%`...) would be the Linux user's, not those of the
+        // Wine prefix the game runs in, which UMM does not know of.
+        if !cfg!(windows) && to_toml(&draft).contains('%') {
+            return Err(CoreError::Invalid(format!(
+                "{name} keeps files in Windows' user folders, which UMM finds on this system \
+                 only for a game that Steam runs through Proton for now: add it from Steam"
+            )));
+        }
         if let Some(l) = &fit.other_loader {
             draft.notes.push(Note::new(
                 "thunderstore-other-loader",

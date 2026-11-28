@@ -14,3 +14,6 @@ serde_json.workspace = true
 thiserror.workspace = true
 same-file.workspace = true
 roxmltree = "0.20"
+
+[dev-dependencies]
+tempfile.workspace = true

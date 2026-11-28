@@ -12,6 +12,57 @@ use umm_store::GameDir;
 /// Where the originals of files outside the game folder are kept, in the backups.
 pub(crate) const EXTERNAL_BACKUPS: &str = ".external";
 
+/// The spelling of target paths on disk. Mods are made for Windows, which ignores case, so a
+/// mod's `Data/Textures/x.dds` goes in the game's `data/textures/` where the file system is
+/// case-sensitive, and the folders mods add are spelled as the first one does.
+#[derive(Default)]
+struct Spelling {
+    /// Each folder's key, and its spelling.
+    dirs: BTreeMap<String, RelPath>,
+}
+
+impl Spelling {
+    /// `rel` as spelled on disk, as far as it exists there; the rest as planned before, or as
+    /// given. `to_path` places a path; `root` is where one without a named folder starts.
+    fn of(&mut self, rel: &RelPath, root: &Path, to_path: &dyn Fn(&RelPath) -> PathBuf) -> RelPath {
+        if cfg!(windows) {
+            return rel.clone();
+        }
+        let part = |c: &str| RelPath::parse(c).expect("a path's own component");
+        let mut out: Option<RelPath> = None;
+        for c in rel.components() {
+            let given = match &out {
+                Some(o) => o.join(&part(c)),
+                None => part(c),
+            };
+            let key = given.key();
+            let next = match self.dirs.get(&key) {
+                Some(s) => s.clone(),
+                // A named folder's root stays as it is.
+                None if out.is_none() && c.starts_with('@') => given,
+                None if to_path(&given).exists() => given,
+                None => {
+                    let lower = c.to_lowercase();
+                    let parent = out.as_ref().map_or_else(|| root.to_path_buf(), to_path);
+                    let on_disk = fs::read_dir(&parent).ok().and_then(|rd| {
+                        rd.flatten()
+                            .map(|e| e.file_name().to_string_lossy().into_owned())
+                            .find(|n| n.to_lowercase() == lower)
+                    });
+                    match (on_disk, &out) {
+                        (Some(n), Some(o)) => o.join(&part(&n)),
+                        (Some(n), None) => part(&n),
+                        (None, _) => given,
+                    }
+                }
+            };
+            self.dirs.insert(key, next.clone());
+            out = Some(next);
+        }
+        out.unwrap_or_else(|| rel.clone())
+    }
+}
+
 /// Inspects the game folder and turns a plan into journal operations. Reads only.
 pub fn prepare(
     game: &GameDir,
@@ -64,8 +115,11 @@ pub fn prepare(
 
     let mut new_dirs: BTreeMap<String, RelPath> = BTreeMap::new();
     let mut file_ops = Vec::new();
+    let mut spell = Spelling::default();
     for f in &plan.files {
-        for dir in f.target.ancestors() {
+        // As the folders on disk (or those already planned) spell it.
+        let target = spell.of(&f.target, &game_root, &to_path);
+        for dir in target.ancestors() {
             if new_dirs.contains_key(&dir.key()) {
                 continue;
             }
@@ -87,15 +141,15 @@ pub fn prepare(
             }
         }
 
-        let method = if f.writable || !link_ok(&f.target) {
+        let method = if f.writable || !link_ok(&target) {
             Method::Copy
         } else {
             Method::Hardlink
         };
-        let p = to_path(&f.target);
+        let p = to_path(&target);
         let op = match fs::symlink_metadata(&p) {
             Err(e) if e.kind() == io::ErrorKind::NotFound => Op::Add {
-                path: f.target.clone(),
+                path: target.clone(),
                 method,
                 src: f.source.clone(),
                 hash: f.hash.clone(),
@@ -107,11 +161,11 @@ pub fn prepare(
                 )
             }
             Ok(m) if m.file_type().is_symlink() => {
-                return Err(DeployError::LinkInPath(f.target.to_string()))
+                return Err(DeployError::LinkInPath(target.to_string()))
             }
-            Ok(m) if m.is_dir() => return Err(DeployError::TargetIsDir(f.target.to_string())),
+            Ok(m) if m.is_dir() => return Err(DeployError::TargetIsDir(target.to_string())),
             Ok(_) => Op::Replace {
-                path: f.target.clone(),
+                path: target.clone(),
                 method,
                 src: f.source.clone(),
                 hash: f.hash.clone(),
@@ -539,4 +593,30 @@ fn same_volume(a: &Path, b: &Path) -> bool {
         }
     }
     matches!((prefix(a), prefix(b)), (Some(x), Some(y)) if x == y)
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn targets_take_the_spelling_on_disk_then_the_first_planned() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("data/textures")).unwrap();
+        let to_path = |r: &RelPath| r.to_path(root);
+        let mut s = Spelling::default();
+        let of = |s: &mut Spelling, p: &str| {
+            s.of(&RelPath::parse(p).unwrap(), root, &to_path)
+                .to_string()
+        };
+        assert_eq!(
+            of(&mut s, "Data/Textures/Rock.dds"),
+            "data/textures/Rock.dds"
+        );
+        assert_eq!(of(&mut s, "DATA/Meshes/a.nif"), "data/Meshes/a.nif");
+        // A folder no mod had before: as the first spelled it.
+        assert_eq!(of(&mut s, "data/meshes/b.nif"), "data/Meshes/b.nif");
+        assert_eq!(of(&mut s, "@user/Mods/x"), "@user/Mods/x");
+    }
 }

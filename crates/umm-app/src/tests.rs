@@ -10,7 +10,16 @@ use std::sync::{Arc, Mutex};
 use tauri::ipc::{CallbackFn, InvokeBody};
 use tauri::test::{get_ipc_response, mock_builder, mock_context, noop_assets, INVOKE_KEY};
 use tauri::webview::InvokeRequest;
-use tauri::{Listener, WebviewWindow, WebviewWindowBuilder};
+#[cfg(windows)]
+use tauri::Listener;
+use tauri::{WebviewWindow, WebviewWindowBuilder};
+
+/// Where the app's own pages come from, as Tauri serves them on this system.
+const APP_ORIGIN: &str = if cfg!(windows) {
+    "http://tauri.localhost"
+} else {
+    "tauri://localhost"
+};
 
 /// The game's `games/<id>/game.toml`, its folder created.
 fn def_file(s: &umm_core::Session, id: &str) -> std::path::PathBuf {
@@ -78,7 +87,7 @@ fn call(fx: &Fx, cmd: &str, args: Value) -> Result<Value, Value> {
         cmd: cmd.into(),
         callback: CallbackFn(0),
         error: CallbackFn(1),
-        url: "http://tauri.localhost".parse().unwrap(),
+        url: APP_ORIGIN.parse().unwrap(),
         body: InvokeBody::Json(args),
         headers: Default::default(),
         invoke_key: INVOKE_KEY.to_string(),

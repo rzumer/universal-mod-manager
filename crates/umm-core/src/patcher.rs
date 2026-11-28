@@ -638,6 +638,7 @@ impl Session {
 /// Runs a patcher in `dir` and waits for it, returning what it printed. Its window shows:
 /// some patchers ask for a click before they quit.
 fn run(exe: &Path, dir: &Path) -> std::io::Result<String> {
+    crate::windows_program(exe)?;
     let spawned = std::process::Command::new(exe)
         .current_dir(dir)
         .stdin(std::process::Stdio::null())
