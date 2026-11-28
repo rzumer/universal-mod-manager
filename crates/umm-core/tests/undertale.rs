@@ -219,7 +219,7 @@ fn patches_find_their_data_file_and_clashing_ones_stop_the_deploy() {
     // No network: G3MTool cannot be downloaded, so merging fails.
     let s = Session::open_with(
         Some(tmp.path().join("data")),
-        std::sync::Arc::new(umm_thunderstore::http::FakeHttp::default()),
+        std::sync::Arc::new(umm_sources::net::FakeHttp::default()),
     )
     .unwrap();
     write(
@@ -507,7 +507,7 @@ fn g3m_patches_and_scripts_find_their_file_and_failures_are_reported() {
     write(&root.join("chapter2_windows/data.win"), &ch2);
     let s = Session::open_with(
         Some(tmp.path().join("data")),
-        std::sync::Arc::new(umm_thunderstore::http::FakeHttp::default()),
+        std::sync::Arc::new(umm_sources::net::FakeHttp::default()),
     )
     .unwrap();
     write(

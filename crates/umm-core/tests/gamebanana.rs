@@ -5,7 +5,7 @@
 use std::io::{Cursor, Write};
 use std::sync::Arc;
 use umm_core::{GbSearch, GbSort, GbUpdateState, Session, DEFAULT_PROFILE};
-use umm_thunderstore::http::FakeHttp;
+use umm_sources::net::FakeHttp;
 
 const GAME: &str = "undertale";
 const API: &str = "https://gamebanana.com/apiv11";

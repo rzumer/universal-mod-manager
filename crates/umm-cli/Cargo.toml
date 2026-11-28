@@ -12,7 +12,6 @@ path = "src/main.rs"
 
 [dependencies]
 umm-core.workspace = true
-umm-nexus.workspace = true
-umm-gamebanana.workspace = true
+umm-sources.workspace = true
 clap.workspace = true
 anyhow.workspace = true

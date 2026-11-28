@@ -29,10 +29,7 @@ umm-store = { path = "crates/umm-store" }
 umm-deploy = { path = "crates/umm-deploy" }
 umm-core = { path = "crates/umm-core" }
 umm-launch = { path = "crates/umm-launch" }
-umm-thunderstore = { path = "crates/umm-thunderstore" }
-umm-net = { path = "crates/umm-net" }
-umm-nexus = { path = "crates/umm-nexus" }
-umm-gamebanana = { path = "crates/umm-gamebanana" }
+umm-sources = { path = "crates/umm-sources" }
 umm-fomod = { path = "crates/umm-fomod" }
 
 # Dependencies do the heavy lifting (7z/zip decoding, hashing, image decoding): optimised

@@ -8,7 +8,7 @@ use umm_core::{
     CollectionFileState, CoreError, DownloadWatch, ExpectedFile, NexusSearch, NexusUpdateState,
     Session, DEFAULT_PROFILE,
 };
-use umm_thunderstore::http::FakeHttp;
+use umm_sources::net::FakeHttp;
 
 const GQL: &str = "https://api.nexusmods.com/v2/graphql";
 

@@ -246,12 +246,12 @@ pub fn suggest(files: &[&str], game: &GameIndex, def: &CompiledDef) -> Option<Pl
             f @ (umm_gamedef::PluginListFormat::KenshiCfg | umm_gamedef::PluginListFormat::XcomIni),
         ) => Some(mod_file_root(
             &rels,
-            crate::modfile::extension(f).unwrap_or_default(),
+            crate::games::modfile::extension(f).unwrap_or_default(),
         )),
         _ if def.def.paradox.is_some() => Some(paradox_root(&rels, def)),
         // A Bannerlord module's folder holds its `SubModule.xml`.
         _ if def.def.bannerlord.is_some() => Some(marked_root(&rels, |n| {
-            n.eq_ignore_ascii_case(crate::bannerlord::SUBMODULE)
+            n.eq_ignore_ascii_case(crate::games::bannerlord::SUBMODULE)
         })),
         _ if def.def.loader.as_ref().is_some_and(|l| l.kind == "lovely") => {
             Some(lovely_root(&rels))
@@ -419,7 +419,9 @@ fn rimworld_root(rels: &[RelPath]) -> Option<Placement> {
 
 /// A Factorio mod's folder is the one holding its `info.json` (the shallowest).
 fn factorio_root(rels: &[RelPath]) -> Option<Placement> {
-    marked_root(rels, |n| n.eq_ignore_ascii_case(crate::factorio::INFO))
+    marked_root(rels, |n| {
+        n.eq_ignore_ascii_case(crate::games::factorio::INFO)
+    })
 }
 
 /// An Oxygen Not Included mod's folder is the one holding its `mod_info.yaml` or `mod.yaml`
@@ -508,7 +510,7 @@ fn paradox_root(rels: &[RelPath], def: &CompiledDef) -> Option<Placement> {
         .iter()
         .filter(|r| {
             r.file_name()
-                .is_some_and(|n| n.eq_ignore_ascii_case(crate::paradox::DESCRIPTOR))
+                .is_some_and(|n| n.eq_ignore_ascii_case(crate::games::paradox::DESCRIPTOR))
         })
         .map(|r| r.parent().unwrap_or_else(RelPath::root))
         .min_by_key(|r| r.depth())
@@ -809,7 +811,7 @@ impl Session {
             // A Paradox mod's launcher `.mod`, beside its folder: UMM writes the game its own.
             let launcher = def.def.paradox.is_some()
                 && f.to_ascii_lowercase().ends_with(".mod")
-                && !f.eq_ignore_ascii_case(crate::paradox::DESCRIPTOR);
+                && !f.eq_ignore_ascii_case(crate::games::paradox::DESCRIPTOR);
             let note = match note {
                 Some(_) if launcher && target.is_none() && !skipped => Some(
                     "the mod's descriptor: UMM writes the game one from it, pointing at where the mod goes"

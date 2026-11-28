@@ -8,8 +8,8 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use umm_core::{Faults, LoaderSetup, Session, TsQuery, DEFAULT_PROFILE};
-use umm_thunderstore::ecosystem::ECOSYSTEM_URL;
-use umm_thunderstore::http::FakeHttp;
+use umm_sources::net::FakeHttp;
+use umm_sources::thunderstore::ecosystem::ECOSYSTEM_URL;
 
 const INDEX: &str = "https://thunderstore.io/c/potato/api/v1/package-listing-index/";
 

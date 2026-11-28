@@ -322,7 +322,7 @@ fn file_dto(f: &NexusModFile, installed: &[u64]) -> NexusFileDto {
 fn game_dto(s: &Session, game: &str) -> Result<NexusGameDto, CoreError> {
     let g = s.nexus_game(game)?;
     Ok(NexusGameDto {
-        url: g.as_ref().map(|g| umm_nexus::game_url(&g.domain)),
+        url: g.as_ref().map(|g| umm_sources::nexus::game_url(&g.domain)),
         guessed: g.as_ref().is_some_and(|g| g.guessed),
         name: g.as_ref().and_then(|g| g.name.clone()),
         mod_count: g.as_ref().and_then(|g| g.mod_count),
@@ -396,7 +396,7 @@ pub async fn nexus_search(
                 .map(|it| {
                     let m = it.summary;
                     NexusItemDto {
-                        url: umm_nexus::mod_url(&domain, m.mod_id),
+                        url: umm_sources::nexus::mod_url(&domain, m.mod_id),
                         mod_id: m.mod_id,
                         name: m.name,
                         summary: m.summary,
@@ -453,7 +453,7 @@ pub async fn nexus_collections(
                 .collections
                 .into_iter()
                 .map(|c| NexusCollectionItemDto {
-                    url: umm_nexus::collection_url(&g.domain, &c.slug),
+                    url: umm_sources::nexus::collection_url(&g.domain, &c.slug),
                     slug: c.slug,
                     name: c.name,
                     summary: c.summary,
@@ -484,7 +484,7 @@ pub async fn nexus_collection(
         let c = check.collection;
         let domain = c.domain.clone();
         Ok(NexusCollectionDto {
-            url: umm_nexus::collection_url(&domain, &c.slug),
+            url: umm_sources::nexus::collection_url(&domain, &c.slug),
             files: c
                 .files
                 .into_iter()
@@ -498,7 +498,7 @@ pub async fn nexus_collection(
                         CollectionFileState::Missing => ("missing", None, None),
                     };
                     NexusCollectionFileDto {
-                        url: umm_nexus::mod_url(&domain, f.mod_id),
+                        url: umm_sources::nexus::mod_url(&domain, f.mod_id),
                         mod_id: f.mod_id,
                         file_id: f.file_id,
                         optional: f.optional,
@@ -528,7 +528,7 @@ pub async fn nexus_collection_link(
     state: State<'_, AppState>,
     url: String,
 ) -> Res<Option<CollectionLinkDto>> {
-    let Some((domain, slug, revision)) = umm_nexus::parse_collection_url(&url) else {
+    let Some((domain, slug, revision)) = umm_sources::nexus::parse_collection_url(&url) else {
         return Ok(None);
     };
     blocking(&state, move |s| {
@@ -1000,7 +1000,7 @@ pub fn open_web_page(url: String) -> Res<()> {
 /// Opens a page on nexusmods.com in the browser. Other sites are refused.
 #[tauri::command]
 pub fn open_nexus_page(url: String) -> Res<()> {
-    let ok = url.starts_with(&format!("{}/", umm_nexus::SITE_URL))
+    let ok = url.starts_with(&format!("{}/", umm_sources::nexus::SITE_URL))
         && !url.contains(['"', ' ', '\n', '\r', '\\']);
     if !ok {
         return Err(format!("not a Nexus Mods page: {url}"));

@@ -245,7 +245,7 @@ impl Session {
                     let loader: Vec<PlannedFile> = plan
                         .files
                         .iter()
-                        .filter(|f| crate::godotml::is_loader_file(f))
+                        .filter(|f| crate::patching::godotml::is_loader_file(f))
                         .cloned()
                         .collect();
                     if !loader.iter().any(|f| {
@@ -294,8 +294,9 @@ impl Session {
             Some(rl) => {
                 let (mut inside, mut outside) = split_runtime(plan.files, &rl);
                 if godotml_in_game {
-                    let (loader, rest): (Vec<_>, Vec<_>) =
-                        inside.into_iter().partition(crate::godotml::is_loader_file);
+                    let (loader, rest): (Vec<_>, Vec<_>) = inside
+                        .into_iter()
+                        .partition(crate::patching::godotml::is_loader_file);
                     outside.extend(loader);
                     inside = rest;
                 }

@@ -71,7 +71,7 @@ fn print_install(r: &GbInstallReport) {
 
 /// A mod named by a page link or a number.
 fn mod_id(m: &str) -> Result<u64> {
-    if let Some(id) = umm_gamebanana::parse_mod_url(m) {
+    if let Some(id) = umm_sources::gamebanana::parse_mod_url(m) {
         return Ok(id);
     }
     m.parse()
@@ -108,7 +108,7 @@ pub fn run(s: &Session, cmd: GbCmd) -> Result<()> {
                 s.set_gamebanana_game(&game, Some(n))?;
                 println!(
                     "{game}: GameBanana game {n} ({})",
-                    umm_gamebanana::game_url(n)
+                    umm_sources::gamebanana::game_url(n)
                 );
             } else {
                 match s.gamebanana_game(&game)? {
@@ -160,7 +160,7 @@ pub fn run(s: &Session, cmd: GbCmd) -> Result<()> {
             println!(
                 "{} mods on {}",
                 p.total,
-                umm_gamebanana::game_url(p.game.game_id)
+                umm_sources::gamebanana::game_url(p.game.game_id)
             );
             for it in p.items {
                 let m = &it.summary;
@@ -191,7 +191,7 @@ pub fn run(s: &Session, cmd: GbCmd) -> Result<()> {
                 "{} {} ({})",
                 d.summary.name,
                 d.summary.version,
-                umm_gamebanana::mod_url(d.summary.mod_id)
+                umm_sources::gamebanana::mod_url(d.summary.mod_id)
             );
             for x in &d.files {
                 let installed = f

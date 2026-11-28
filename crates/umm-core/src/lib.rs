@@ -1,74 +1,63 @@
 //! `Session`: the one API the CLI and the Tauri app both call.
 
-mod bannerlord;
 mod config;
-mod delta;
-mod deltamod;
 mod doctor;
-mod downloads;
-mod factorio;
 mod fomod;
-mod g3mtool;
-mod gamebanana;
-mod godotml;
+mod games;
 mod icons;
-mod larian;
 mod launch;
-mod link;
 mod manual;
-mod modfile;
-mod nexus;
-mod oni;
-mod pak;
-mod paradox;
-mod patcher;
+mod patching;
 mod placement;
-mod plugins;
 mod runtime;
 mod setup;
-mod share;
+mod sources;
 mod steam;
-mod tmodloader;
-mod ts;
-pub mod vcdiff;
-mod weidu;
-pub mod workshop;
+
+// Used by path from outside: `umm_core::workshop::…`, `umm_core::vcdiff::…`.
+pub use patching::vcdiff;
+use patching::{godotml, patcher, weidu};
+use sources::ts;
+pub use sources::workshop;
 
 pub use config::{ConfigChange, ConfigEntry, ConfigFile, ConfigSection, ConfigView};
-pub use delta::{is_delta_patch, is_resource_patch};
 pub use doctor::{Finding, Level};
-pub use downloads::{downloads_dir, DownloadWatch};
 pub use fomod::{FomodGroupView, FomodOptionView, FomodStepView, FomodView};
-pub use gamebanana::{
-    GbGame, GbGameInfo, GbInstallReport, GbItem, GbModFiles, GbPage, GbSearch, GbSort, GbUpdate,
-    GbUpdateState,
-};
-pub use godotml::{
+pub use games::plugins::{IniPreview, PluginEntry, PluginList};
+pub use launch::{LaunchEvent, LaunchOutcome};
+pub use manual::FolderInfo;
+pub use patching::delta::{is_delta_patch, is_resource_patch};
+pub use patching::godotml::{
     setup_cache as godotml_setup_cache, SetupRunner, SETUP_ARGS as GODOTML_SETUP_ARGS,
     SETUP_OWNER as GODOTML_SETUP_OWNER,
 };
-pub use launch::{LaunchEvent, LaunchOutcome};
-pub use link::{
+pub use patching::patcher::{is_patcher_exe, patcher_of, PatchState, PatchedFile, PatcherStatus};
+pub use patching::weidu::{
+    is_weidu_setup, weidu_setup_of, WeiduChoice, WeiduState, WeiduStatus, WEIDU_SCRATCH,
+};
+pub use placement::{PlacedFile, PlacementView};
+pub use runtime::SyncReport;
+pub use setup::LoaderChoice;
+pub use sources::downloads::{downloads_dir, DownloadWatch};
+pub use sources::gamebanana::{
+    GbGame, GbGameInfo, GbInstallReport, GbItem, GbModFiles, GbPage, GbSearch, GbSort, GbUpdate,
+    GbUpdateState,
+};
+pub use sources::link::{
     parse_link, system_registry, InstallLink, LinkHandler, SchemeRegistry, LINK_SCHEME,
     LINK_SCHEMES, NXM_SCHEME,
 };
-pub use manual::FolderInfo;
-pub use nexus::{
+pub use sources::nexus::{
     CollectionFileState, ExpectedFile, NexusCollectionCheck, NexusGame, NexusInstallReport,
     NexusItem, NexusModFiles, NexusPage, NexusRequirement, NexusSearch, NexusSort, NexusUpdate,
     NexusUpdateState,
 };
-pub use patcher::{is_patcher_exe, patcher_of, PatchState, PatchedFile, PatcherStatus};
-pub use placement::{PlacedFile, PlacementView};
-pub use plugins::{IniPreview, PluginEntry, PluginList};
-pub use runtime::SyncReport;
-pub use setup::LoaderChoice;
-pub use share::{ProfileExport, ProfileImport};
-pub use steam::{Draft, Engine, Note, SteamApp, SteamCandidate, SteamList};
-pub use ts::{
+pub use sources::share::{ProfileExport, ProfileImport};
+pub use sources::ts::{
     package_mod_id, DepIssue, DepProblem, InstalledPackage, PinConflict, PinConflictChoice,
     TsInstallReport, TsItem, TsLookup, TsPage, TsQuery, TsSort, TsVersionChoice,
 };
+pub use steam::{Draft, Engine, Note, SteamApp, SteamCandidate, SteamList};
 pub use umm_deploy::{
     Conflict, DeployError, Faults, Journal, Method as DeployMethod, Op as DeployOp, Plan,
     RevertReport, Skipped,
@@ -76,25 +65,24 @@ pub use umm_deploy::{
 pub use umm_fomod::{
     Choice as FomodChoice, GroupKind as FomodGroupKind, PluginType as FomodOptionKind,
 };
-pub use umm_gamebanana::{GameBananaError, ModDetails as GbModDetails, ModFile as GbModFile};
 pub use umm_gamedef::PluginListFormat;
 pub use umm_gamedef::{CompiledDef, GameDef, GameDefError};
 pub use umm_launch::catch_interrupts;
-pub use umm_nexus::graph::{
+pub use umm_sources::gamebanana::{ModDetails as GbModDetails, ModFile as GbModFile};
+pub use umm_sources::nexus::graph::{
     Game as NexusGameInfo, ModFile as NexusModFile, ModSummary as NexusModSummary,
 };
-pub use umm_nexus::{NexusError, NxmLink};
+pub use umm_sources::nexus::NxmLink;
+pub use umm_sources::thunderstore::index::Package;
 pub use umm_store::{
     name_archive, DataDir, GameDir, ImportOptions, Layout as ModLayout, ModMeta, Placement,
     Profile, ProfileEntry, StoreError, DEFAULT_PROFILE,
 };
-pub use umm_thunderstore::index::Package;
-pub use weidu::{
-    is_weidu_setup, weidu_setup_of, WeiduChoice, WeiduState, WeiduStatus, WEIDU_SCRATCH,
-};
 
 pub use umm_gamedef::LoaderSetup;
-pub use umm_thunderstore::{Ecosystem, Http, TsError, UreqHttp};
+pub use umm_sources::net::{Http, UreqHttp};
+pub use umm_sources::thunderstore::Ecosystem;
+pub use umm_sources::{Site, SourceError};
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -127,12 +115,9 @@ pub enum CoreError {
     NoLaunch(String),
     #[error(transparent)]
     Launch(#[from] umm_launch::LaunchError),
+    /// From a site UMM gets mods from (Thunderstore, Nexus Mods, GameBanana).
     #[error(transparent)]
-    Thunderstore(#[from] TsError),
-    #[error(transparent)]
-    Nexus(#[from] NexusError),
-    #[error(transparent)]
-    GameBanana(#[from] umm_gamebanana::GameBananaError),
+    Source(#[from] SourceError),
     /// A downloaded archive Nexus does not know by its hash (re-packed, or not from there).
     #[error("Nexus Mods does not recognise this file, so UMM cannot tell which download it is")]
     NexusUnrecognised,
@@ -146,8 +131,8 @@ pub enum CoreError {
     PatchClash(String),
     /// Pinned packages older than other packages of the profile need: the user chooses to
     /// downgrade those, or remove the pins.
-    #[error("{}", crate::ts::describe_conflicts(.0))]
-    PinConflicts(Vec<crate::ts::PinConflict>),
+    #[error("{}", crate::sources::ts::describe_conflicts(.0))]
+    PinConflicts(Vec<crate::sources::ts::PinConflict>),
 }
 
 impl From<umm_gamedef::RelPathError> for CoreError {
@@ -186,7 +171,7 @@ pub struct Session {
     ecosystem: Mutex<Option<Arc<Ecosystem>>>,
     ts: Mutex<ts::TsCache>,
     /// Nexus games looked up by domain name.
-    nexus_games: Mutex<std::collections::HashMap<String, umm_nexus::graph::Game>>,
+    nexus_games: Mutex<std::collections::HashMap<String, umm_sources::nexus::graph::Game>>,
     /// Whether a delta patch fits a file, by the patch's hash and the file's state.
     delta_fits: Mutex<std::collections::HashMap<String, Option<bool>>>,
     /// Runs the Godot Mod Loader's setup; `None` for the real thing.
@@ -229,7 +214,7 @@ impl Session {
             return Ok(e.clone());
         }
         let file = self.thunderstore_dir().join("ecosystem.json");
-        let (eco, _) = umm_thunderstore::ecosystem::load(self.http(), &file, refresh)?;
+        let (eco, _) = umm_sources::thunderstore::ecosystem::load(self.http(), &file, refresh)?;
         let eco = Arc::new(eco);
         *slot = Some(eco.clone());
         Ok(eco)
@@ -397,7 +382,7 @@ impl Session {
             Some((files, manifest, package_files)) => {
                 let staging = game.staging_dir().join(umm_store::fsutil::unique_suffix());
                 let result = (|| -> Result<ModMeta> {
-                    umm_thunderstore::layout::write(&files, &staging)?;
+                    umm_sources::thunderstore::layout::write(&files, &staging)?;
                     opts.package_files = package_files;
                     opts.name = opts.name.or(Some(manifest.name.replace('_', " ")));
                     if !manifest.version_number.is_empty() {
@@ -436,7 +421,7 @@ impl Session {
     ) -> Result<
         Option<(
             std::collections::BTreeMap<String, Vec<u8>>,
-            umm_thunderstore::layout::Manifest,
+            umm_sources::thunderstore::layout::Manifest,
             std::collections::BTreeMap<String, Vec<u8>>,
         )>,
     > {
@@ -448,7 +433,7 @@ impl Session {
             return Ok(None);
         };
         let bytes = fs::read(src).ctx(|| format!("reading {}", src.display()))?;
-        let Some(manifest) = umm_thunderstore::layout::manifest(&bytes)? else {
+        let Some(manifest) = umm_sources::thunderstore::layout::manifest(&bytes)? else {
             return Ok(None);
         };
         let eco = self.ecosystem(false)?;
@@ -460,8 +445,8 @@ impl Session {
         } else {
             manifest.name.clone()
         };
-        let files = umm_thunderstore::layout::plan(&bytes, &name, m.r2, None)?;
-        let package = umm_thunderstore::layout::package_files(&bytes)?;
+        let files = umm_sources::thunderstore::layout::plan(&bytes, &name, m.r2, None)?;
+        let package = umm_sources::thunderstore::layout::package_files(&bytes)?;
         Ok(Some((files, manifest, package)))
     }
 

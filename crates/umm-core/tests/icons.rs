@@ -7,8 +7,8 @@ use std::io::{Cursor, Write};
 use std::path::Path;
 use std::sync::Arc;
 use umm_core::{ImportOptions, LoaderSetup, Session, DEFAULT_PROFILE};
-use umm_thunderstore::ecosystem::ECOSYSTEM_URL;
-use umm_thunderstore::http::FakeHttp;
+use umm_sources::net::FakeHttp;
+use umm_sources::thunderstore::ecosystem::ECOSYSTEM_URL;
 
 fn write(p: &Path, bytes: &[u8]) {
     fs::create_dir_all(p.parent().unwrap()).unwrap();

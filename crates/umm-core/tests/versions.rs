@@ -8,9 +8,9 @@ use std::fs;
 use std::io::{Cursor, Write};
 use std::sync::Arc;
 use umm_core::{CoreError, DepProblem, LoaderSetup, PinConflictChoice, Session, DEFAULT_PROFILE};
+use umm_sources::net::FakeHttp;
+use umm_sources::thunderstore::ecosystem::ECOSYSTEM_URL;
 use umm_store::versions::other_versions;
-use umm_thunderstore::ecosystem::ECOSYSTEM_URL;
-use umm_thunderstore::http::FakeHttp;
 
 const GAME: &str = "jokers";
 

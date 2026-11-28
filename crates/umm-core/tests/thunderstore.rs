@@ -6,8 +6,8 @@ use std::io::{Cursor, Write};
 use std::path::Path;
 use std::sync::Arc;
 use umm_core::{Faults, LoaderSetup, Session, TsQuery, DEFAULT_PROFILE};
-use umm_thunderstore::ecosystem::ECOSYSTEM_URL;
-use umm_thunderstore::http::FakeHttp;
+use umm_sources::net::FakeHttp;
+use umm_sources::thunderstore::ecosystem::ECOSYSTEM_URL;
 
 /// The game's `games/<id>/game.toml`, its folder created.
 fn def_file(s: &Session, id: &str) -> std::path::PathBuf {

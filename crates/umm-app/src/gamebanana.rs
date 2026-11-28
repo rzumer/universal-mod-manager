@@ -22,7 +22,7 @@ impl From<Option<GbGame>> for GbGameDto {
     fn from(g: Option<GbGame>) -> Self {
         match g {
             Some(g) => GbGameDto {
-                url: Some(umm_gamebanana::game_url(g.game_id)),
+                url: Some(umm_sources::gamebanana::game_url(g.game_id)),
                 game_id: Some(g.game_id),
                 name: g.name,
                 mod_count: g.mod_count,
@@ -196,7 +196,7 @@ pub async fn gb_find_games(state: State<'_, AppState>, name: String) -> Res<Vec<
         Ok(s.gamebanana_find_games(&name)?
             .into_iter()
             .map(|g| GbGameChoiceDto {
-                url: umm_gamebanana::game_url(g.id),
+                url: umm_sources::gamebanana::game_url(g.id),
                 game_id: g.id,
                 name: g.name,
                 icon: g.icon_url,
@@ -246,7 +246,7 @@ pub async fn gb_search(
                 .map(|it| {
                     let m = it.summary;
                     GbItemDto {
-                        url: umm_gamebanana::mod_url(m.mod_id),
+                        url: umm_sources::gamebanana::mod_url(m.mod_id),
                         mod_id: m.mod_id,
                         name: m.name,
                         author: m.author,
@@ -279,7 +279,7 @@ pub async fn gb_files(state: State<'_, AppState>, game: String, mod_id: u64) -> 
         let f = s.gamebanana_files(&game, mod_id)?;
         let d = f.details;
         Ok(GbFilesDto {
-            url: umm_gamebanana::mod_url(d.summary.mod_id),
+            url: umm_sources::gamebanana::mod_url(d.summary.mod_id),
             mod_id: d.summary.mod_id,
             name: d.summary.name,
             version: d.summary.version,
@@ -366,7 +366,7 @@ pub async fn gb_updates(state: State<'_, AppState>, game: String) -> Res<Vec<GbU
 /// Opens a page on gamebanana.com in the browser. Other sites are refused.
 #[tauri::command]
 pub fn open_gb_page(url: String) -> Res<()> {
-    let ok = url.starts_with(&format!("{}/", umm_gamebanana::SITE_URL))
+    let ok = url.starts_with(&format!("{}/", umm_sources::gamebanana::SITE_URL))
         && url.len() < 2048
         && !url.contains(['"', ' ', '\n', '\r', '\\']);
     if !ok {

@@ -88,7 +88,7 @@ fn print_install(r: &NexusInstallReport) {
 
 /// A mod named by a page link or a number.
 fn mod_id(m: &str) -> Result<u64> {
-    if let Some((_, id)) = umm_nexus::parse_mod_url(m) {
+    if let Some((_, id)) = umm_sources::nexus::parse_mod_url(m) {
         return Ok(id);
     }
     m.parse()
@@ -151,7 +151,7 @@ pub fn run(s: &Session, cmd: NexusCmd) -> Result<()> {
                 s.set_nexus_domain(&game, Some(&d))?;
                 println!(
                     "{game}: Nexus Mods game `{d}` ({})",
-                    umm_nexus::game_url(&d)
+                    umm_sources::nexus::game_url(&d)
                 );
             } else {
                 match s.nexus_game(&game)? {
@@ -228,7 +228,7 @@ pub fn run(s: &Session, cmd: NexusCmd) -> Result<()> {
             println!(
                 "{} ({})",
                 f.summary.name,
-                umm_nexus::mod_url(&f.domain, f.summary.mod_id)
+                umm_sources::nexus::mod_url(&f.domain, f.summary.mod_id)
             );
             for file in &f.files {
                 let mark = if f.installed.contains(&file.file_id) {

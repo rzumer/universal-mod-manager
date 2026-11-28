@@ -195,11 +195,11 @@ impl From<ModMeta> for ModDto {
             nexus_url: m
                 .nexus
                 .as_ref()
-                .map(|n| umm_nexus::mod_url(&n.domain, n.mod_id)),
+                .map(|n| umm_sources::nexus::mod_url(&n.domain, n.mod_id)),
             gamebanana_url: m
                 .gamebanana
                 .as_ref()
-                .map(|g| umm_gamebanana::mod_url(g.mod_id)),
+                .map(|g| umm_sources::gamebanana::mod_url(g.mod_id)),
             files: m.files.len(),
             size: m.files.values().map(|f| f.size).sum(),
             id: m.id,

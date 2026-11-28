@@ -1,0 +1,21 @@
+[package]
+name = "umm-sources"
+description = "Where mods come from: Thunderstore, Nexus Mods, GameBanana, and the network access they share"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+umm-gamedef.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+zip.workspace = true
+ureq = "2"
+flate2 = "1"
+base64 = "0.22"
+serde_yaml = "0.9"
+
+[dev-dependencies]
+tempfile.workspace = true

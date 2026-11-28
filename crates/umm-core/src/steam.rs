@@ -4,8 +4,8 @@ use crate::{CoreError, Result, Session};
 use umm_gamedef::steam::{draft_from, inspect, installed_games, stand_in, to_toml, Inspection};
 pub use umm_gamedef::steam::{Draft, Engine, Note, SteamApp};
 use umm_gamedef::{Community, LoaderSetup, BEPINEX_KIND};
-use umm_thunderstore::ecosystem::SteamMatch;
-use umm_thunderstore::Ecosystem;
+use umm_sources::thunderstore::ecosystem::SteamMatch;
+use umm_sources::thunderstore::Ecosystem;
 
 /// What Thunderstore says about a game, as far as UMM can use it.
 #[derive(Debug, Clone, Default)]

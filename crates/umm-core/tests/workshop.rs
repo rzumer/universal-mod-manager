@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::Arc;
 use umm_core::workshop::DETAILS_URL;
 use umm_core::Session;
-use umm_thunderstore::http::FakeHttp;
+use umm_sources::net::FakeHttp;
 
 const RECORD: &str = r#""AppWorkshop"
 {

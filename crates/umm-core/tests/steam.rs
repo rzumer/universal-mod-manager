@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use umm_core::{Engine, LoaderSetup, Session};
 use umm_gamedef::steam::{installed_games_in, SteamApp};
-use umm_thunderstore::ecosystem::ECOSYSTEM_URL;
-use umm_thunderstore::http::FakeHttp;
+use umm_sources::net::FakeHttp;
+use umm_sources::thunderstore::ecosystem::ECOSYSTEM_URL;
 
 fn touch(p: &Path) {
     fs::create_dir_all(p.parent().unwrap()).unwrap();
